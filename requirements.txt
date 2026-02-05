@@ -9,6 +9,11 @@ pymupdf>=1.23.0
 python-docx>=1.1.0
 openpyxl>=3.1.0
 
+# Table Extraction
+pdfplumber>=0.10.0
+pyarrow>=14.0.0
+numpy>=1.24.0
+
 # OCR Support
 pytesseract>=0.3.10
 Pillow>=10.0.0

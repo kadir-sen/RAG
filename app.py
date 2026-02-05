@@ -199,13 +199,13 @@ def process_upload(uploaded_file, file_type: str) -> dict:
     Process an uploaded file.
 
     Returns:
-        dict with keys: success, ocr_pages (for PDFs)
+        dict with keys: success, ocr_pages (for PDFs), tables_extracted, total_rows
     """
     from src.document_rag import get_document_rag
     from src.data_analyzer_sql import get_data_analyzer
     from src.config import DOCUMENTS_DIR, TABLES_DIR
 
-    result = {"success": False, "ocr_pages": 0}
+    result = {"success": False, "ocr_pages": 0, "tables_extracted": 0, "total_rows": 0}
 
     key = f"{uploaded_file.name}_{uploaded_file.size}"
     if key in st.session_state.processed_files:
@@ -228,13 +228,50 @@ def process_upload(uploaded_file, file_type: str) -> dict:
             file_info = rag.file_registry.get(uploaded_file.name, {})
             result["ocr_pages"] = file_info.get("ocr_pages", 0)
             result["success"] = True
+
+            # Try table extraction for PDFs
+            if uploaded_file.name.lower().endswith('.pdf'):
+                try:
+                    from src.table_ingestion import ingest_file
+                    ingestion_result = ingest_file(file_path)
+                    result["tables_extracted"] = ingestion_result.tables_extracted
+                    result["total_rows"] = ingestion_result.total_rows
+
+                    # Load extracted tables into analyzer
+                    if ingestion_result.tables_extracted > 0:
+                        analyzer = get_data_analyzer()
+                        analyzer.load_from_catalog()
+                except Exception as e:
+                    print(f"[Table Extraction] Error: {e}")
     else:
         file_path = save_uploaded_file(uploaded_file, TABLES_DIR)
         analyzer = get_data_analyzer()
-        if analyzer.load_file(file_path):
-            st.session_state.tables_count += 1
-            st.session_state.processed_files.add(key)
-            result["success"] = True
+
+        # First try table extraction to parquet
+        try:
+            from src.table_ingestion import ingest_file
+            ingestion_result = ingest_file(file_path)
+            result["tables_extracted"] = ingestion_result.tables_extracted
+            result["total_rows"] = ingestion_result.total_rows
+
+            # Load from catalog
+            if ingestion_result.tables_extracted > 0:
+                analyzer.load_from_catalog()
+                st.session_state.tables_count += ingestion_result.tables_extracted
+                st.session_state.processed_files.add(key)
+                result["success"] = True
+            else:
+                # Fallback to direct loading
+                if analyzer.load_file(file_path):
+                    st.session_state.tables_count += 1
+                    st.session_state.processed_files.add(key)
+                    result["success"] = True
+        except ImportError:
+            # Fallback if table_ingestion not available
+            if analyzer.load_file(file_path):
+                st.session_state.tables_count += 1
+                st.session_state.processed_files.add(key)
+                result["success"] = True
 
     return result
 
@@ -311,8 +348,13 @@ def render_sidebar():
             for f in doc_files:
                 result = process_upload(f, "document")
                 if result["success"]:
-                    ocr_info = f" ({result['ocr_pages']} OCR)" if result['ocr_pages'] > 0 else ""
-                    st.success(f"✓ {f.name}{ocr_info}")
+                    info_parts = []
+                    if result['ocr_pages'] > 0:
+                        info_parts.append(f"{result['ocr_pages']} OCR")
+                    if result['tables_extracted'] > 0:
+                        info_parts.append(f"{result['tables_extracted']} tables")
+                    info_str = f" ({', '.join(info_parts)})" if info_parts else ""
+                    st.success(f"✓ {f.name}{info_str}")
 
         st.markdown("### 📊 Data Files")
         data_files = st.file_uploader(
@@ -327,7 +369,13 @@ def render_sidebar():
             for f in data_files:
                 result = process_upload(f, "data")
                 if result["success"]:
-                    st.success(f"✓ {f.name}")
+                    info_parts = []
+                    if result['tables_extracted'] > 0:
+                        info_parts.append(f"{result['tables_extracted']} tables")
+                    if result['total_rows'] > 0:
+                        info_parts.append(f"{result['total_rows']} rows")
+                    info_str = f" ({', '.join(info_parts)})" if info_parts else ""
+                    st.success(f"✓ {f.name}{info_str}")
 
         st.markdown("---")
 

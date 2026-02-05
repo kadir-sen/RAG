@@ -20,8 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create OCR cache directory
-RUN mkdir -p .cache/ocr
+# Create cache and storage directories
+RUN mkdir -p .cache/ocr storage/parquet
 
 # Expose Streamlit port
 EXPOSE 8501

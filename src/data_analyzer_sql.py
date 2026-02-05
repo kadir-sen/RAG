@@ -1,6 +1,7 @@
 """
 Safe SQL-based Data Analyzer using DuckDB.
 NO arbitrary Python execution from LLM - only validated SELECT queries.
+Supports Parquet views for extracted tables.
 """
 import re
 import time
@@ -304,9 +305,110 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
             return self.load_excel(file_path)
         elif ext == '.csv':
             return self.load_csv(file_path)
+        elif ext == '.parquet':
+            return self.register_parquet_view(file_path)
         else:
             logger.warning(f"Unsupported file type: {ext}")
             return False
+
+    def register_parquet_view(self, parquet_path: str, view_name: Optional[str] = None) -> bool:
+        """
+        Register a parquet file as a DuckDB view.
+
+        Args:
+            parquet_path: Path to parquet file
+            view_name: Optional view name (defaults to file stem)
+
+        Returns:
+            True if successful
+        """
+        path = Path(parquet_path)
+
+        if not path.exists():
+            logger.error(f"[Parquet] File not found: {parquet_path}")
+            return False
+
+        # Generate view name
+        if view_name is None:
+            view_name = sanitize_table_name(path.name)
+
+        log_document_processing(path.name, "Registering parquet view...")
+
+        try:
+            # Drop existing view if exists
+            self.conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+
+            # Create view from parquet
+            escaped_path = str(path).replace("'", "''").replace("\\", "/")
+            self.conn.execute(f"""
+                CREATE VIEW {view_name} AS
+                SELECT * FROM read_parquet('{escaped_path}')
+            """)
+
+            # Get table info
+            info = self._get_table_info(view_name)
+            self.tables[view_name] = {
+                "file_name": path.name,
+                "file_path": str(parquet_path),
+                "source_type": "parquet",
+                **info,
+            }
+            self.file_paths[view_name] = str(parquet_path)
+
+            logger.info(f"   View: {view_name}")
+            logger.info(f"   Rows: {info.get('row_count', 0)}, Columns: {len(info.get('columns', []))}")
+            log_document_processing(path.name, "Parquet view registered")
+            return True
+
+        except Exception as e:
+            logger.error(f"[Parquet] Error registering view: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    def load_from_catalog(self) -> int:
+        """
+        Load all tables from the catalog as parquet views.
+
+        Returns:
+            Number of tables loaded
+        """
+        try:
+            from .catalog import get_catalog
+
+            catalog = get_catalog()
+            all_tables = catalog.get_all_tables()
+
+            count = 0
+            for table_meta in all_tables:
+                parquet_path = table_meta.parquet_path
+
+                if not Path(parquet_path).exists():
+                    logger.warning(f"[Catalog] Parquet not found: {parquet_path}")
+                    continue
+
+                if self.register_parquet_view(parquet_path, table_meta.table_name):
+                    # Enhance metadata with catalog info
+                    self.tables[table_meta.table_name]["source_file"] = table_meta.source_file
+                    self.tables[table_meta.table_name]["source_type"] = table_meta.source_type
+                    self.tables[table_meta.table_name]["extraction_method"] = table_meta.extraction_method
+                    count += 1
+
+            logger.info(f"[Catalog] Loaded {count} tables from catalog")
+            return count
+
+        except Exception as e:
+            logger.error(f"[Catalog] Error loading from catalog: {e}")
+            return 0
+
+    def refresh_from_catalog(self) -> int:
+        """
+        Refresh views from catalog, adding new tables and updating existing.
+
+        Returns:
+            Number of tables refreshed
+        """
+        return self.load_from_catalog()
 
     def load_files_from_folder(self, folder_path: str) -> int:
         """Load all data files from a folder."""
