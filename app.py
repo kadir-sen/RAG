@@ -199,13 +199,20 @@ def process_upload(uploaded_file, file_type: str) -> dict:
     Process an uploaded file.
 
     Returns:
-        dict with keys: success, ocr_pages (for PDFs), tables_extracted, total_rows
+        dict with keys: success, ocr_pages (for PDFs), tables_extracted, total_rows, notice_extracted
     """
     from src.document_rag import get_document_rag
     from src.data_analyzer_sql import get_data_analyzer
     from src.config import DOCUMENTS_DIR, TABLES_DIR
 
-    result = {"success": False, "ocr_pages": 0, "tables_extracted": 0, "total_rows": 0}
+    result = {
+        "success": False,
+        "ocr_pages": 0,
+        "tables_extracted": 0,
+        "total_rows": 0,
+        "notice_extracted": False,
+        "notice_summary": None,
+    }
 
     key = f"{uploaded_file.name}_{uploaded_file.size}"
     if key in st.session_state.processed_files:
@@ -228,6 +235,32 @@ def process_upload(uploaded_file, file_type: str) -> dict:
             file_info = rag.file_registry.get(uploaded_file.name, {})
             result["ocr_pages"] = file_info.get("ocr_pages", 0)
             result["success"] = True
+
+            # Extract notice metadata (Phase 2)
+            try:
+                from src.table_ingestion import extract_document_notice
+                from src.document_rag import generate_doc_id
+
+                # Build doc_text_by_page from parsed documents
+                doc_text_by_page = {}
+                for doc in rag.documents:
+                    if doc.metadata.get("file_name") == uploaded_file.name:
+                        page_num = doc.metadata.get("page_number", 1)
+                        doc_text_by_page[page_num] = doc.text
+
+                if doc_text_by_page:
+                    doc_id = generate_doc_id(file_path)
+                    notice_summary = extract_document_notice(
+                        doc_id=doc_id,
+                        file_path=file_path,
+                        doc_text_by_page=doc_text_by_page,
+                        use_llm=False,  # Regex-only for speed
+                    )
+                    if notice_summary:
+                        result["notice_extracted"] = True
+                        result["notice_summary"] = notice_summary
+            except Exception as e:
+                print(f"[Notice Extraction] Error: {e}")
 
             # Try table extraction for PDFs
             if uploaded_file.name.lower().endswith('.pdf'):
@@ -353,8 +386,25 @@ def render_sidebar():
                         info_parts.append(f"{result['ocr_pages']} OCR")
                     if result['tables_extracted'] > 0:
                         info_parts.append(f"{result['tables_extracted']} tables")
+                    if result.get('notice_extracted'):
+                        info_parts.append("notice")
                     info_str = f" ({', '.join(info_parts)})" if info_parts else ""
                     st.success(f"✓ {f.name}{info_str}")
+
+                    # Show notice summary if extracted
+                    if result.get('notice_summary'):
+                        ns = result['notice_summary']
+                        with st.expander(f"📋 Notice: {f.name}", expanded=False):
+                            if ns.get('date'):
+                                st.write(f"**Date:** {ns['date']}")
+                            if ns.get('sender'):
+                                st.write(f"**From:** {ns['sender'][:50]}")
+                            if ns.get('recipient'):
+                                st.write(f"**To:** {ns['recipient'][:50]}")
+                            if ns.get('subject'):
+                                st.write(f"**Subject:** {ns['subject'][:80]}")
+                            if ns.get('actions'):
+                                st.write(f"**Actions:** {', '.join(ns['actions'][:3])}")
 
         st.markdown("### 📊 Data Files")
         data_files = st.file_uploader(

@@ -1,10 +1,10 @@
 """
-Unified Table Ingestion Pipeline.
-Orchestrates table extraction from Excel and PDF files.
+Unified Ingestion Pipeline.
+Orchestrates table extraction and notice extraction from files.
 """
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .logger import logger, log_separator
 from .catalog import get_catalog, TableMetadata
@@ -23,6 +23,11 @@ class IngestionResult:
     total_rows: int
     ocr_decision: Optional[str] = None
     error: Optional[str] = None
+
+    # Notice extraction (Phase 2)
+    notice_extracted: bool = False
+    notice_path: Optional[str] = None
+    notice_summary: Optional[Dict[str, Any]] = None
 
 
 class TableIngestionPipeline:
@@ -237,3 +242,67 @@ def ingest_folder(folder_path: str) -> Dict[str, Any]:
     """
     pipeline = TableIngestionPipeline()
     return pipeline.ingest_folder(folder_path)
+
+
+def extract_document_notice(
+    doc_id: str,
+    file_path: str,
+    doc_text_by_page: Dict[int, str],
+    project_id: Optional[str] = None,
+    use_llm: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """
+    Extract notice metadata from a document and update catalog.
+
+    Args:
+        doc_id: Unique document identifier
+        file_path: Path to source file
+        doc_text_by_page: Dict mapping page numbers to text content
+        project_id: Optional project identifier
+        use_llm: Whether to use LLM refinement
+
+    Returns:
+        Notice summary dict or None if extraction failed
+    """
+    try:
+        from .notice_extractor import extract_and_save_notice
+        from .light_graph import add_document_to_graph
+
+        logger.info(f"[Notice] Extracting notice from: {Path(file_path).name}")
+
+        # Extract and save notice
+        notice, notice_path = extract_and_save_notice(
+            doc_id=doc_id,
+            file_path=file_path,
+            doc_text_by_page=doc_text_by_page,
+            project_id=project_id,
+            use_llm=use_llm,
+        )
+
+        # Build notice summary
+        notice_summary = {
+            "date": notice.date,
+            "sender": notice.sender,
+            "recipient": notice.recipient,
+            "subject": notice.subject[:100] if notice.subject else None,
+            "doc_type": notice.doc_type,
+            "ref_numbers": notice.ref_numbers[:3],
+            "actions": notice.actions[:3],
+        }
+
+        # Update catalog with notice info
+        catalog = get_catalog()
+        catalog.update_notice(file_path, notice_path, notice_summary)
+
+        # Add to document graph
+        add_document_to_graph(notice)
+
+        logger.info(f"[Notice] Extraction complete: date={notice.date}, sender={notice.sender[:30] if notice.sender else None}")
+
+        return notice_summary
+
+    except Exception as e:
+        logger.error(f"[Notice] Extraction error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None

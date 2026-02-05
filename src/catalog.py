@@ -56,6 +56,11 @@ class CatalogEntry:
     ingested_at: str = field(default_factory=lambda: datetime.now().isoformat())
     ocr_decision: str = "native"  # "native" | "ocr" | "hybrid"
 
+    # Notice extraction (Phase 2)
+    notice_path: Optional[str] = None  # Path to notice JSON
+    notice_extracted: bool = False
+    notice_summary: Optional[Dict[str, Any]] = None  # Quick summary: date, sender, recipient
+
 
 class TableCatalog:
     """
@@ -101,6 +106,9 @@ class TableCatalog:
                     tables=tables,
                     ingested_at=entry_data.get("ingested_at", ""),
                     ocr_decision=entry_data.get("ocr_decision", "native"),
+                    notice_path=entry_data.get("notice_path"),
+                    notice_extracted=entry_data.get("notice_extracted", False),
+                    notice_summary=entry_data.get("notice_summary"),
                 )
         except Exception as e:
             logger.error(f"[Catalog] Error loading catalog: {e}")
@@ -117,6 +125,9 @@ class TableCatalog:
                     "tables": [asdict(t) for t in entry.tables],
                     "ingested_at": entry.ingested_at,
                     "ocr_decision": entry.ocr_decision,
+                    "notice_path": entry.notice_path,
+                    "notice_extracted": entry.notice_extracted,
+                    "notice_summary": entry.notice_summary,
                 }
 
             with open(self.catalog_path, "w", encoding="utf-8") as f:
@@ -275,6 +286,31 @@ class TableCatalog:
         for table in self.get_all_tables():
             counts[table.extraction_method] = counts.get(table.extraction_method, 0) + 1
         return counts
+
+    # Notice management methods (Phase 2)
+
+    def update_notice(self, source_file: str, notice_path: str, notice_summary: Dict[str, Any]):
+        """Update notice metadata for an entry."""
+        entry = self.get_entry(source_file)
+        if entry:
+            entry.notice_path = notice_path
+            entry.notice_extracted = True
+            entry.notice_summary = notice_summary
+            self._save_catalog()
+            logger.info(f"[Catalog] Updated notice for: {Path(source_file).name}")
+
+    def get_entries_with_notices(self) -> List[CatalogEntry]:
+        """Get all entries that have extracted notices."""
+        return [e for e in self.entries.values() if e.notice_extracted]
+
+    def get_notice_stats(self) -> Dict[str, Any]:
+        """Get notice extraction statistics."""
+        with_notices = self.get_entries_with_notices()
+        return {
+            "total_entries": len(self.entries),
+            "with_notices": len(with_notices),
+            "without_notices": len(self.entries) - len(with_notices),
+        }
 
 
 # Singleton

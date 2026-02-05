@@ -17,6 +17,7 @@ class QueryType(Enum):
     DOCUMENT = "document"
     DATA = "data"
     HYBRID = "hybrid"
+    TIMELINE = "timeline"  # Notice/graph-based queries
 
 
 # Multilingual keywords for classification
@@ -49,6 +50,26 @@ DOCUMENT_KEYWORDS = {
     "rapor", "raporda", "belge", "metin", "paragraf", "sayfa", "özet", "özetle",
 }
 
+# Timeline/Notice keywords (Phase 2)
+TIMELINE_KEYWORDS = {
+    # English
+    "timeline", "chronology", "sequence", "history", "chain", "trace",
+    "what happened", "when did", "order of events", "between dates",
+    "who replied", "who responded", "who sent", "who received",
+    "notices", "all notices", "list notices", "show notices",
+    "correspondence", "letters sent", "letters received",
+    "delay notices", "extension notices", "claim notices",
+    "before", "after", "during", "period",
+    # Turkish
+    "zaman çizelgesi", "kronoloji", "sıralama", "geçmiş", "tarihçe",
+    "ne oldu", "ne zaman", "olaylar", "tarihler arasında",
+    "kim cevap verdi", "kim gönderdi", "kim aldı",
+    "bildirimler", "tüm bildirimler", "bildirimleri göster",
+    "yazışmalar", "gönderilen mektuplar",
+    "gecikme bildirimi", "uzatma bildirimi", "talep bildirimi",
+    "önce", "sonra", "döneminde",
+}
+
 
 class QueryRouter:
     """Routes queries to appropriate handlers with multilingual support."""
@@ -59,6 +80,7 @@ Classify the user's query into exactly ONE category.
 Categories:
 - DOCUMENT: Questions about text content, contracts, reports, policies, terms, clauses, definitions, descriptions, explanations
 - DATA: Questions requiring calculations, aggregations, filtering, sorting, statistics, or numerical analysis on tabular data
+- TIMELINE: Questions about chronology, sequence of events, correspondence history, notice chains, who sent what when, relationships between documents
 - HYBRID: Questions that need BOTH document context AND data calculations together
 
 Available Sources:
@@ -70,9 +92,10 @@ User Query: {query}
 Important:
 - If the query asks about numbers FROM documents (like "what percentage is mentioned"), that's DOCUMENT
 - If the query needs to CALCULATE numbers from tables, that's DATA
+- If the query asks about timeline, chronology, sequence of notices/letters, or document relationships, that's TIMELINE
 - If the query needs to correlate document content with table calculations, that's HYBRID
 
-Respond with exactly ONE word: DOCUMENT, DATA, or HYBRID"""
+Respond with exactly ONE word: DOCUMENT, DATA, TIMELINE, or HYBRID"""
 
     HYBRID_SYNTHESIS_PROMPT = """Combine these two information sources to answer the user's question.
 Do NOT invent facts - only use information from the sources below.
@@ -138,8 +161,14 @@ Provide a comprehensive answer that:
         # Heuristic scoring
         data_score = sum(1 for kw in DATA_KEYWORDS if kw in query_lower)
         doc_score = sum(1 for kw in DOCUMENT_KEYWORDS if kw in query_lower)
+        timeline_score = sum(1 for kw in TIMELINE_KEYWORDS if kw in query_lower)
 
-        logger.info(f"   Heuristic scores - Document: {doc_score}, Data: {data_score}")
+        logger.info(f"   Heuristic scores - Document: {doc_score}, Data: {data_score}, Timeline: {timeline_score}")
+
+        # Strong heuristic match for timeline (priority)
+        if timeline_score >= 2:
+            logger.info("   → Heuristic: TIMELINE")
+            return QueryType.TIMELINE
 
         # Strong heuristic match
         if data_score >= 3 and doc_score == 0:
@@ -166,6 +195,8 @@ Provide a comprehensive answer that:
 
             if "DATA" in result:
                 return QueryType.DATA
+            elif "TIMELINE" in result:
+                return QueryType.TIMELINE
             elif "HYBRID" in result:
                 return QueryType.HYBRID
             else:
@@ -250,6 +281,130 @@ Provide a comprehensive answer that:
             "result_columns": data_result.get("result_columns"),
         }
 
+    def _handle_timeline_query(self, query: str) -> Dict[str, Any]:
+        """Handle timeline/notice-based query using light graph."""
+        logger.info("📅 Routing to Timeline/Graph handler...")
+
+        try:
+            from .light_graph import get_light_graph
+            from .notice_extractor import NOTICES_DIR
+            import json
+
+            graph = get_light_graph()
+            query_lower = query.lower()
+
+            # Parse query for filters
+            results = []
+            sources = []
+
+            # Check for specific query patterns
+            if any(kw in query_lower for kw in ['all notices', 'list notices', 'show notices', 'tüm bildirimler']):
+                # List all documents chronologically
+                results = graph.timeline()
+                answer_prefix = "Here are all documents in chronological order:\n\n"
+
+            elif any(kw in query_lower for kw in ['delay', 'gecikme']):
+                # Search for delay-related notices
+                delay_docs = graph.search_by_action('delay')
+                results = [d['node'] for d in delay_docs]
+                answer_prefix = "Documents mentioning delays:\n\n"
+
+            elif any(kw in query_lower for kw in ['claim', 'talep']):
+                # Search for claim-related notices
+                claim_docs = graph.search_by_action('claim')
+                results = [d['node'] for d in claim_docs]
+                answer_prefix = "Documents mentioning claims:\n\n"
+
+            elif 'chain' in query_lower or 'trace' in query_lower:
+                # Try to extract doc reference and trace chain
+                # For now, use first document
+                nodes = list(graph.graph.nodes.keys())
+                if nodes:
+                    chain = graph.trace_chain(nodes[0], depth=5)
+                    results = [chain['start']] if chain['start'] else []
+                    results.extend([item['node'] for item in chain['downstream']])
+                    answer_prefix = f"Document chain starting from {nodes[0]}:\n\n"
+                else:
+                    answer_prefix = "No documents in graph.\n\n"
+
+            else:
+                # Default: show timeline with any date filters
+                results = graph.timeline()
+                answer_prefix = "Document timeline:\n\n"
+
+            # Build answer from results
+            if results:
+                answer_lines = [answer_prefix]
+                for i, node in enumerate(results[:20], 1):  # Limit to 20
+                    date = node.get('date', 'No date')
+                    sender = node.get('sender', 'Unknown')[:40] if node.get('sender') else 'Unknown'
+                    recipient = node.get('recipient', 'Unknown')[:40] if node.get('recipient') else 'Unknown'
+                    subject = node.get('subject', '')[:60] if node.get('subject') else ''
+                    file_name = node.get('file_name', node.get('doc_id', 'Unknown'))
+
+                    answer_lines.append(
+                        f"{i}. **{date}** - {file_name}\n"
+                        f"   From: {sender} → To: {recipient}\n"
+                        f"   {subject}\n"
+                    )
+
+                    # Build source with evidence
+                    doc_id = node.get('doc_id')
+                    notice_path = NOTICES_DIR / f"{doc_id}.json"
+                    evidence = []
+                    if notice_path.exists():
+                        try:
+                            with open(notice_path, 'r', encoding='utf-8') as f:
+                                notice_data = json.load(f)
+                            evidence = notice_data.get('evidence_spans', [])[:3]
+                        except Exception:
+                            pass
+
+                    sources.append({
+                        "type": "notice",
+                        "file_name": file_name,
+                        "doc_id": doc_id,
+                        "date": date,
+                        "sender": sender,
+                        "recipient": recipient,
+                        "evidence": evidence,
+                    })
+
+                answer = "\n".join(answer_lines)
+
+                # Add graph stats
+                stats = graph.get_statistics()
+                answer += f"\n\n*Graph: {stats['node_count']} documents, {stats['edge_count']} relationships*"
+
+            else:
+                answer = "No notices found matching your query. Make sure documents have been processed with notice extraction enabled."
+
+            return {
+                "query": query,
+                "query_type": QueryType.TIMELINE.value,
+                "answer": answer,
+                "sources": sources,
+            }
+
+        except ImportError as e:
+            logger.error(f"   Timeline handler import error: {e}")
+            return {
+                "query": query,
+                "query_type": QueryType.TIMELINE.value,
+                "answer": "Timeline feature requires notice extraction. Please ensure documents are processed first.",
+                "sources": [],
+            }
+        except Exception as e:
+            logger.error(f"   Timeline query error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "query": query,
+                "query_type": QueryType.TIMELINE.value,
+                "answer": f"Error processing timeline query: {str(e)}",
+                "sources": [],
+            }
+
     def route_and_execute(self, query: str) -> Dict[str, Any]:
         """Classify and route query to appropriate handler."""
         log_separator("Processing Query")
@@ -262,6 +417,8 @@ Provide a comprehensive answer that:
             result = self._handle_data_query(query)
         elif query_type == QueryType.DOCUMENT:
             result = self._handle_document_query(query)
+        elif query_type == QueryType.TIMELINE:
+            result = self._handle_timeline_query(query)
         else:  # HYBRID
             result = self._handle_hybrid_query(query)
 
