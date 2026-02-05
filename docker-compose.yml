@@ -1,0 +1,11 @@
+services:
+  rag-chatbot:
+    build: .
+    container_name: agentic-rag-chatbot
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/app/uploads
+    restart: unless-stopped
