@@ -41,6 +41,9 @@ class TableMetadata:
     extraction_method: str = "native"  # "native" | "ocr" | "block_detect"
     ocr_applied: bool = False
 
+    # Jargon/abbreviation context for columns
+    column_jargon: Dict[str, str] = field(default_factory=dict)  # col_name -> expanded meaning
+
     # Timestamps
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     file_hash: str = ""  # For deduplication

@@ -1,7 +1,7 @@
 # Core Framework
 llama-index>=0.10.0
 llama-index-llms-gemini>=0.1.0
-llama-index-embeddings-gemini>=0.1.0
+llama-index-embeddings-google-genai>=0.1.0
 llama-index-vector-stores-pinecone>=0.1.0
 
 # Document Processing
@@ -27,6 +27,9 @@ pandas>=2.0.0
 
 # UI
 streamlit>=1.30.0
+
+# Caching
+diskcache>=5.6.0
 
 # Utilities
 python-dotenv>=1.0.0

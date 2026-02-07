@@ -21,13 +21,14 @@ from llama_index.core import (
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.vector_stores.pinecone import PineconeVectorStore
 from llama_index.llms.gemini import Gemini
-from llama_index.embeddings.gemini import GeminiEmbedding
+from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
 from .config import (
     GOOGLE_API_KEY,
     PINECONE_API_KEY,
     GEMINI_MODEL,
     EMBEDDING_MODEL,
+    EMBEDDING_DIMENSION,
     PINECONE_INDEX_NAME,
     PINECONE_DIMENSION,
     CHUNK_SIZE,
@@ -65,8 +66,10 @@ class DocumentRAG:
         """Configure LLM and embedding models."""
         log_llm("Setting up Gemini LLM and embeddings", GEMINI_MODEL)
         Settings.llm = Gemini(api_key=GOOGLE_API_KEY, model=GEMINI_MODEL)
-        Settings.embed_model = GeminiEmbedding(
-            api_key=GOOGLE_API_KEY, model_name=EMBEDDING_MODEL
+        Settings.embed_model = GoogleGenAIEmbedding(
+            api_key=GOOGLE_API_KEY,
+            model_name=EMBEDDING_MODEL,
+            output_dimensionality=EMBEDDING_DIMENSION,
         )
         Settings.node_parser = SentenceSplitter(
             chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP

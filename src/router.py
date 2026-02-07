@@ -1,26 +1,23 @@
 """
 Query Router with multilingual support (English + Turkish).
-Routes queries to Document RAG, SQL Data Analyzer, or both.
+Routes queries to Document RAG, SQL Data Analyzer, or Timeline/Graph handler.
+
+Routing strategy (LLM-free by default):
+  1. Heuristic keyword scoring
+  2. Embedding-similarity with anchor texts (if ambiguous)
+  3. LLM classification via llm_client (last resort)
 """
-from enum import Enum
-from typing import Tuple, Dict, Any
+import re
+from pathlib import Path
+from typing import Tuple, Dict, Any, List, Optional
 
-from llama_index.llms.gemini import Gemini
-
-from .config import GOOGLE_API_KEY, GEMINI_MODEL
-from .document_rag import get_document_rag
-from .data_analyzer_sql import get_data_analyzer
+from .config import GOOGLE_API_KEY, GEMINI_MODEL, ENABLE_TIMELINE
+from .types import QueryType, RouterDecision, LLMUsage
 from .logger import logger, log_separator
 
 
-class QueryType(Enum):
-    DOCUMENT = "document"
-    DATA = "data"
-    HYBRID = "hybrid"
-    TIMELINE = "timeline"  # Notice/graph-based queries
+# ── Multilingual keyword sets ─────────────────────────────────
 
-
-# Multilingual keywords for classification
 DATA_KEYWORDS = {
     # English
     "calculate", "sum", "average", "mean", "total", "count", "how many",
@@ -50,7 +47,6 @@ DOCUMENT_KEYWORDS = {
     "rapor", "raporda", "belge", "metin", "paragraf", "sayfa", "özet", "özetle",
 }
 
-# Timeline/Notice keywords (Phase 2)
 TIMELINE_KEYWORDS = {
     # English
     "timeline", "chronology", "sequence", "history", "chain", "trace",
@@ -71,59 +67,140 @@ TIMELINE_KEYWORDS = {
 }
 
 
+# ── Embedding-similarity anchor texts ────────────────────────
+
+_ANCHOR_TEXTS = {
+    QueryType.DATA: [
+        "Calculate the total amount from the spreadsheet",
+        "How many rows match this filter condition",
+        "What is the average value grouped by category",
+        "Show me the maximum and minimum numbers in the table",
+    ],
+    QueryType.DOCUMENT: [
+        "What does the contract clause say about liability",
+        "Explain the terms and conditions in section 5",
+        "According to the agreement what are the obligations",
+        "Summarize the policy document regarding requirements",
+    ],
+    QueryType.TIMELINE: [
+        "Show the timeline of notices sent between parties",
+        "Who sent the delay notice and when was it received",
+        "What is the chronological sequence of correspondence",
+        "List all notices related to contract claims",
+    ],
+    QueryType.HYBRID: [
+        "Compare the contract terms with the actual data values",
+        "What does the agreement say and how does it match the numbers",
+        "Correlate document clauses with spreadsheet calculations",
+    ],
+}
+
+# Cached anchor embeddings (populated once on first use)
+_anchor_embeddings: Optional[Dict[str, list]] = None
+
+
+def _get_anchor_embeddings() -> Dict[str, list]:
+    """Embed anchor texts once and cache in memory."""
+    global _anchor_embeddings
+    if _anchor_embeddings is not None:
+        return _anchor_embeddings
+
+    try:
+        from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+        from .config import EMBEDDING_MODEL, EMBEDDING_DIMENSION
+
+        embed_model = GoogleGenAIEmbedding(
+            api_key=GOOGLE_API_KEY,
+            model_name=EMBEDDING_MODEL,
+            output_dimensionality=EMBEDDING_DIMENSION,
+        )
+
+        _anchor_embeddings = {}
+        for qtype, texts in _ANCHOR_TEXTS.items():
+            vecs = embed_model.get_text_embedding_batch(texts)
+            _anchor_embeddings[qtype.value] = vecs
+            logger.info(f"[Router] Embedded {len(texts)} anchors for {qtype.value}")
+
+        return _anchor_embeddings
+
+    except Exception as e:
+        logger.warning(f"[Router] Anchor embedding failed: {e}")
+        _anchor_embeddings = {}
+        return _anchor_embeddings
+
+
+def _cosine_similarity(a: list, b: list) -> float:
+    """Cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 class QueryRouter:
-    """Routes queries to appropriate handlers with multilingual support."""
+    """Routes queries to appropriate handlers with multilingual support and jargon awareness."""
 
-    CLASSIFICATION_PROMPT = """You are a query classifier for a hybrid RAG system.
-Classify the user's query into exactly ONE category.
+    # Heuristic confidence thresholds
+    STRONG_HEURISTIC_THRESHOLD = 3   # keyword hits for high-confidence match
+    MARGIN_THRESHOLD = 2             # gap between top-2 scores for clear winner
+    EMBEDDING_MARGIN = 0.05          # cosine similarity margin for embedding routing
 
-Categories:
-- DOCUMENT: Questions about text content, contracts, reports, policies, terms, clauses, definitions, descriptions, explanations
-- DATA: Questions requiring calculations, aggregations, filtering, sorting, statistics, or numerical analysis on tabular data
-- TIMELINE: Questions about chronology, sequence of events, correspondence history, notice chains, who sent what when, relationships between documents
-- HYBRID: Questions that need BOTH document context AND data calculations together
+    # Prompts (used only as last-resort LLM fallback)
+    CLASSIFICATION_PROMPT = (
+        "Classify this query into exactly ONE category: DOCUMENT, DATA, TIMELINE, or HYBRID.\n"
+        "DOCUMENT = about text content, contracts, clauses, definitions.\n"
+        "DATA = calculations, aggregations, statistics on tabular data.\n"
+        "TIMELINE = chronology, correspondence, notices, who sent what when.\n"
+        "HYBRID = needs BOTH document context AND data calculations.\n\n"
+        "Available tables: {data_files}\n\n"
+        "{user_query}\n\n"
+        "Respond with exactly ONE word."
+    )
 
-Available Sources:
-DOCUMENTS: {doc_files}
-DATA TABLES: {data_files}
-
-User Query: {query}
-
-Important:
-- If the query asks about numbers FROM documents (like "what percentage is mentioned"), that's DOCUMENT
-- If the query needs to CALCULATE numbers from tables, that's DATA
-- If the query asks about timeline, chronology, sequence of notices/letters, or document relationships, that's TIMELINE
-- If the query needs to correlate document content with table calculations, that's HYBRID
-
-Respond with exactly ONE word: DOCUMENT, DATA, TIMELINE, or HYBRID"""
-
-    HYBRID_SYNTHESIS_PROMPT = """Combine these two information sources to answer the user's question.
-Do NOT invent facts - only use information from the sources below.
-
-QUESTION: {question}
-
-DOCUMENT SEARCH RESULTS:
-{doc_results}
-
-DATA ANALYSIS RESULTS:
-{data_results}
-
-Provide a comprehensive answer that:
-1. Clearly states which information comes from documents vs data analysis
-2. Does not make claims unsupported by either source
-3. Is concise and well-structured"""
+    HYBRID_SYNTHESIS_PROMPT = (
+        "Combine these two information sources to answer the user's question.\n"
+        "Do NOT invent facts - only use information from the sources below.\n\n"
+        "QUESTION: {user_query}\n\n"
+        "DOCUMENT SEARCH RESULTS:\n{doc_results}\n\n"
+        "DATA ANALYSIS RESULTS:\n{data_results}\n\n"
+        "Provide a comprehensive answer that:\n"
+        "1. Clearly states which information comes from documents vs data analysis\n"
+        "2. Does not make claims unsupported by either source\n"
+        "3. Is concise and well-structured"
+    )
 
     def __init__(self):
         """Initialize the router."""
         log_separator("Initializing Query Router")
-        self.llm = Gemini(api_key=GOOGLE_API_KEY, model=GEMINI_MODEL)
+        from .document_rag import get_document_rag
+        from .data_analyzer_sql import get_data_analyzer
+
         self.document_rag = get_document_rag()
         self.data_analyzer = get_data_analyzer()
-        logger.info("✅ Query Router initialized")
+        self._jargon = None
+        self._hybrid_executor = None
+        logger.info("Query Router initialized")
+
+    @property
+    def hybrid_executor(self):
+        """Lazy-load hybrid executor."""
+        if self._hybrid_executor is None:
+            from .hybrid_executor import get_hybrid_executor
+            self._hybrid_executor = get_hybrid_executor()
+        return self._hybrid_executor
+
+    @property
+    def jargon(self):
+        """Lazy-load jargon manager."""
+        if self._jargon is None:
+            from .jargon_manager import get_jargon_manager
+            self._jargon = get_jargon_manager()
+        return self._jargon
 
     def _get_available_sources(self) -> Tuple[str, str]:
         """Get descriptions of available sources."""
-        # Documents
         doc_files = "None loaded"
         if self.document_rag.file_registry:
             doc_list = []
@@ -134,7 +211,6 @@ Provide a comprehensive answer that:
             if len(doc_list) > 10:
                 doc_files += f" (+{len(doc_list) - 10} more)"
 
-        # Data tables
         data_files = "None loaded"
         tables = self.data_analyzer.list_tables()
         if tables:
@@ -153,65 +229,235 @@ Provide a comprehensive answer that:
 
         return doc_files, data_files
 
-    def classify_query(self, query: str) -> QueryType:
-        """Classify query using heuristics + LLM."""
-        logger.info("🧠 Classifying query...")
-        query_lower = query.lower()
+    # ── Classification: 3-tier strategy ───────────────────────
 
-        # Heuristic scoring
+    def classify_query(self, query: str) -> RouterDecision:
+        """
+        Classify query using 3-tier strategy:
+          1. Heuristic keyword scoring (free)
+          2. Embedding-similarity with anchors (cheap)
+          3. LLM classification (last resort)
+        Returns RouterDecision with type, confidence, reasons.
+        """
+        logger.info("Classifying query...")
+
+        # Expand abbreviations
+        expanded_query = self.jargon.expand_query(query)
+        if expanded_query != query:
+            logger.info(f"   Jargon expanded: {expanded_query[:100]}...")
+
+        query_lower = expanded_query.lower()
+
+        # ── Tier 1: Heuristic scoring ──
+        decision = self._classify_heuristic(query_lower)
+        if decision is not None:
+            logger.info(f"   -> Heuristic: {decision.query_type.value.upper()} "
+                        f"(conf={decision.confidence:.2f})")
+            return decision
+
+        # ── Tier 2: Embedding similarity ──
+        decision = self._classify_embedding(query)
+        if decision is not None:
+            logger.info(f"   -> Embedding: {decision.query_type.value.upper()} "
+                        f"(conf={decision.confidence:.2f})")
+            return decision
+
+        # ── Tier 3: LLM fallback ──
+        decision = self._classify_llm(query)
+        logger.info(f"   -> LLM: {decision.query_type.value.upper()} "
+                    f"(conf={decision.confidence:.2f})")
+        return decision
+
+    def _classify_heuristic(self, query_lower: str) -> Optional[RouterDecision]:
+        """Tier 1: keyword-based scoring. Returns None if ambiguous."""
         data_score = sum(1 for kw in DATA_KEYWORDS if kw in query_lower)
         doc_score = sum(1 for kw in DOCUMENT_KEYWORDS if kw in query_lower)
         timeline_score = sum(1 for kw in TIMELINE_KEYWORDS if kw in query_lower)
 
-        logger.info(f"   Heuristic scores - Document: {doc_score}, Data: {data_score}, Timeline: {timeline_score}")
+        scores = {
+            QueryType.DATA: data_score,
+            QueryType.DOCUMENT: doc_score,
+            QueryType.TIMELINE: timeline_score,
+        }
 
-        # Strong heuristic match for timeline (priority)
-        if timeline_score >= 2:
-            logger.info("   → Heuristic: TIMELINE")
-            return QueryType.TIMELINE
+        logger.info(f"   Heuristic scores - Doc:{doc_score} Data:{data_score} Timeline:{timeline_score}")
 
-        # Strong heuristic match
-        if data_score >= 3 and doc_score == 0:
-            logger.info("   → Heuristic: DATA")
-            return QueryType.DATA
-        if doc_score >= 3 and data_score == 0:
-            logger.info("   → Heuristic: DOCUMENT")
-            return QueryType.DOCUMENT
-
-        # Use LLM for ambiguous cases
-        try:
-            logger.info("   Using LLM for classification...")
-            doc_files, data_files = self._get_available_sources()
-
-            prompt = self.CLASSIFICATION_PROMPT.format(
-                doc_files=doc_files,
-                data_files=data_files,
-                query=query,
+        # Timeline priority (important for domain)
+        if timeline_score >= 2 and ENABLE_TIMELINE:
+            return RouterDecision(
+                query_type=QueryType.TIMELINE,
+                confidence=min(0.95, 0.5 + timeline_score * 0.1),
+                reasons=[f"Timeline keywords matched: {timeline_score}"],
             )
 
-            response = self.llm.complete(prompt)
-            result = response.text.strip().upper()
-            logger.info(f"   LLM classification: {result}")
+        # Sort scores descending
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        top_type, top_score = ranked[0]
+        second_score = ranked[1][1]
 
-            if "DATA" in result:
-                return QueryType.DATA
-            elif "TIMELINE" in result:
-                return QueryType.TIMELINE
-            elif "HYBRID" in result:
-                return QueryType.HYBRID
-            else:
-                return QueryType.DOCUMENT
+        # Strong match: top score high AND clear margin
+        if top_score >= self.STRONG_HEURISTIC_THRESHOLD and (top_score - second_score) >= self.MARGIN_THRESHOLD:
+            return RouterDecision(
+                query_type=top_type,
+                confidence=min(0.95, 0.5 + top_score * 0.08),
+                reasons=[f"Keyword match: {top_type.value}={top_score}, margin={top_score - second_score}"],
+            )
+
+        # Moderate match: only one category has any hits
+        if top_score >= 2 and second_score == 0:
+            return RouterDecision(
+                query_type=top_type,
+                confidence=min(0.85, 0.5 + top_score * 0.08),
+                reasons=[f"Sole keyword match: {top_type.value}={top_score}"],
+            )
+
+        # Ambiguous — fall through to next tier
+        return None
+
+    def _classify_embedding(self, query: str) -> Optional[RouterDecision]:
+        """Tier 2: cosine similarity to anchor texts."""
+        anchors = _get_anchor_embeddings()
+        if not anchors:
+            return None
+
+        try:
+            from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+            from .config import EMBEDDING_MODEL, EMBEDDING_DIMENSION
+
+            embed_model = GoogleGenAIEmbedding(
+                api_key=GOOGLE_API_KEY,
+                model_name=EMBEDDING_MODEL,
+                output_dimensionality=EMBEDDING_DIMENSION,
+            )
+            query_vec = embed_model.get_text_embedding(query)
+
+            best_type = None
+            best_sim = -1.0
+            second_sim = -1.0
+            reasons = []
+
+            for qtype_val, anchor_vecs in anchors.items():
+                avg_sim = sum(
+                    _cosine_similarity(query_vec, av) for av in anchor_vecs
+                ) / len(anchor_vecs) if anchor_vecs else 0.0
+
+                reasons.append(f"{qtype_val}={avg_sim:.3f}")
+
+                if avg_sim > best_sim:
+                    second_sim = best_sim
+                    best_sim = avg_sim
+                    best_type = qtype_val
+                elif avg_sim > second_sim:
+                    second_sim = avg_sim
+
+            margin = best_sim - second_sim
+            logger.info(f"   Embedding sims: {', '.join(reasons)} | margin={margin:.3f}")
+
+            if margin >= self.EMBEDDING_MARGIN and best_type is not None:
+                return RouterDecision(
+                    query_type=QueryType(best_type),
+                    confidence=round(min(0.90, 0.6 + margin), 3),
+                    reasons=[f"Embedding routing: {', '.join(reasons)}", f"margin={margin:.3f}"],
+                )
 
         except Exception as e:
-            logger.error(f"   Classification error: {e}")
-            # Default based on what's available
+            logger.warning(f"   Embedding routing failed: {e}")
+
+        return None
+
+    def _classify_llm(self, query: str) -> RouterDecision:
+        """Tier 3: LLM classification (last resort)."""
+        from . import llm_client
+        from .prompt_security import safe_render_prompt, build_system_prompt
+
+        try:
+            _, data_files = self._get_available_sources()
+
+            prompt = safe_render_prompt(
+                self.CLASSIFICATION_PROMPT,
+                user_query=query,
+                data_files=data_files,
+            )
+            system = build_system_prompt("You are a query classifier.")
+
+            resp = llm_client.generate_text(prompt, system=system, max_tokens=16)
+            result = resp.text.strip().upper()
+
+            # Record telemetry
+            from .telemetry import get_current_trace
+            trace = get_current_trace()
+            if trace:
+                trace.record_llm_call(resp.usage)
+
+            qtype = QueryType.DOCUMENT  # default
+            if "DATA" in result:
+                qtype = QueryType.DATA
+            elif "TIMELINE" in result:
+                qtype = QueryType.TIMELINE
+            elif "HYBRID" in result:
+                qtype = QueryType.HYBRID
+
+            return RouterDecision(
+                query_type=qtype,
+                confidence=0.75,
+                reasons=[f"LLM classified as {qtype.value}"],
+                used_llm=True,
+                llm_usage={
+                    "prompt_tokens": resp.usage.prompt_tokens,
+                    "completion_tokens": resp.usage.completion_tokens,
+                    "cost": resp.usage.cost_estimate,
+                },
+            )
+
+        except Exception as e:
+            logger.error(f"   LLM classification error: {e}")
+            # Fallback: pick based on what's available
             if self.data_analyzer.list_tables() and not self.document_rag.documents:
-                return QueryType.DATA
-            return QueryType.DOCUMENT
+                qtype = QueryType.DATA
+            else:
+                qtype = QueryType.DOCUMENT
+            return RouterDecision(
+                query_type=qtype,
+                confidence=0.5,
+                reasons=[f"Fallback after LLM error: {e}"],
+            )
+
+    # ── Complex query detection ───────────────────────────────
+
+    def _is_complex_query(self, query: str) -> bool:
+        """Detect if a query requires multi-step planning."""
+        q = query.lower()
+
+        complex_indicators = [
+            # Multi-step English
+            ' then ', ' and then ', ' after that ', ' next ',
+            'group by', 'compare', 'outlier',
+            'above average', 'below average',
+            'month-over-month', 'year-over-year',
+            # Multi-step Turkish
+            ' sonra ', ' ardından ', ' bundan sonra ',
+            'grupla', 'kıyasla', 'karşılaştır',
+            'aykırı', 'ortalamanın üstünde', 'ortalamanın altında',
+            'aydan aya', 'yıldan yıla',
+        ]
+
+        for indicator in complex_indicators:
+            if indicator in q:
+                return True
+
+        # Cross-source: needs both doc + data
+        has_doc = any(kw in q for kw in ['clause', 'contract', 'agreement', 'madde', 'sözleşme'])
+        has_data = any(kw in q for kw in ['calculate', 'total', 'average', 'count', 'hesapla', 'toplam'])
+        if has_doc and has_data:
+            return True
+
+        return False
+
+    # ── Query handlers ────────────────────────────────────────
 
     def _handle_document_query(self, query: str) -> Dict[str, Any]:
         """Handle document-based query."""
-        logger.info("📚 Routing to Document RAG...")
+        logger.info("Routing to Document RAG...")
         result = self.document_rag.query(query)
         return {
             "query": query,
@@ -222,7 +468,7 @@ Provide a comprehensive answer that:
 
     def _handle_data_query(self, query: str) -> Dict[str, Any]:
         """Handle data analysis query."""
-        logger.info("📊 Routing to SQL Data Analyzer...")
+        logger.info("Routing to SQL Data Analyzer...")
         result = self.data_analyzer.query(query)
         return {
             "query": query,
@@ -235,32 +481,41 @@ Provide a comprehensive answer that:
         }
 
     def _handle_hybrid_query(self, query: str) -> Dict[str, Any]:
-        """Handle hybrid query needing both sources."""
-        logger.info("🔀 Routing to BOTH handlers...")
+        """Handle hybrid query needing both sources, using llm_client."""
+        logger.info("Routing to BOTH handlers...")
 
-        # Get results from both
         doc_result = self.document_rag.query(query)
         data_result = self.data_analyzer.query(query)
 
-        # Synthesize with LLM
+        # Synthesize with llm_client
         logger.info("   Synthesizing results...")
         try:
-            synthesis_prompt = self.HYBRID_SYNTHESIS_PROMPT.format(
-                question=query,
+            from . import llm_client
+            from .prompt_security import safe_render_prompt, build_system_prompt
+
+            prompt = safe_render_prompt(
+                self.HYBRID_SYNTHESIS_PROMPT,
+                user_query=query,
                 doc_results=doc_result["answer"],
                 data_results=data_result["answer"],
             )
+            system = build_system_prompt("You synthesize information from multiple sources.")
 
-            response = self.llm.complete(synthesis_prompt)
-            combined_answer = response.text.strip()
+            resp = llm_client.generate_text(prompt, system=system)
+            combined_answer = resp.text
+
+            # Record telemetry
+            from .telemetry import get_current_trace
+            trace = get_current_trace()
+            if trace:
+                trace.record_llm_call(resp.usage)
 
         except Exception as e:
             logger.error(f"   Synthesis error: {e}")
-            combined_answer = f"""**From Documents:**
-{doc_result['answer']}
-
-**From Data Analysis:**
-{data_result['answer']}"""
+            combined_answer = (
+                f"**From Documents:**\n{doc_result['answer']}\n\n"
+                f"**From Data Analysis:**\n{data_result['answer']}"
+            )
 
         # Combine sources
         all_sources = []
@@ -282,8 +537,8 @@ Provide a comprehensive answer that:
         }
 
     def _handle_timeline_query(self, query: str) -> Dict[str, Any]:
-        """Handle timeline/notice-based query using light graph."""
-        logger.info("📅 Routing to Timeline/Graph handler...")
+        """Handle timeline/notice-based query using light graph with enhanced capabilities."""
+        logger.info("Routing to Timeline/Graph handler...")
 
         try:
             from .light_graph import get_light_graph
@@ -291,33 +546,111 @@ Provide a comprehensive answer that:
             import json
 
             graph = get_light_graph()
-            query_lower = query.lower()
+
+            # Expand jargon in query
+            expanded_query = self.jargon.expand_query(query)
+            query_lower = expanded_query.lower()
 
             # Parse query for filters
             results = []
             sources = []
+            answer_prefix = ""
 
-            # Check for specific query patterns
-            if any(kw in query_lower for kw in ['all notices', 'list notices', 'show notices', 'tüm bildirimler']):
-                # List all documents chronologically
-                results = graph.timeline()
-                answer_prefix = "Here are all documents in chronological order:\n\n"
+            # === Pattern matching for different query types ===
 
+            # 1. Communication flow queries
+            if any(kw in query_lower for kw in ['who sent', 'who received', 'kim gönderdi', 'kim aldı',
+                                                   'correspondence', 'yazışma', 'communication', 'iletişim',
+                                                   'kimden kime', 'from whom', 'sent to']):
+                party = self._extract_party_from_query(query_lower)
+                flow = graph.communication_flow(party=party)
+
+                if flow:
+                    answer_prefix = f"Communication flow{' for ' + party if party else ''}:\n\n"
+                    answer_lines = [answer_prefix]
+                    for i, record in enumerate(flow[:25], 1):
+                        direction_arrow = "\u2192" if record['direction'] != 'incoming' else "\u2190"
+                        cc_str = f" (CC: {', '.join(record['cc_list'][:2])})" if record.get('cc_list') else ""
+                        actions_str = f" [{', '.join(record['actions'][:3])}]" if record.get('actions') else ""
+
+                        answer_lines.append(
+                            f"{i}. **{record['date']}** | {record['sender']} {direction_arrow} {record['recipient']}{cc_str}\n"
+                            f"   {record.get('subject', '')[:80]}{actions_str}\n"
+                        )
+                        sources.append(self._build_source(record['doc_id'], record, NOTICES_DIR))
+
+                    answer = "\n".join(answer_lines)
+                    parties = graph.get_all_parties()
+                    if parties:
+                        answer += "\n**Active parties:**\n"
+                        for p in parties[:10]:
+                            answer += f"- {p['party']}: {p['sent_count']} sent, {p['received_count']} received\n"
+                else:
+                    answer = "No communication records found."
+
+                return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
+
+            # 2. Correspondence between two parties
+            if any(kw in query_lower for kw in ['between', 'arasında', 'arasindaki']):
+                parties = self._extract_two_parties(query_lower)
+                if parties:
+                    corr = graph.correspondence_between(parties[0], parties[1])
+                    if corr:
+                        answer_lines = [f"Correspondence between **{parties[0]}** and **{parties[1]}**:\n\n"]
+                        for i, record in enumerate(corr[:25], 1):
+                            answer_lines.append(
+                                f"{i}. **{record['date']}** | {record['from']} \u2192 {record['to']}\n"
+                                f"   {record.get('subject', '')[:80]}\n"
+                            )
+                            sources.append(self._build_source(record['node']['doc_id'], record['node'], NOTICES_DIR))
+                        answer = "\n".join(answer_lines)
+                    else:
+                        answer = f"No correspondence found between {parties[0]} and {parties[1]}."
+                    return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
+
+            # 3. Project-based queries
+            if any(kw in query_lower for kw in ['project', 'proje', 'contract', 'sözleşme', 'sozlesme']):
+                project_filter = self._extract_filter_term(query_lower, ['project', 'proje'])
+                contract_ref = self._extract_filter_term(query_lower, ['contract', 'sözleşme', 'sozlesme'])
+                proj_docs = graph.project_documents(project_filter=project_filter, contract_ref=contract_ref)
+
+                if proj_docs:
+                    filter_label = project_filter or contract_ref or "all"
+                    answer_prefix = f"Documents for project/contract **{filter_label}**:\n\n"
+                    results = proj_docs
+                else:
+                    answer = "No documents found for the specified project/contract."
+                    return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
+
+            # 4. Action-based queries
             elif any(kw in query_lower for kw in ['delay', 'gecikme']):
-                # Search for delay-related notices
                 delay_docs = graph.search_by_action('delay')
                 results = [d['node'] for d in delay_docs]
                 answer_prefix = "Documents mentioning delays:\n\n"
 
             elif any(kw in query_lower for kw in ['claim', 'talep']):
-                # Search for claim-related notices
                 claim_docs = graph.search_by_action('claim')
                 results = [d['node'] for d in claim_docs]
                 answer_prefix = "Documents mentioning claims:\n\n"
 
-            elif 'chain' in query_lower or 'trace' in query_lower:
-                # Try to extract doc reference and trace chain
-                # For now, use first document
+            elif any(kw in query_lower for kw in ['approval', 'approve', 'onay']):
+                approve_docs = graph.search_by_action('approve')
+                results = [d['node'] for d in approve_docs]
+                answer_prefix = "Documents related to approvals:\n\n"
+
+            elif any(kw in query_lower for kw in ['termination', 'terminate', 'fesih']):
+                term_docs = graph.search_by_action('terminate')
+                results = [d['node'] for d in term_docs]
+                answer_prefix = "Documents related to termination:\n\n"
+
+            # 5. All notices / list view
+            elif any(kw in query_lower for kw in ['all notices', 'list notices', 'show notices',
+                                                     'tüm bildirimler', 'bildirimleri göster']):
+                results = graph.timeline()
+                answer_prefix = "All documents in chronological order:\n\n"
+
+            # 6. Chain/trace queries
+            elif 'chain' in query_lower or 'trace' in query_lower or 'zincir' in query_lower:
                 nodes = list(graph.graph.nodes.keys())
                 if nodes:
                     chain = graph.trace_chain(nodes[0], depth=5)
@@ -327,55 +660,43 @@ Provide a comprehensive answer that:
                 else:
                     answer_prefix = "No documents in graph.\n\n"
 
+            # 7. Default: show timeline
             else:
-                # Default: show timeline with any date filters
                 results = graph.timeline()
                 answer_prefix = "Document timeline:\n\n"
 
             # Build answer from results
             if results:
                 answer_lines = [answer_prefix]
-                for i, node in enumerate(results[:20], 1):  # Limit to 20
+                for i, node in enumerate(results[:25], 1):
                     date = node.get('date', 'No date')
-                    sender = node.get('sender', 'Unknown')[:40] if node.get('sender') else 'Unknown'
-                    recipient = node.get('recipient', 'Unknown')[:40] if node.get('recipient') else 'Unknown'
-                    subject = node.get('subject', '')[:60] if node.get('subject') else ''
+                    sender = (node.get('sender') or 'Unknown')[:40]
+                    recipient = (node.get('recipient') or 'Unknown')[:40]
+                    subject = (node.get('subject') or '')[:80]
                     file_name = node.get('file_name', node.get('doc_id', 'Unknown'))
+                    doc_type = node.get('doc_type', '')
+                    actions = node.get('actions', [])
+                    direction = node.get('direction', '')
+
+                    type_badge = f" [{doc_type}]" if doc_type else ""
+                    action_str = f" | Actions: {', '.join(actions[:3])}" if actions else ""
+                    dir_str = f" ({direction})" if direction else ""
 
                     answer_lines.append(
-                        f"{i}. **{date}** - {file_name}\n"
-                        f"   From: {sender} → To: {recipient}\n"
-                        f"   {subject}\n"
+                        f"{i}. **{date}** - {file_name}{type_badge}{dir_str}\n"
+                        f"   From: {sender} \u2192 To: {recipient}\n"
+                        f"   {subject}{action_str}\n"
                     )
 
-                    # Build source with evidence
-                    doc_id = node.get('doc_id')
-                    notice_path = NOTICES_DIR / f"{doc_id}.json"
-                    evidence = []
-                    if notice_path.exists():
-                        try:
-                            with open(notice_path, 'r', encoding='utf-8') as f:
-                                notice_data = json.load(f)
-                            evidence = notice_data.get('evidence_spans', [])[:3]
-                        except Exception:
-                            pass
-
-                    sources.append({
-                        "type": "notice",
-                        "file_name": file_name,
-                        "doc_id": doc_id,
-                        "date": date,
-                        "sender": sender,
-                        "recipient": recipient,
-                        "evidence": evidence,
-                    })
+                    sources.append(self._build_source(
+                        node.get('doc_id'), node, NOTICES_DIR
+                    ))
 
                 answer = "\n".join(answer_lines)
 
                 # Add graph stats
                 stats = graph.get_statistics()
                 answer += f"\n\n*Graph: {stats['node_count']} documents, {stats['edge_count']} relationships*"
-
             else:
                 answer = "No notices found matching your query. Make sure documents have been processed with notice extraction enabled."
 
@@ -405,25 +726,142 @@ Provide a comprehensive answer that:
                 "sources": [],
             }
 
+    # ── Helper methods ────────────────────────────────────────
+
+    @staticmethod
+    def _build_source(doc_id: str, node: Dict, notices_dir: Path) -> Dict[str, Any]:
+        """Build source entry with evidence from notice file."""
+        import json
+
+        file_name = node.get('file_name', doc_id or 'Unknown')
+        date = node.get('date', 'Unknown')
+        sender = (node.get('sender') or 'Unknown')[:40]
+        recipient = (node.get('recipient') or 'Unknown')[:40]
+
+        evidence = []
+        if doc_id:
+            notice_path = notices_dir / f"{doc_id}.json"
+            if notice_path.exists():
+                try:
+                    with open(notice_path, 'r', encoding='utf-8') as f:
+                        notice_data = json.load(f)
+                    evidence = notice_data.get('evidence_spans', [])[:3]
+                except Exception:
+                    pass
+
+        return {
+            "type": "notice",
+            "file_name": file_name,
+            "doc_id": doc_id,
+            "date": date,
+            "sender": sender,
+            "recipient": recipient,
+            "evidence": evidence,
+        }
+
+    @staticmethod
+    def _extract_party_from_query(query_lower: str) -> Optional[str]:
+        """Extract a party name from query text."""
+        patterns = [
+            r'(?:from|by|for|tarafından)\s+"?([^"]+?)"?\s',
+            r'(?:to|kime)\s+"?([^"]+?)"?\s',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                return match.group(1).strip()
+        return None
+
+    @staticmethod
+    def _extract_two_parties(query_lower: str) -> Optional[List[str]]:
+        """Extract two party names from a between query."""
+        patterns = [
+            r'between\s+"?(.+?)"?\s+and\s+"?(.+?)"?(?:\s|$|\?)',
+            r'arasında\s+"?(.+?)"?\s+(?:ve|ile)\s+"?(.+?)"?(?:\s|$|\?)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                return [match.group(1).strip(), match.group(2).strip()]
+        return None
+
+    @staticmethod
+    def _extract_filter_term(query_lower: str, keywords: List[str]) -> Optional[str]:
+        """Extract a filter term following a keyword."""
+        for kw in keywords:
+            match = re.search(rf'{kw}\s+"([^"]+)"', query_lower)
+            if match:
+                return match.group(1).strip()
+            match = re.search(rf'{kw}\s+(\S+(?:\s+\S+)?)', query_lower)
+            if match:
+                term = match.group(1).strip()
+                term = re.sub(r'[?.!,]+$', '', term)
+                if len(term) > 2:
+                    return term
+        return None
+
+    # ── Main entry point ──────────────────────────────────────
+
     def route_and_execute(self, query: str) -> Dict[str, Any]:
-        """Classify and route query to appropriate handler."""
+        """Classify and route query to appropriate handler.
+        Complex queries are routed through the hybrid executor for multi-step planning.
+        """
+        from .telemetry import start_trace, finish_trace
+
+        trace = start_trace(query)
         log_separator("Processing Query")
-        logger.info(f"🔍 Query: {query[:100]}...")
+        logger.info(f"Query: {query[:100]}...")
 
-        query_type = self.classify_query(query)
-        logger.info(f"   Classified as: {query_type.value.upper()}")
+        try:
+            # Expand jargon
+            expanded = self.jargon.expand_query(query)
+            if expanded != query:
+                logger.info(f"   Jargon expanded: {expanded[:100]}...")
 
-        if query_type == QueryType.DATA:
-            result = self._handle_data_query(query)
-        elif query_type == QueryType.DOCUMENT:
-            result = self._handle_document_query(query)
-        elif query_type == QueryType.TIMELINE:
-            result = self._handle_timeline_query(query)
-        else:  # HYBRID
-            result = self._handle_hybrid_query(query)
+            # Check if this is a complex multi-step query
+            if self._is_complex_query(query):
+                logger.info("   Detected complex query -> Hybrid Executor")
+                trace.route = "HYBRID_COMPLEX"
+                result = self.hybrid_executor.execute(query)
+                logger.info(f"Query complete (hybrid) - {len(result.get('sources', []))} sources")
+                return result
 
-        logger.info(f"✅ Query complete - {len(result.get('sources', []))} sources")
-        return result
+            # Classify with 3-tier strategy
+            decision = self.classify_query(query)
+            trace.route = decision.query_type.value.upper()
+            if decision.llm_usage:
+                trace.record_llm_call(LLMUsage(
+                    prompt_tokens=decision.llm_usage.get("prompt_tokens", 0),
+                    completion_tokens=decision.llm_usage.get("completion_tokens", 0),
+                    cost_estimate=decision.llm_usage.get("cost", 0),
+                ))
+
+            logger.info(f"   Classified as: {decision.query_type.value.upper()} "
+                        f"(conf={decision.confidence:.2f}, llm={decision.used_llm})")
+
+            # Route to handler
+            if decision.query_type == QueryType.DATA:
+                result = self._handle_data_query(expanded)
+            elif decision.query_type == QueryType.DOCUMENT:
+                result = self._handle_document_query(expanded)
+            elif decision.query_type == QueryType.TIMELINE:
+                result = self._handle_timeline_query(query)
+            else:  # HYBRID
+                result = self._handle_hybrid_query(expanded)
+
+            # Attach routing metadata
+            result["routing"] = {
+                "decision": decision.query_type.value,
+                "confidence": decision.confidence,
+                "reasons": decision.reasons,
+                "used_llm": decision.used_llm,
+            }
+
+            logger.info(f"Query complete - {len(result.get('sources', []))} sources")
+            return result
+
+        finally:
+            finish_trace()
 
 
 # Singleton

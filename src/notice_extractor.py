@@ -37,20 +37,27 @@ class NoticeMetadata:
 
     # Core fields
     language: Optional[str] = None
-    doc_type: Optional[str] = None  # letter/notice/report/minutes/contract
+    doc_type: Optional[str] = None  # letter/notice/report/minutes/contract/invoice/transmittal
     date: Optional[str] = None  # ISO format YYYY-MM-DD
     sender: Optional[str] = None
     recipient: Optional[str] = None
     subject: Optional[str] = None
 
+    # Communication flow
+    cc_list: List[str] = field(default_factory=list)  # CC recipients
+    direction: Optional[str] = None  # "outgoing" | "incoming" | "internal"
+
     # References
     ref_numbers: List[str] = field(default_factory=list)
     referenced_docs: List[str] = field(default_factory=list)
+    contract_ref: Optional[str] = None  # Contract reference number
+    project_name: Optional[str] = None  # Detected project name
 
     # Semantics
     key_topics: List[str] = field(default_factory=list)
     actions: List[str] = field(default_factory=list)  # submit, respond, approve, delay, claim
     deadlines: List[Dict[str, str]] = field(default_factory=list)  # {date, context}
+    jargon_found: List[Dict[str, str]] = field(default_factory=list)  # [{abbreviation, meaning}]
 
     # Evidence
     evidence_spans: List[Dict[str, Any]] = field(default_factory=list)
@@ -139,23 +146,44 @@ class NoticeExtractor:
         'invoice': ['invoice', 'amount due', 'payment', 'fatura', 'odeme'],
     }
 
+    # CC patterns
+    CC_PATTERNS = [
+        r'(?:CC|Cc|Copy to|Copies to|Bilgi)\s*[:]\s*(.+?)(?:\n|$)',
+    ]
+
+    # Project name patterns
+    PROJECT_PATTERNS = [
+        r'(?:Project|Proje)\s*(?:Name|Title|Adi)?\s*[:]\s*(.+?)(?:\n|$)',
+        r'(?:Contract|Sozlesme)\s*(?:Name|Title|Adi)?\s*[:]\s*(.+?)(?:\n|$)',
+        r'(?:Re|Regarding|Konu)\s*[:]\s*(?:.*?)(Project\s+.+?)(?:\n|,|$)',
+    ]
+
+    # Contract reference patterns
+    CONTRACT_REF_PATTERNS = [
+        r'(?:Contract\s*(?:No|Number|Ref|#))\s*[:.]?\s*([A-Za-z0-9\-_/]+)',
+        r'(?:Sozlesme\s*(?:No|Numarasi|Ref))\s*[:.]?\s*([A-Za-z0-9\-_/]+)',
+    ]
+
     def __init__(self, use_llm_refinement: bool = False):
         """
         Initialize notice extractor.
 
         Args:
-            use_llm_refinement: If True, use LLM to refine extracted fields
+            use_llm_refinement: If True, use LLM to refine low-confidence fields
         """
         self.use_llm_refinement = use_llm_refinement
-        self.llm = None
+        self._jargon = None
 
-        if use_llm_refinement and GOOGLE_API_KEY:
-            try:
-                from llama_index.llms.gemini import Gemini
-                self.llm = Gemini(api_key=GOOGLE_API_KEY, model=GEMINI_MODEL)
-                logger.info("[NoticeExtractor] LLM refinement enabled")
-            except Exception as e:
-                logger.warning(f"[NoticeExtractor] Could not initialize LLM: {e}")
+        if use_llm_refinement:
+            logger.info("[NoticeExtractor] Selective LLM refinement enabled (via llm_client)")
+
+    @property
+    def jargon(self):
+        """Lazy-load jargon manager."""
+        if self._jargon is None:
+            from .jargon_manager import get_jargon_manager
+            self._jargon = get_jargon_manager()
+        return self._jargon
 
     def extract_notice(
         self,
@@ -236,6 +264,21 @@ class NoticeExtractor:
         # Extract key topics (simple keyword extraction)
         key_topics = self._extract_topics(full_text, subject)
 
+        # Extract CC list
+        cc_list = self._extract_cc(header_text)
+
+        # Extract project name
+        project_name = self._extract_project_name(header_text, full_text)
+
+        # Extract contract reference
+        contract_ref = self._extract_contract_ref(full_text)
+
+        # Determine communication direction
+        direction = self._detect_direction(sender, recipient, full_text)
+
+        # Find jargon terms in document
+        jargon_found = self.jargon.find_related_terms(full_text)
+
         # Build notice
         notice = NoticeMetadata(
             doc_id=doc_id,
@@ -247,11 +290,16 @@ class NoticeExtractor:
             sender=sender,
             recipient=recipient,
             subject=subject,
+            cc_list=cc_list,
+            direction=direction,
             ref_numbers=ref_numbers,
             referenced_docs=referenced_docs,
+            contract_ref=contract_ref,
+            project_name=project_name,
             key_topics=key_topics,
             actions=actions,
             deadlines=deadlines,
+            jargon_found=[{"abbreviation": j["abbreviation"], "meaning": j["meaning"]} for j in jargon_found[:20]],
             evidence_spans=[asdict(e) if hasattr(e, '__dataclass_fields__') else e for e in evidence_spans],
             extraction_method="regex",
             project_id=project_id,
@@ -525,6 +573,83 @@ class NoticeExtractor:
 
         return list(topics)[:15]
 
+    def _extract_cc(self, text: str) -> List[str]:
+        """Extract CC recipients."""
+        cc_list = []
+        for pattern in self.CC_PATTERNS:
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if match:
+                raw = match.group(1).strip()
+                # Split by comma or semicolon
+                parts = re.split(r'[;,]', raw)
+                for part in parts:
+                    part = part.strip()
+                    if part and len(part) > 2:
+                        cc_list.append(part[:100])
+                break
+        return cc_list[:10]
+
+    def _extract_project_name(self, header_text: str, full_text: str) -> Optional[str]:
+        """Extract project name from document."""
+        for pattern in self.PROJECT_PATTERNS:
+            match = re.search(pattern, header_text, re.IGNORECASE | re.MULTILINE)
+            if match:
+                name = match.group(1).strip()
+                if len(name) > 3:
+                    return name[:150]
+
+        # Try from file name
+        file_keywords = ['project', 'proje', 'contract', 'sozlesme']
+        text_lower = full_text[:2000].lower()
+        for kw in file_keywords:
+            idx = text_lower.find(kw)
+            if idx >= 0:
+                # Get the next line or phrase
+                end_idx = min(idx + 100, len(full_text))
+                snippet = full_text[idx:end_idx]
+                # Extract until newline
+                line_end = snippet.find('\n')
+                if line_end > 0:
+                    snippet = snippet[:line_end]
+                if len(snippet) > 5:
+                    return snippet.strip()[:150]
+
+        return None
+
+    def _extract_contract_ref(self, text: str) -> Optional[str]:
+        """Extract contract reference number."""
+        for pattern in self.CONTRACT_REF_PATTERNS:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                ref = match.group(1).strip()
+                if len(ref) >= 3:
+                    return ref[:50]
+        return None
+
+    def _detect_direction(self, sender: Optional[str], recipient: Optional[str], text: str) -> Optional[str]:
+        """Detect communication direction based on sender/recipient patterns."""
+        text_lower = text[:1000].lower()
+
+        # Look for direction indicators
+        outgoing_indicators = ['we hereby', 'we wish to', 'please be advised', 'we are writing',
+                               'we would like', 'tarafimizdan', 'size bildirmek']
+        incoming_indicators = ['we have received', 'in response to your', 'we acknowledge',
+                               'your letter dated', 'tarafinizdan', 'mektubunuza']
+        internal_indicators = ['internal memo', 'internal note', 'for your information',
+                               'ic yazisma', 'dahili']
+
+        out_score = sum(1 for ind in outgoing_indicators if ind in text_lower)
+        in_score = sum(1 for ind in incoming_indicators if ind in text_lower)
+        int_score = sum(1 for ind in internal_indicators if ind in text_lower)
+
+        if int_score > 0:
+            return "internal"
+        if out_score > in_score:
+            return "outgoing"
+        if in_score > out_score:
+            return "incoming"
+        return None
+
     def _find_page(self, snippet: str, pages: Dict[int, str]) -> int:
         """Find which page contains a snippet."""
         for page_num, page_text in pages.items():
@@ -556,43 +681,67 @@ class NoticeExtractor:
         header_text: str,
         evidence: List[Dict],
     ) -> NoticeMetadata:
-        """Use LLM to refine extracted fields (conservative, evidence-only)."""
-        if not self.llm:
+        """
+        Selective LLM refinement: only call LLM for fields with confidence
+        below NOTICE_LLM_CONFIDENCE_THRESHOLD. Uses llm_client for caching
+        and cost tracking.
+        """
+        from .config import NOTICE_LLM_CONFIDENCE_THRESHOLD
+
+        # Determine which fields need refinement
+        low_confidence_fields = []
+        for e in evidence:
+            conf = e.get('confidence', 1.0)
+            if conf < NOTICE_LLM_CONFIDENCE_THRESHOLD:
+                low_confidence_fields.append(e.get('field_name', 'unknown'))
+
+        # Also flag missing critical fields
+        if not notice.date:
+            low_confidence_fields.append('date')
+        if not notice.sender:
+            low_confidence_fields.append('sender')
+        if not notice.recipient:
+            low_confidence_fields.append('recipient')
+
+        if not low_confidence_fields:
+            logger.info("[NoticeExtractor] All fields high-confidence, skipping LLM")
             return notice
 
-        # Build compact prompt with only extracted evidence
+        logger.info(f"[NoticeExtractor] LLM refining low-confidence fields: {low_confidence_fields}")
+
+        from . import llm_client
+        from .prompt_security import build_system_prompt
+
+        # Build compact prompt with only relevant evidence
         evidence_summary = "\n".join(
             f"- {e.get('field_name', 'unknown')}: \"{e.get('snippet', '')[:100]}\""
             for e in evidence[:15]
         )
 
-        prompt = f"""You are a document metadata extractor. Given the evidence snippets below, normalize and validate the extracted fields.
-
-RULES:
-1. DO NOT INVENT information not present in evidence
-2. ONLY use the given snippets
-3. Return valid JSON matching the schema
-4. If a field cannot be determined from evidence, use null
-
-EVIDENCE:
-{evidence_summary}
-
-HEADER TEXT (first 1000 chars):
-{header_text[:1000]}
-
-CURRENT EXTRACTION:
-- date: {notice.date}
-- sender: {notice.sender}
-- recipient: {notice.recipient}
-- subject: {notice.subject}
-
-Return ONLY a JSON object with refined values:
-{{"date": "YYYY-MM-DD or null", "sender": "string or null", "recipient": "string or null", "subject": "string or null"}}
-"""
+        prompt = (
+            "Given the evidence snippets below, normalize and validate the extracted fields.\n\n"
+            "RULES:\n"
+            "1. DO NOT INVENT information not present in evidence\n"
+            "2. ONLY use the given snippets\n"
+            "3. Return valid JSON matching the schema\n"
+            "4. If a field cannot be determined from evidence, use null\n\n"
+            f"FIELDS TO REFINE: {', '.join(low_confidence_fields)}\n\n"
+            f"EVIDENCE:\n{evidence_summary}\n\n"
+            f"HEADER TEXT (first 1000 chars):\n{header_text[:1000]}\n\n"
+            f"CURRENT EXTRACTION:\n"
+            f"- date: {notice.date}\n"
+            f"- sender: {notice.sender}\n"
+            f"- recipient: {notice.recipient}\n"
+            f"- subject: {notice.subject}\n\n"
+            'Return ONLY a JSON object with refined values:\n'
+            '{"date": "YYYY-MM-DD or null", "sender": "string or null", '
+            '"recipient": "string or null", "subject": "string or null"}'
+        )
+        system = build_system_prompt("You are a document metadata extractor.")
 
         try:
-            response = self.llm.complete(prompt)
-            refined = json.loads(response.text.strip())
+            resp = llm_client.generate_json(prompt, system=system)
+            refined = resp.raw if isinstance(resp.raw, dict) else {}
 
             # Apply refinements only if they seem valid
             if refined.get('date') and len(refined['date']) == 10:
@@ -604,8 +753,8 @@ Return ONLY a JSON object with refined values:
             if refined.get('subject') and len(refined['subject']) > 5:
                 notice.subject = refined['subject']
 
-            notice.extraction_method = "regex+llm"
-            logger.info("[NoticeExtractor] LLM refinement applied")
+            notice.extraction_method = "regex+llm_selective"
+            logger.info("[NoticeExtractor] Selective LLM refinement applied")
 
         except Exception as e:
             logger.warning(f"[NoticeExtractor] LLM refinement failed: {e}")

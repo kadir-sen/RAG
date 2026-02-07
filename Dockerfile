@@ -27,4 +27,11 @@ RUN mkdir -p .cache/ocr storage/parquet
 EXPOSE 8501
 
 # Run Streamlit
-CMD ["streamlit", "run", "app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
+CMD ["streamlit", "run", "app.py", \
+     "--server.address", "0.0.0.0", \
+     "--server.port", "8501", \
+     "--server.maxUploadSize", "500", \
+     "--server.maxMessageSize", "500", \
+     "--server.enableXsrfProtection", "false", \
+     "--server.enableCORS", "false", \
+     "--server.enableWebsocketCompression", "false"]

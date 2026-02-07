@@ -1,6 +1,6 @@
 """
 Unified Ingestion Pipeline.
-Orchestrates table extraction and notice extraction from files.
+Orchestrates table extraction, notice extraction, and jargon loading from files.
 """
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -11,6 +11,7 @@ from .catalog import get_catalog, TableMetadata
 from .excel_table_extractor import extract_excel_tables
 from .pdf_table_extractor import extract_pdf_tables
 from .ocr_detector import analyze_pdf
+from .jargon_manager import get_jargon_manager
 
 
 @dataclass
@@ -46,10 +47,25 @@ class TableIngestionPipeline:
     def __init__(self):
         """Initialize ingestion pipeline."""
         self.catalog = get_catalog()
+        # Initialize jargon manager (loads built-in + auto-discovers dictionary files)
+        self.jargon = get_jargon_manager()
+
+    def load_jargon_file(self, file_path: str) -> int:
+        """
+        Load a jargon dictionary file.
+
+        Args:
+            file_path: Path to jargon Excel file
+
+        Returns:
+            Number of terms loaded
+        """
+        return self.jargon.load_from_excel(file_path)
 
     def ingest_file(self, file_path: str) -> IngestionResult:
         """
         Ingest a file and extract tables.
+        Auto-detects jargon dictionary files and loads them.
 
         Args:
             file_path: Path to file
@@ -59,6 +75,12 @@ class TableIngestionPipeline:
         """
         path = Path(file_path)
         ext = path.suffix.lower()
+
+        # Auto-detect and load jargon dictionary files
+        name_lower = path.name.lower()
+        if ext in ['.xlsx', '.xls'] and any(kw in name_lower for kw in ['jargon', 'abbreviation', 'kisaltma', 'glossary']):
+            count = self.load_jargon_file(file_path)
+            logger.info(f"[Ingestion] Loaded {count} jargon terms from: {path.name}")
 
         if ext not in self.SUPPORTED_EXTENSIONS:
             return IngestionResult(

@@ -2,6 +2,14 @@
 Safe SQL-based Data Analyzer using DuckDB.
 NO arbitrary Python execution from LLM - only validated SELECT queries.
 Supports Parquet views for extracted tables.
+
+Hardening features:
+  - SQL generation via llm_client with caching & cost tracking
+  - Pydantic schema validation on LLM SQL output
+  - Lazy summary: skip LLM if result is small (<=5 rows / <=30 cells)
+  - Self-correction: retry once with error feedback on SQL failure
+  - Prompt injection hardening via prompt_security
+  - Per-query telemetry
 """
 import re
 import time
@@ -10,9 +18,11 @@ from typing import Dict, List, Optional, Any, Tuple
 
 import duckdb
 import pandas as pd
-from llama_index.llms.gemini import Gemini
 
-from .config import GOOGLE_API_KEY, GEMINI_MODEL
+from .config import (
+    GOOGLE_API_KEY, GEMINI_MODEL, MAX_SQL_RESULT_ROWS,
+    SQL_LAZY_SUMMARY_MAX_ROWS, SQL_LAZY_SUMMARY_MAX_CELLS,
+)
 from .logger import logger, log_separator, log_document_processing
 
 
@@ -24,16 +34,14 @@ DANGEROUS_PATTERNS = [
     r'\bATTACH\b', r'\bDETACH\b', r'\bCOPY\b', r'\bEXPORT\b',
 ]
 
-MAX_RESULT_ROWS = 200
+MAX_RESULT_ROWS = MAX_SQL_RESULT_ROWS
 
 
 def sanitize_table_name(name: str) -> str:
     """Create a safe SQL table name from file name."""
-    # Remove extension, replace non-alphanumeric with underscore
     clean = Path(name).stem
     clean = re.sub(r'[^a-zA-Z0-9]', '_', clean)
     clean = re.sub(r'_+', '_', clean).strip('_')
-    # Ensure starts with letter
     if clean and not clean[0].isalpha():
         clean = 't_' + clean
     return clean.lower()[:50] or 'table_data'
@@ -47,16 +55,13 @@ def validate_sql(sql: str) -> Tuple[bool, str]:
     """
     sql_upper = sql.upper().strip()
 
-    # Must start with SELECT
     if not sql_upper.startswith('SELECT'):
         return False, "Only SELECT queries are allowed"
 
-    # Check for dangerous patterns
     for pattern in DANGEROUS_PATTERNS:
         if re.search(pattern, sql_upper):
             return False, f"Dangerous SQL pattern detected: {pattern}"
 
-    # Check for multiple statements
     if ';' in sql[:-1]:  # Allow trailing semicolon
         return False, "Multiple SQL statements not allowed"
 
@@ -67,60 +72,79 @@ class DataAnalyzerSQL:
     """
     Safe data analysis using DuckDB SQL.
     Generates and validates SQL queries - never executes arbitrary code.
+    Uses llm_client for all LLM calls with caching and cost tracking.
     """
 
-    SQL_GENERATION_PROMPT = """You are a SQL query generator. Given a question about tabular data, generate a DuckDB SQL query.
+    SQL_GENERATION_PROMPT = (
+        "You are a DuckDB SQL query generator.\n\n"
+        "TABLE: {table_name} ({row_count} rows)\n"
+        "COLUMNS AND TYPES:\n{column_info}\n\n"
+        "SAMPLE DATA (first 5 rows):\n{sample_data}\n\n"
+        "{jargon_context}\n\n"
+        "DUCKDB SYNTAX RULES:\n"
+        "- Date formatting: STRFTIME('%Y-%m', date_column) — format string FIRST, then column\n"
+        "- Safe date cast: TRY_CAST(column AS DATE) — returns NULL on invalid values\n"
+        "- Date truncation: DATE_TRUNC('month', date_column) for monthly grouping\n"
+        "- Date extraction: EXTRACT(YEAR FROM date_column), EXTRACT(MONTH FROM date_column)\n"
+        "- String matching: column ILIKE '%pattern%' (case-insensitive)\n"
+        "- Numeric cast: TRY_CAST(column AS DOUBLE) for strings that may be numbers\n"
+        "- Use aggregate functions: SUM, AVG, MAX, MIN, COUNT for calculations\n"
+        "- Always add LIMIT {max_rows} unless doing full aggregation (GROUP BY)\n\n"
+        "QUERY RULES:\n"
+        "1. ONLY generate SELECT queries\n"
+        "2. Use exact table name: {table_name}\n"
+        "3. Match column names EXACTLY as listed above\n"
+        "4. When user mentions a concept, map it to the closest column name\n"
+        "5. Return ONLY the SQL query — no explanations, no markdown\n\n"
+        "{user_query}\n\n"
+        "SQL:"
+    )
 
-RULES:
-1. ONLY generate SELECT queries - no INSERT, UPDATE, DELETE, DROP, CREATE, etc.
-2. Always use the exact table name provided: {table_name}
-3. Available columns: {columns}
-4. Sample data (first 5 rows):
-{sample_data}
+    SQL_RETRY_PROMPT = (
+        "The previous DuckDB SQL query failed. Fix it.\n\n"
+        "Previous query:\n{previous_sql}\n\n"
+        "Error:\n{error}\n\n"
+        "Table: {table_name}\n"
+        "Columns: {columns}\n\n"
+        "DUCKDB SYNTAX REMINDERS:\n"
+        "- STRFTIME(format, value) — format string FIRST: STRFTIME('%Y-%m', date_col)\n"
+        "- Use TRY_CAST instead of CAST for safe type conversion\n"
+        "- Use WHERE TRY_CAST(col AS DATE) IS NOT NULL to filter invalid dates\n\n"
+        "Return ONLY the corrected SQL query."
+    )
 
-5. Add LIMIT {max_rows} to prevent huge results
-6. Use DuckDB SQL syntax (similar to PostgreSQL)
-7. Return ONLY the SQL query, nothing else - no explanations, no markdown
-
-TIPS:
-- For numeric operations on string columns, use TRY_CAST(column AS DOUBLE)
-- For date grouping, extract month/year from date columns
-- Use aggregate functions (SUM, AVG, MAX, MIN, COUNT) for calculations
-
-USER QUESTION: {question}
-
-SQL QUERY:"""
-
-    SUMMARY_PROMPT = """Based on this data analysis result, provide a brief natural language summary.
-
-Question: {question}
-SQL Query: {sql}
-Result ({row_count} rows):
-{result_preview}
-
-Provide a concise 2-3 sentence summary of the findings. Be factual and precise."""
+    SUMMARY_PROMPT = (
+        "Based on this data analysis result, provide a brief natural language summary.\n\n"
+        "Question: {user_query}\n"
+        "SQL Query: {sql}\n"
+        "Result ({row_count} rows):\n{result_preview}\n\n"
+        "Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
+    )
 
     def __init__(self):
         """Initialize SQL-based data analyzer."""
         log_separator("Initializing SQL Data Analyzer")
-        self.llm = Gemini(api_key=GOOGLE_API_KEY, model=GEMINI_MODEL)
-        self.conn = duckdb.connect(':memory:')  # In-memory database
-        self.tables: Dict[str, Dict[str, Any]] = {}  # table_name -> metadata
-        self.file_paths: Dict[str, str] = {}  # table_name -> original file path
-        logger.info("✅ SQL Data Analyzer initialized (DuckDB)")
+        self.conn = duckdb.connect(':memory:')
+        self.tables: Dict[str, Dict[str, Any]] = {}
+        self.file_paths: Dict[str, str] = {}
+        self._jargon = None
+        logger.info("SQL Data Analyzer initialized (DuckDB)")
+
+    @property
+    def jargon(self):
+        """Lazy-load jargon manager."""
+        if self._jargon is None:
+            from .jargon_manager import get_jargon_manager
+            self._jargon = get_jargon_manager()
+        return self._jargon
 
     def _get_table_info(self, table_name: str) -> Dict[str, Any]:
         """Get schema and sample data for a table."""
         try:
-            # Get columns
             cols_df = self.conn.execute(f"DESCRIBE {table_name}").fetchdf()
             columns = cols_df['column_name'].tolist()
             dtypes = dict(zip(cols_df['column_name'], cols_df['column_type']))
-
-            # Get sample rows
             sample_df = self.conn.execute(f"SELECT * FROM {table_name} LIMIT 5").fetchdf()
-
-            # Get row count
             row_count = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
 
             return {
@@ -134,24 +158,16 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
             return {}
 
     def _find_header_row(self, file_path: str, sheet_name: Optional[str] = None) -> int:
-        """
-        Find the actual header row in Excel (skip title/merged rows).
-        Returns the row index (0-based) where headers are.
-        """
+        """Find the actual header row in Excel (skip title/merged rows)."""
         try:
-            # Read first 20 rows to analyze
             df_preview = pd.read_excel(file_path, sheet_name=sheet_name, header=None, nrows=20)
-
-            # Look for row with most non-null values that looks like headers
             best_row = 0
             best_score = 0
 
             for idx in range(min(10, len(df_preview))):
                 row = df_preview.iloc[idx]
                 non_null = row.notna().sum()
-                # Check if values look like headers (strings, not numbers)
                 string_count = sum(1 for v in row if isinstance(v, str) and len(str(v)) > 1)
-
                 score = non_null + string_count
                 if score > best_score:
                     best_score = score
@@ -163,13 +179,9 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
             return 0
 
     def _process_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Process DataFrame: clean columns and handle data types.
-        """
-        # Remove completely empty rows
+        """Process DataFrame: clean columns and handle data types."""
         df = df.dropna(how='all')
 
-        # Clean column names
         new_columns = []
         for i, col in enumerate(df.columns):
             clean = re.sub(r'[^a-zA-Z0-9]', '_', str(col)).strip('_').lower()
@@ -178,7 +190,6 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
                 clean = f"col_{i}"
             new_columns.append(clean)
 
-        # Handle duplicate column names
         seen = {}
         final_columns = []
         for col in new_columns:
@@ -192,7 +203,6 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
         df.columns = final_columns
         logger.info(f"   Cleaned columns: {list(df.columns)[:10]}...")
 
-        # Strip whitespace and handle nan strings
         for col in df.columns:
             if df[col].dtype == 'object':
                 df[col] = df[col].astype(str).str.strip()
@@ -208,13 +218,11 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
         log_document_processing(path.name, "Loading Excel to SQL...")
 
         try:
-            # Find the actual header row (skip title rows)
             header_row = self._find_header_row(file_path, sheet_name)
 
             if sheet_name:
                 table_name = f"{table_name}_{sanitize_table_name(sheet_name)}"
 
-            # Read Excel with detected header row
             df = None
             try:
                 df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row)
@@ -226,19 +234,15 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
                 logger.error("   Empty DataFrame after reading")
                 return False
 
-            # Process the DataFrame (clean columns and data types)
             df = self._process_dataframe(df)
 
-            # Drop existing table if exists
             self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
 
-            # Try to register and create table
             try:
                 self.conn.register('temp_df', df)
                 self.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM temp_df")
                 self.conn.unregister('temp_df')
             except Exception as e2:
-                # If still fails, force all columns to string
                 logger.warning(f"   DuckDB create failed: {e2}, converting all to string")
                 df = df.astype(str)
                 df = df.replace(['nan', 'None'], None)
@@ -246,7 +250,6 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
                 self.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM temp_df")
                 self.conn.unregister('temp_df')
 
-            # Store metadata
             info = self._get_table_info(table_name)
             self.tables[table_name] = {
                 "file_name": path.name,
@@ -257,7 +260,7 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
 
             logger.info(f"   Table: {table_name}")
             logger.info(f"   Rows: {info.get('row_count', 0)}, Columns: {len(info.get('columns', []))}")
-            log_document_processing(path.name, "✅ Loaded to SQL")
+            log_document_processing(path.name, "Loaded to SQL")
             return True
 
         except Exception as e:
@@ -274,7 +277,6 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
         log_document_processing(path.name, "Loading CSV to SQL...")
 
         try:
-            # DuckDB can read CSV directly
             self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
             self.conn.execute(f"""
                 CREATE TABLE {table_name} AS
@@ -291,7 +293,7 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
 
             logger.info(f"   Table: {table_name}")
             logger.info(f"   Rows: {info.get('row_count', 0)}, Columns: {len(info.get('columns', []))}")
-            log_document_processing(path.name, "✅ Loaded to SQL")
+            log_document_processing(path.name, "Loaded to SQL")
             return True
 
         except Exception as e:
@@ -312,40 +314,26 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
             return False
 
     def register_parquet_view(self, parquet_path: str, view_name: Optional[str] = None) -> bool:
-        """
-        Register a parquet file as a DuckDB view.
-
-        Args:
-            parquet_path: Path to parquet file
-            view_name: Optional view name (defaults to file stem)
-
-        Returns:
-            True if successful
-        """
+        """Register a parquet file as a DuckDB view."""
         path = Path(parquet_path)
 
         if not path.exists():
             logger.error(f"[Parquet] File not found: {parquet_path}")
             return False
 
-        # Generate view name
         if view_name is None:
             view_name = sanitize_table_name(path.name)
 
         log_document_processing(path.name, "Registering parquet view...")
 
         try:
-            # Drop existing view if exists
             self.conn.execute(f"DROP VIEW IF EXISTS {view_name}")
-
-            # Create view from parquet
             escaped_path = str(path).replace("'", "''").replace("\\", "/")
             self.conn.execute(f"""
                 CREATE VIEW {view_name} AS
                 SELECT * FROM read_parquet('{escaped_path}')
             """)
 
-            # Get table info
             info = self._get_table_info(view_name)
             self.tables[view_name] = {
                 "file_name": path.name,
@@ -367,47 +355,90 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
             return False
 
     def load_from_catalog(self) -> int:
-        """
-        Load all tables from the catalog as parquet views.
-
-        Returns:
-            Number of tables loaded
-        """
+        """Load all tables from the catalog as parquet views."""
         try:
             from .catalog import get_catalog
-
             catalog = get_catalog()
             all_tables = catalog.get_all_tables()
 
             count = 0
             for table_meta in all_tables:
                 parquet_path = table_meta.parquet_path
-
                 if not Path(parquet_path).exists():
                     logger.warning(f"[Catalog] Parquet not found: {parquet_path}")
                     continue
-
                 if self.register_parquet_view(parquet_path, table_meta.table_name):
-                    # Enhance metadata with catalog info
                     self.tables[table_meta.table_name]["source_file"] = table_meta.source_file
                     self.tables[table_meta.table_name]["source_type"] = table_meta.source_type
                     self.tables[table_meta.table_name]["extraction_method"] = table_meta.extraction_method
                     count += 1
 
+            # Create combined views for multi-sheet source files
+            self._create_combined_views()
+
             logger.info(f"[Catalog] Loaded {count} tables from catalog")
             return count
-
         except Exception as e:
             logger.error(f"[Catalog] Error loading from catalog: {e}")
             return 0
 
-    def refresh_from_catalog(self) -> int:
-        """
-        Refresh views from catalog, adding new tables and updating existing.
+    def _create_combined_views(self):
+        """Create combined UNION ALL views for multi-sheet source files."""
+        # Group tables by source file
+        by_source = {}
+        for table_name, info in self.tables.items():
+            source = info.get('source_file', info.get('file_name', ''))
+            if source and not info.get('is_combined'):
+                if source not in by_source:
+                    by_source[source] = []
+                by_source[source].append(table_name)
 
-        Returns:
-            Number of tables refreshed
-        """
+        for source, table_names in by_source.items():
+            if len(table_names) < 2:
+                continue
+
+            # Group tables by column signature (only combine identical schemas)
+            col_groups = {}
+            for tn in table_names:
+                cols = tuple(sorted(self.tables[tn].get('columns', [])))
+                if cols not in col_groups:
+                    col_groups[cols] = []
+                col_groups[cols].append(tn)
+
+            # Create combined view for the largest compatible group
+            largest_group = max(col_groups.values(), key=len)
+            if len(largest_group) < 2:
+                continue
+
+            view_name = sanitize_table_name(Path(source).stem) + "_combined"
+            col_list = ', '.join(self.tables[largest_group[0]].get('columns', []))
+            unions = " UNION ALL ".join(
+                f"SELECT {col_list} FROM {tn}" for tn in largest_group
+            )
+
+            try:
+                self.conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+                self.conn.execute(f"CREATE VIEW {view_name} AS {unions}")
+
+                info = self._get_table_info(view_name)
+                self.tables[view_name] = {
+                    "file_name": f"Combined: {Path(source).name}",
+                    "file_path": source,
+                    "source_type": "combined",
+                    "is_combined": True,
+                    "source_tables": largest_group,
+                    **info,
+                }
+
+                logger.info(
+                    f"[Combined] Created view {view_name}: "
+                    f"{len(largest_group)} tables, {info.get('row_count', 0)} rows"
+                )
+            except Exception as e:
+                logger.error(f"[Combined] Error creating view: {e}")
+
+    def refresh_from_catalog(self) -> int:
+        """Refresh views from catalog."""
         return self.load_from_catalog()
 
     def load_files_from_folder(self, folder_path: str) -> int:
@@ -424,11 +455,11 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
         for file_path in folder.rglob("*"):
             if file_path.suffix.lower() in supported:
                 if file_path.name.startswith('~$'):
-                    continue  # Skip temp files
+                    continue
                 if self.load_file(str(file_path)):
                     count += 1
 
-        logger.info(f"📊 Loaded {count} data files")
+        logger.info(f"Loaded {count} data files")
         return count
 
     def list_tables(self) -> List[str]:
@@ -453,12 +484,18 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
 
         return '\n'.join(summaries)
 
+    # ── SQL generation via llm_client ─────────────────────────
+
     def _generate_sql(self, question: str, table_name: str) -> str:
-        """Use LLM to generate SQL query."""
+        """Use llm_client to generate SQL query with jargon context."""
+        from . import llm_client
+        from .prompt_security import safe_render_prompt, build_system_prompt
+
         info = self.tables.get(table_name, {})
         columns = info.get('columns', [])
+        dtypes = info.get('dtypes', {})
+        row_count = info.get('row_count', 0)
 
-        # Get sample rows for better context
         try:
             sample = self.conn.execute(f"SELECT * FROM {table_name} LIMIT 5").fetchdf()
         except Exception:
@@ -466,16 +503,41 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
 
         sample_str = sample.to_string(index=False) if not sample.empty else "No sample data"
 
-        prompt = self.SQL_GENERATION_PROMPT.format(
-            table_name=table_name,
-            columns=', '.join(columns),
-            sample_data=sample_str,
-            max_rows=MAX_RESULT_ROWS,
-            question=question,
-        )
+        # Build column info with types and human-readable names
+        column_info_parts = []
+        for col in columns:
+            dtype = dtypes.get(col, 'VARCHAR')
+            human_name = col.replace('_', ' ').title()
+            column_info_parts.append(f"  - {col} ({dtype}) = {human_name}")
+        column_info = '\n'.join(column_info_parts)
 
-        response = self.llm.complete(prompt)
-        sql = response.text.strip()
+        jargon_context = self.jargon.build_column_context(columns)
+
+        expanded_question = self.jargon.expand_query(question)
+        if expanded_question != question:
+            logger.info(f"   Expanded query: {expanded_question[:100]}...")
+
+        prompt = safe_render_prompt(
+            self.SQL_GENERATION_PROMPT,
+            user_query=expanded_question,
+            table_name=table_name,
+            row_count=str(row_count),
+            column_info=column_info,
+            sample_data=sample_str,
+            max_rows=str(MAX_RESULT_ROWS),
+            jargon_context=jargon_context,
+        )
+        system = build_system_prompt("You are a DuckDB SQL query generator. Return only valid DuckDB SQL.")
+
+        resp = llm_client.generate_text(prompt, system=system, max_tokens=512)
+
+        # Record telemetry
+        from .telemetry import get_current_trace
+        trace = get_current_trace()
+        if trace:
+            trace.record_llm_call(resp.usage)
+
+        sql = resp.text.strip()
 
         # Clean up common LLM artifacts
         sql = sql.replace('```sql', '').replace('```', '').strip()
@@ -486,27 +548,110 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
 
         return sql.strip()
 
-    def _generate_summary(self, question: str, sql: str, result: pd.DataFrame) -> str:
-        """Generate natural language summary of results."""
-        preview = result.head(10).to_string(index=False) if not result.empty else "Empty result"
+    def _retry_sql_generation(self, previous_sql: str, error: str, table_name: str) -> Optional[str]:
+        """Self-correct: retry SQL generation once with error feedback."""
+        from . import llm_client
+        from .prompt_security import build_system_prompt
 
-        prompt = self.SUMMARY_PROMPT.format(
-            question=question,
+        info = self.tables.get(table_name, {})
+        columns = info.get('columns', [])
+
+        prompt = self.SQL_RETRY_PROMPT.format(
+            previous_sql=previous_sql,
+            error=error,
+            table_name=table_name,
+            columns=', '.join(columns),
+        )
+        system = build_system_prompt("You fix broken SQL queries. Return only valid DuckDB SQL.")
+
+        try:
+            resp = llm_client.generate_text(prompt, system=system, max_tokens=512)
+
+            from .telemetry import get_current_trace
+            trace = get_current_trace()
+            if trace:
+                trace.record_llm_call(resp.usage)
+
+            sql = resp.text.strip()
+            sql = sql.replace('```sql', '').replace('```', '').strip()
+            if sql.startswith("'") or sql.startswith('"'):
+                sql = sql[1:]
+            if sql.endswith("'") or sql.endswith('"'):
+                sql = sql[:-1]
+
+            return sql.strip()
+        except Exception as e:
+            logger.warning(f"   SQL retry failed: {e}")
+            return None
+
+    # ── Lazy summary ──────────────────────────────────────────
+
+    def _should_lazy_summarize(self, result_df: pd.DataFrame) -> bool:
+        """Check if result is small enough to skip LLM summary."""
+        rows = len(result_df)
+        cols = len(result_df.columns)
+        cells = rows * cols
+        return rows <= SQL_LAZY_SUMMARY_MAX_ROWS and cells <= SQL_LAZY_SUMMARY_MAX_CELLS
+
+    def _lazy_summary(self, question: str, sql: str, result_df: pd.DataFrame) -> str:
+        """Format a simple text summary without calling the LLM."""
+        if result_df.empty:
+            return "The query returned no results."
+
+        rows = len(result_df)
+        if rows == 1 and len(result_df.columns) == 1:
+            val = result_df.iloc[0, 0]
+            col = result_df.columns[0]
+            return f"Result: {col} = {val}"
+
+        if rows == 1:
+            parts = [f"**{col}**: {result_df.iloc[0][col]}" for col in result_df.columns]
+            return "Result: " + " | ".join(parts)
+
+        preview = result_df.to_string(index=False)
+        return f"Query returned {rows} rows:\n\n```\n{preview}\n```"
+
+    def _generate_summary(self, question: str, sql: str, result_df: pd.DataFrame) -> str:
+        """Generate natural language summary - lazy if result is small."""
+        # Lazy path: skip LLM for small results
+        if self._should_lazy_summarize(result_df):
+            logger.info(f"   Lazy summary ({len(result_df)} rows, {len(result_df) * len(result_df.columns)} cells)")
+            return self._lazy_summary(question, sql, result_df)
+
+        # LLM path for larger results
+        from . import llm_client
+        from .prompt_security import safe_render_prompt, build_system_prompt
+
+        preview = result_df.head(10).to_string(index=False) if not result_df.empty else "Empty result"
+
+        prompt = safe_render_prompt(
+            self.SUMMARY_PROMPT,
+            user_query=question,
             sql=sql,
-            row_count=len(result),
+            row_count=str(len(result_df)),
             result_preview=preview,
         )
+        system = build_system_prompt("You summarize SQL query results factually.")
 
-        response = self.llm.complete(prompt)
-        return response.text.strip()
+        resp = llm_client.generate_text(prompt, system=system, max_tokens=512)
+
+        from .telemetry import get_current_trace
+        trace = get_current_trace()
+        if trace:
+            trace.record_llm_call(resp.usage)
+
+        return resp.text
+
+    # ── Main query entry point ────────────────────────────────
 
     def query(self, question: str, table_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Query data using safe SQL execution.
-        Returns answer, sources, SQL query, and result data.
+        Self-corrects once on SQL errors.
+        Uses lazy summary for small results.
         """
         log_separator("SQL Data Query")
-        logger.info(f"🔍 Question: {question[:100]}...")
+        logger.info(f"Question: {question[:100]}...")
 
         if not self.tables:
             return {
@@ -518,21 +663,12 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
 
         # Select table
         if table_name is None:
-            if len(self.tables) == 1:
-                table_name = list(self.tables.keys())[0]
-            else:
-                # Try to infer from question
-                question_lower = question.lower()
-                for name in self.tables.keys():
-                    if name.lower() in question_lower:
-                        table_name = name
-                        break
-                if table_name is None:
-                    table_name = list(self.tables.keys())[0]
+            table_name = self.select_table(question)
 
         logger.info(f"   Using table: {table_name}")
         info = self.tables.get(table_name, {})
 
+        sql = None
         try:
             # Step 1: Generate SQL
             logger.info("   Generating SQL query...")
@@ -544,13 +680,27 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
             # Step 2: Validate SQL
             is_valid, error = validate_sql(sql)
             if not is_valid:
-                logger.error(f"   SQL validation failed: {error}")
-                return {
-                    "answer": f"Cannot execute this query: {error}",
-                    "sources": [{"error": error}],
-                    "sql": sql,
-                    "result_data": None,
-                }
+                logger.warning(f"   SQL validation failed: {error}, attempting self-correction...")
+                corrected = self._retry_sql_generation(sql, error, table_name)
+                if corrected:
+                    is_valid, error = validate_sql(corrected)
+                    if is_valid:
+                        sql = corrected
+                        logger.info(f"   Self-corrected SQL: {sql[:100]}...")
+
+                if not is_valid:
+                    logger.error(f"   SQL validation failed after retry: {error}")
+                    return {
+                        "answer": f"Cannot execute this query: {error}",
+                        "sources": [{"error": error}],
+                        "sql": sql,
+                        "result_data": None,
+                    }
+
+            # Also validate table references
+            from .prompt_security import validate_sql_tables
+            if not validate_sql_tables(sql, list(self.tables.keys())):
+                logger.warning("   SQL references unknown tables")
 
             # Ensure LIMIT
             if 'LIMIT' not in sql.upper():
@@ -559,11 +709,27 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
             # Step 3: Execute SQL
             logger.info("   Executing SQL...")
             start_time = time.time()
-            result_df = self.conn.execute(sql).fetchdf()
+            try:
+                result_df = self.conn.execute(sql).fetchdf()
+            except Exception as exec_err:
+                # Self-correct on execution error
+                logger.warning(f"   SQL execution failed: {exec_err}, attempting self-correction...")
+                corrected = self._retry_sql_generation(sql, str(exec_err), table_name)
+                if corrected:
+                    is_valid, error = validate_sql(corrected)
+                    if is_valid:
+                        sql = corrected
+                        result_df = self.conn.execute(sql).fetchdf()
+                        logger.info(f"   Self-corrected SQL executed OK: {sql[:100]}...")
+                    else:
+                        raise exec_err
+                else:
+                    raise exec_err
+
             exec_time = time.time() - start_time
             logger.info(f"   Executed in {exec_time:.3f}s, returned {len(result_df)} rows")
 
-            # Step 4: Generate summary
+            # Step 4: Generate summary (lazy or LLM)
             summary = self._generate_summary(question, sql, result_df)
 
             # Build sources metadata
@@ -592,15 +758,94 @@ Provide a concise 2-3 sentence summary of the findings. Be factual and precise."
             return {
                 "answer": f"Error executing query: {str(e)}",
                 "sources": [{"error": str(e), "table_name": table_name}],
-                "sql": sql if 'sql' in dir() else None,
+                "sql": sql,
                 "result_data": None,
             }
 
+    def query_with_context(
+        self,
+        question: str,
+        context: str = "",
+        table_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Query data with additional context from previous steps.
+        Used by the planner/executor for multi-step SQL chains.
+        """
+        if context:
+            enriched = f"Context from previous analysis:\n{context[:500]}\n\nNew task: {question}"
+            return self.query(enriched, table_name)
+        return self.query(question, table_name)
+
+    def select_table(self, question: str) -> Optional[str]:
+        """
+        Select the best table for a question using multiple strategies:
+        1. Prefer combined views for aggregate/time-series queries
+        2. Exact table name match in question
+        3. Column name matching against question words
+        4. Fallback: prefer combined views, then first table
+        """
+        if not self.tables:
+            return None
+        if len(self.tables) == 1:
+            return list(self.tables.keys())[0]
+
+        question_lower = question.lower()
+
+        # Strategy 1: Prefer combined views for aggregate/time-series queries
+        aggregate_keywords = [
+            'total', 'toplam', 'sum', 'average', 'ortalama',
+            'by month', 'by year', 'aylık', 'yıllık', 'monthly', 'yearly',
+            'trend', 'over time', 'all', 'tüm', 'hepsi', 'genel',
+        ]
+        is_aggregate = any(kw in question_lower for kw in aggregate_keywords)
+        if is_aggregate:
+            for name, info in self.tables.items():
+                if info.get('is_combined'):
+                    return name
+
+        # Strategy 2: Exact table name match in question
+        for name in self.tables.keys():
+            if name.lower() in question_lower:
+                return name
+
+        # Strategy 3: Column name matching — score tables by column relevance
+        question_words = set(re.findall(r'\b\w{3,}\b', question_lower))
+        # Also expand jargon in question words
+        expanded_words = set()
+        for w in question_words:
+            expanded_words.add(w)
+            meaning = self.jargon.expand(w.upper())
+            if meaning:
+                expanded_words.update(meaning.lower().split())
+
+        best_match = None
+        best_score = 0
+        for name, info in self.tables.items():
+            columns = info.get('columns', [])
+            col_words = set()
+            for c in columns:
+                col_words.update(c.lower().split('_'))
+            score = len(expanded_words & col_words)
+            # Bonus for combined views
+            if info.get('is_combined'):
+                score += 2
+            if score > best_score:
+                best_score = score
+                best_match = name
+
+        if best_match and best_score > 0:
+            return best_match
+
+        # Strategy 4: Fallback — prefer combined views
+        for name, info in self.tables.items():
+            if info.get('is_combined'):
+                return name
+
+        return list(self.tables.keys())[0]
+
     def execute_raw_sql(self, sql: str) -> Tuple[Optional[pd.DataFrame], str]:
-        """
-        Execute raw SQL with validation.
-        Returns (result_df, error_message).
-        """
+        """Execute raw SQL with validation."""
         is_valid, error = validate_sql(sql)
         if not is_valid:
             return None, error

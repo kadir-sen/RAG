@@ -1,11 +1,12 @@
 """
 Excel Table Extractor with native table detection and block detection.
 Extracts tabular regions from Excel files without relying on OCR.
+Supports jargon-aware column normalization and merged cell handling.
 """
 import re
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 import numpy as np
@@ -27,6 +28,7 @@ class ExtractedTable:
     end_col: int
     extraction_method: str  # "native_table" | "block_detect" | "full_sheet"
     table_name: Optional[str] = None  # Excel native table name if available
+    column_jargon: Dict[str, str] = field(default_factory=dict)  # col -> expanded meaning
 
 
 class ExcelTableExtractor:
@@ -35,6 +37,8 @@ class ExcelTableExtractor:
     1. Native Excel tables (ListObjects)
     2. Block detection for non-table regions
     3. Full sheet fallback
+
+    Supports jargon-aware column normalization and merged cell handling.
     """
 
     # Block detection thresholds
@@ -43,9 +47,24 @@ class ExcelTableExtractor:
     MAX_EMPTY_ROWS_IN_BLOCK = 2
     MAX_EMPTY_COLS_IN_BLOCK = 1
 
+    # Summary row keywords to filter out (English + Turkish)
+    SUMMARY_KEYWORDS = {
+        'total', 'toplam', 'grand total', 'genel toplam',
+        'sum', 'subtotal', 'alt toplam', 'average', 'ortalama',
+    }
+
     def __init__(self):
         """Initialize Excel table extractor."""
         self.catalog = get_catalog()
+        self._jargon = None
+
+    @property
+    def jargon(self):
+        """Lazy-load jargon manager."""
+        if self._jargon is None:
+            from .jargon_manager import get_jargon_manager
+            self._jargon = get_jargon_manager()
+        return self._jargon
 
     def extract_tables(self, file_path: str) -> List[ExtractedTable]:
         """
@@ -367,7 +386,7 @@ class ExcelTableExtractor:
             return None
 
     def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Clean and normalize DataFrame."""
+        """Clean and normalize DataFrame with jargon-aware column names."""
         if df.empty:
             return df
 
@@ -378,17 +397,29 @@ class ExcelTableExtractor:
         if df.empty:
             return df
 
+        # Build jargon context for columns
+        column_jargon = {}
+
         # Clean column names
         new_columns = []
         for i, col in enumerate(df.columns):
             if col is None or pd.isna(col) or str(col).strip() == '':
                 clean = f"col_{i}"
             else:
-                clean = str(col).strip()
-                clean = re.sub(r'[^a-zA-Z0-9_]', '_', clean)
+                raw = str(col).strip()
+                # Check if column name is a known abbreviation
+                _, meaning = self.jargon.normalize_column_name(raw)
+                if meaning:
+                    column_jargon[raw.lower()] = meaning
+
+                clean = re.sub(r'[^a-zA-Z0-9_]', '_', raw)
                 clean = re.sub(r'_+', '_', clean).strip('_').lower()
                 if not clean:
                     clean = f"col_{i}"
+
+                # Track jargon for cleaned name too
+                if meaning:
+                    column_jargon[clean] = meaning
             new_columns.append(clean)
 
         # Handle duplicates
@@ -404,7 +435,33 @@ class ExcelTableExtractor:
 
         df.columns = final_columns
 
+        # Store jargon context as attribute for later use
+        df.attrs['column_jargon'] = column_jargon
+
+        # Remove summary/total rows that pollute date columns
+        df = self._remove_summary_rows(df)
+
         return df
+
+    def _remove_summary_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Remove summary/total rows that pollute date and identifier columns."""
+        if df.empty or len(df) < 2:
+            return df
+
+        mask = pd.Series(True, index=df.index)
+
+        # Check first 3 columns for summary keywords
+        for col in df.columns[:3]:
+            if df[col].dtype == 'object' or str(df[col].dtype) == 'string':
+                values_lower = df[col].astype(str).str.lower().str.strip()
+                is_summary = values_lower.isin(self.SUMMARY_KEYWORDS)
+                mask &= ~is_summary
+
+        removed = (~mask).sum()
+        if removed > 0:
+            logger.info(f"[ExcelExtractor] Removed {removed} summary rows")
+
+        return df[mask].reset_index(drop=True)
 
     @staticmethod
     def _parse_cell_ref(ref: str) -> Tuple[int, int]:
@@ -445,6 +502,11 @@ class ExcelTableExtractor:
 
             logger.info(f"[ExcelExtractor] Saved parquet: {parquet_path.name}")
 
+            # Build column jargon from DataFrame attrs or table field
+            col_jargon = getattr(table.df, 'attrs', {}).get('column_jargon', {})
+            if table.column_jargon:
+                col_jargon.update(table.column_jargon)
+
             # Create metadata
             meta = TableMetadata(
                 table_id=table_id,
@@ -458,6 +520,7 @@ class ExcelTableExtractor:
                 columns=list(table.df.columns),
                 extraction_method=table.extraction_method,
                 file_hash=self.catalog.compute_file_hash(source_file),
+                column_jargon=col_jargon,
             )
 
             return meta
