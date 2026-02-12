@@ -81,6 +81,7 @@ class DataAnalyzerSQL:
         "COLUMNS AND TYPES:\n{column_info}\n\n"
         "SAMPLE DATA (first 5 rows):\n{sample_data}\n\n"
         "{jargon_context}\n\n"
+        "{normalization_hint}\n\n"
         "DUCKDB SYNTAX RULES:\n"
         "- Date formatting: STRFTIME('%Y-%m', date_column) — format string FIRST, then column\n"
         "- Safe date cast: TRY_CAST(column AS DATE) — returns NULL on invalid values\n"
@@ -210,6 +211,230 @@ class DataAnalyzerSQL:
 
         return df
 
+    # ── Table normalization ─────────────────────────────────────
+
+    def _register_normalized_views(self, table_name: str, df: pd.DataFrame):
+        """
+        Run table normalizer and register <table>_raw and <table>_clean views.
+        Stores normalization report in self.tables[table_name].
+        """
+        from .table_normalizer import normalize_table, get_clean_df
+
+        norm_df, report = normalize_table(df, table_name)
+
+        # Register _raw (includes is_total_row, month_num, year, date_key)
+        raw_name = f"{table_name}_raw"
+        self.conn.execute(f"DROP TABLE IF EXISTS {raw_name}")
+        self.conn.register("_tmp_raw", norm_df)
+        self.conn.execute(f"CREATE TABLE {raw_name} AS SELECT * FROM _tmp_raw")
+        self.conn.unregister("_tmp_raw")
+
+        raw_info = self._get_table_info(raw_name)
+        self.tables[raw_name] = {
+            "file_name": self.tables.get(table_name, {}).get("file_name", ""),
+            "file_path": self.file_paths.get(table_name, ""),
+            "source_type": "normalized_raw",
+            "is_normalized": True,
+            **raw_info,
+        }
+
+        # Register _clean (totals removed)
+        clean_df = get_clean_df(norm_df)
+        clean_name = f"{table_name}_clean"
+        self.conn.execute(f"DROP TABLE IF EXISTS {clean_name}")
+        self.conn.register("_tmp_clean", clean_df)
+        self.conn.execute(f"CREATE TABLE {clean_name} AS SELECT * FROM _tmp_clean")
+        self.conn.unregister("_tmp_clean")
+
+        clean_info = self._get_table_info(clean_name)
+        self.tables[clean_name] = {
+            "file_name": self.tables.get(table_name, {}).get("file_name", ""),
+            "file_path": self.file_paths.get(table_name, ""),
+            "source_type": "normalized_clean",
+            "is_normalized": True,
+            **clean_info,
+        }
+
+        # Store report on the base table entry
+        if table_name in self.tables:
+            self.tables[table_name]["normalization"] = {
+                "total_rows": report.total_rows_detected,
+                "months_detected": report.months_detected,
+                "month_source": report.month_source,
+                "clean_rows": report.clean_row_count,
+                "raw_rows": report.raw_row_count,
+            }
+
+        logger.info(
+            f"[Normalizer] {table_name}: "
+            f"_raw({raw_info.get('row_count', 0)} rows), "
+            f"_clean({clean_info.get('row_count', 0)} rows)"
+        )
+
+    # ── Deterministic shortcut ───────────────────────────────────
+
+    _SHORTCUT_PATTERNS = [
+        # "highest/max/en fazla/en yüksek ... month/ay"
+        (
+            r'(?:highest|max|maximum|en\s*fazla|en\s*yüksek|en\s*çok|most)',
+            r'(?:month|ay\b)',
+            "MAX",
+        ),
+        # "lowest/min/en az/en düşük ... month/ay"
+        (
+            r'(?:lowest|min|minimum|en\s*az|en\s*düşük|least)',
+            r'(?:month|ay\b)',
+            "MIN",
+        ),
+    ]
+
+    def _try_deterministic_shortcut(
+        self, question: str, table_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Try to answer common month-aggregation questions without LLM.
+        Returns full query result dict, or None if no shortcut matched.
+        """
+        q = question.lower()
+
+        # Check if _clean table exists with month_num
+        clean_name = f"{table_name}_clean"
+        if clean_name not in self.tables:
+            return None
+        clean_info = self.tables[clean_name]
+        if "month_num" not in clean_info.get("columns", []):
+            return None
+
+        for agg_pat, dim_pat, agg_fn in self._SHORTCUT_PATTERNS:
+            if re.search(agg_pat, q) and re.search(dim_pat, q):
+                return self._run_month_shortcut(question, clean_name, agg_fn)
+
+        return None
+
+    def _run_month_shortcut(
+        self, question: str, clean_table: str, agg_fn: str
+    ) -> Dict[str, Any]:
+        """Execute a deterministic month-aggregation query."""
+        from .table_normalizer import ALL_MONTHS
+
+        info = self.tables[clean_table]
+        columns = info.get("columns", [])
+
+        # Find the best numeric column to aggregate
+        numeric_col = self._find_best_numeric_column(clean_table, question)
+        if not numeric_col:
+            return None  # Fall back to LLM
+
+        month_names = {v: k.capitalize() for k, v in ALL_MONTHS.items() if len(k) > 3}
+        # Deduplicate: keep English names for display
+        en_month_names = {
+            1: "January", 2: "February", 3: "March", 4: "April",
+            5: "May", 6: "June", 7: "July", 8: "August",
+            9: "September", 10: "October", 11: "November", 12: "December",
+        }
+
+        order = "DESC" if agg_fn == "MAX" else "ASC"
+        sql = (
+            f"SELECT month_num, SUM(TRY_CAST({numeric_col} AS DOUBLE)) AS total_value "
+            f"FROM {clean_table} "
+            f"WHERE month_num IS NOT NULL AND is_total_row = false "
+            f"GROUP BY month_num "
+            f"ORDER BY total_value {order} "
+            f"LIMIT 1"
+        )
+
+        try:
+            result_df = self.conn.execute(sql).fetchdf()
+            if result_df.empty:
+                return None
+
+            month_num = int(result_df.iloc[0]["month_num"])
+            total_val = result_df.iloc[0]["total_value"]
+            month_name = en_month_names.get(month_num, str(month_num))
+
+            label = "highest" if agg_fn == "MAX" else "lowest"
+            summary = (
+                f"The month with the {label} value is **{month_name}** "
+                f"(month {month_num}) with a total of **{total_val:,.2f}** "
+                f"for column '{numeric_col}'."
+            )
+
+            # Also get full breakdown for display
+            sql_all = (
+                f"SELECT month_num, SUM(TRY_CAST({numeric_col} AS DOUBLE)) AS total_value "
+                f"FROM {clean_table} "
+                f"WHERE month_num IS NOT NULL AND is_total_row = false "
+                f"GROUP BY month_num "
+                f"ORDER BY month_num"
+            )
+            full_df = self.conn.execute(sql_all).fetchdf()
+
+            sources = [{
+                "type": "structured_data",
+                "file_name": info.get("file_name", clean_table),
+                "table_name": clean_table,
+                "columns_used": ["month_num", numeric_col],
+                "row_count_returned": len(full_df),
+                "total_rows": info.get("row_count", 0),
+                "sql_query": sql_all,
+            }]
+
+            logger.info(f"[Shortcut] Deterministic answer: {month_name} = {total_val}")
+
+            return {
+                "answer": summary,
+                "sources": sources,
+                "sql": sql_all,
+                "result_data": full_df.to_dict("records"),
+                "result_columns": list(full_df.columns),
+            }
+
+        except Exception as e:
+            logger.warning(f"[Shortcut] Failed: {e}")
+            return None
+
+    def _find_best_numeric_column(self, table_name: str, question: str) -> Optional[str]:
+        """Find the best numeric column for aggregation based on question context."""
+        info = self.tables.get(table_name, {})
+        columns = info.get("columns", [])
+        dtypes = info.get("dtypes", {})
+
+        # Columns to skip
+        skip = {"is_total_row", "month_num", "year", "date_key", "row_number"}
+
+        # Prefer columns matching question words
+        q_lower = question.lower()
+        candidates = []
+        for col in columns:
+            if col in skip:
+                continue
+            dtype = str(dtypes.get(col, "")).upper()
+            # Check if numeric type
+            is_numeric = any(t in dtype for t in ["INT", "FLOAT", "DOUBLE", "DECIMAL", "BIGINT", "NUMBER"])
+            if not is_numeric:
+                # Try checking actual data
+                try:
+                    sample = self.conn.execute(
+                        f"SELECT TRY_CAST({col} AS DOUBLE) FROM {table_name} LIMIT 10"
+                    ).fetchdf()
+                    non_null = sample.iloc[:, 0].notna().sum()
+                    is_numeric = non_null >= 5
+                except Exception:
+                    continue
+
+            if is_numeric:
+                # Score: higher if column name words appear in question
+                col_words = set(col.lower().split("_"))
+                score = sum(1 for w in col_words if w in q_lower)
+                candidates.append((col, score))
+
+        if not candidates:
+            return None
+
+        # Return highest scoring, break ties with first found
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
+
     def load_excel(self, file_path: str, sheet_name: Optional[str] = None) -> bool:
         """Load Excel file into DuckDB table with smart header detection."""
         path = Path(file_path)
@@ -260,6 +485,13 @@ class DataAnalyzerSQL:
 
             logger.info(f"   Table: {table_name}")
             logger.info(f"   Rows: {info.get('row_count', 0)}, Columns: {len(info.get('columns', []))}")
+
+            # Register normalized _raw and _clean views
+            try:
+                self._register_normalized_views(table_name, df)
+            except Exception as norm_err:
+                logger.warning(f"   Normalization skipped: {norm_err}")
+
             log_document_processing(path.name, "Loaded to SQL")
             return True
 
@@ -345,6 +577,14 @@ class DataAnalyzerSQL:
 
             logger.info(f"   View: {view_name}")
             logger.info(f"   Rows: {info.get('row_count', 0)}, Columns: {len(info.get('columns', []))}")
+
+            # Normalize parquet data for clean/raw views
+            try:
+                df = self.conn.execute(f"SELECT * FROM {view_name}").fetchdf()
+                self._register_normalized_views(view_name, df)
+            except Exception as norm_err:
+                logger.warning(f"   Parquet normalization skipped: {norm_err}")
+
             log_document_processing(path.name, "Parquet view registered")
             return True
 
@@ -486,7 +726,7 @@ class DataAnalyzerSQL:
 
     # ── SQL generation via llm_client ─────────────────────────
 
-    def _generate_sql(self, question: str, table_name: str) -> str:
+    def _generate_sql(self, question: str, table_name: str, provider: str = "gemini") -> str:
         """Use llm_client to generate SQL query with jargon context."""
         from . import llm_client
         from .prompt_security import safe_render_prompt, build_system_prompt
@@ -517,6 +757,25 @@ class DataAnalyzerSQL:
         if expanded_question != question:
             logger.info(f"   Expanded query: {expanded_question[:100]}...")
 
+        # Build normalization hint
+        normalization_hint = ""
+        norm_info = info.get("normalization")
+        clean_name = f"{table_name}_clean"
+        if norm_info and norm_info.get("total_rows", 0) > 0:
+            normalization_hint = (
+                f"IMPORTANT: This table has {norm_info['total_rows']} total/subtotal rows.\n"
+                f"A clean version without totals is available as: {clean_name}\n"
+                f"The clean table has columns: is_total_row (bool), month_num (1-12), year (int), date_key (YYYY-MM).\n"
+                f"ALWAYS prefer using {clean_name} for aggregation queries to avoid double-counting total rows.\n"
+                f"Only use {table_name} if the user explicitly asks for 'total' or 'grand total' rows."
+            )
+        elif clean_name in self.tables:
+            normalization_hint = (
+                f"A normalized version is available as: {clean_name}\n"
+                f"It includes columns: is_total_row (bool), month_num (1-12), year (int), date_key (YYYY-MM).\n"
+                f"Prefer {clean_name} for monthly/yearly aggregation queries."
+            )
+
         prompt = safe_render_prompt(
             self.SQL_GENERATION_PROMPT,
             user_query=expanded_question,
@@ -526,10 +785,11 @@ class DataAnalyzerSQL:
             sample_data=sample_str,
             max_rows=str(MAX_RESULT_ROWS),
             jargon_context=jargon_context,
+            normalization_hint=normalization_hint,
         )
         system = build_system_prompt("You are a DuckDB SQL query generator. Return only valid DuckDB SQL.")
 
-        resp = llm_client.generate_text(prompt, system=system, max_tokens=512)
+        resp = llm_client.generate_text(prompt, system=system, max_tokens=512, provider=provider)
 
         # Record telemetry
         from .telemetry import get_current_trace
@@ -548,7 +808,8 @@ class DataAnalyzerSQL:
 
         return sql.strip()
 
-    def _retry_sql_generation(self, previous_sql: str, error: str, table_name: str) -> Optional[str]:
+    def _retry_sql_generation(self, previous_sql: str, error: str, table_name: str,
+                              provider: str = "gemini") -> Optional[str]:
         """Self-correct: retry SQL generation once with error feedback."""
         from . import llm_client
         from .prompt_security import build_system_prompt
@@ -565,7 +826,7 @@ class DataAnalyzerSQL:
         system = build_system_prompt("You fix broken SQL queries. Return only valid DuckDB SQL.")
 
         try:
-            resp = llm_client.generate_text(prompt, system=system, max_tokens=512)
+            resp = llm_client.generate_text(prompt, system=system, max_tokens=512, provider=provider)
 
             from .telemetry import get_current_trace
             trace = get_current_trace()
@@ -611,7 +872,8 @@ class DataAnalyzerSQL:
         preview = result_df.to_string(index=False)
         return f"Query returned {rows} rows:\n\n```\n{preview}\n```"
 
-    def _generate_summary(self, question: str, sql: str, result_df: pd.DataFrame) -> str:
+    def _generate_summary(self, question: str, sql: str, result_df: pd.DataFrame,
+                          provider: str = "gemini") -> str:
         """Generate natural language summary - lazy if result is small."""
         # Lazy path: skip LLM for small results
         if self._should_lazy_summarize(result_df):
@@ -633,7 +895,7 @@ class DataAnalyzerSQL:
         )
         system = build_system_prompt("You summarize SQL query results factually.")
 
-        resp = llm_client.generate_text(prompt, system=system, max_tokens=512)
+        resp = llm_client.generate_text(prompt, system=system, max_tokens=512, provider=provider)
 
         from .telemetry import get_current_trace
         trace = get_current_trace()
@@ -668,6 +930,12 @@ class DataAnalyzerSQL:
         logger.info(f"   Using table: {table_name}")
         info = self.tables.get(table_name, {})
 
+        # Try deterministic shortcut (no LLM)
+        shortcut = self._try_deterministic_shortcut(question, table_name)
+        if shortcut is not None:
+            logger.info("   Answered via deterministic shortcut (no LLM)")
+            return shortcut
+
         sql = None
         try:
             # Step 1: Generate SQL
@@ -697,9 +965,10 @@ class DataAnalyzerSQL:
                         "result_data": None,
                     }
 
-            # Also validate table references
+            # Also validate table references (include normalized views)
             from .prompt_security import validate_sql_tables
-            if not validate_sql_tables(sql, list(self.tables.keys())):
+            all_known = list(self.tables.keys())
+            if not validate_sql_tables(sql, all_known):
                 logger.warning("   SQL references unknown tables")
 
             # Ensure LIMIT
@@ -762,11 +1031,130 @@ class DataAnalyzerSQL:
                 "result_data": None,
             }
 
+    def query_with_provider(self, question: str, provider: str,
+                            table_name: Optional[str] = None) -> Dict[str, Any]:
+        """Query data using a specific LLM provider for SQL gen and summary."""
+        log_separator(f"SQL Data Query ({provider})")
+        logger.info(f"[{provider}] Question: {question[:100]}...")
+
+        if not self.tables:
+            return {
+                "answer": "No data tables loaded. Please upload Excel or CSV files first.",
+                "sources": [], "sql": None, "result_data": None,
+            }
+
+        if table_name is None:
+            table_name = self.select_table(question)
+
+        logger.info(f"   [{provider}] Using table: {table_name}")
+        info = self.tables.get(table_name, {})
+
+        # Try deterministic shortcut (no LLM)
+        shortcut = self._try_deterministic_shortcut(question, table_name)
+        if shortcut is not None:
+            logger.info(f"   [{provider}] Answered via deterministic shortcut")
+            return shortcut
+
+        sql = None
+        try:
+            sql = self._generate_sql(question, table_name, provider=provider)
+            logger.info(f"   [{provider}] SQL: {sql[:100]}...")
+
+            is_valid, error = validate_sql(sql)
+            if not is_valid:
+                corrected = self._retry_sql_generation(sql, error, table_name, provider=provider)
+                if corrected:
+                    is_valid, error = validate_sql(corrected)
+                    if is_valid:
+                        sql = corrected
+                if not is_valid:
+                    return {
+                        "answer": f"Cannot execute this query: {error}",
+                        "sources": [{"error": error}], "sql": sql, "result_data": None,
+                    }
+
+            from .prompt_security import validate_sql_tables
+            if not validate_sql_tables(sql, list(self.tables.keys())):
+                logger.warning(f"   [{provider}] SQL references unknown tables")
+
+            if 'LIMIT' not in sql.upper():
+                sql = f"{sql.rstrip(';')} LIMIT {MAX_RESULT_ROWS}"
+
+            try:
+                result_df = self.conn.execute(sql).fetchdf()
+            except Exception as exec_err:
+                corrected = self._retry_sql_generation(sql, str(exec_err), table_name, provider=provider)
+                if corrected:
+                    is_valid, error = validate_sql(corrected)
+                    if is_valid:
+                        sql = corrected
+                        result_df = self.conn.execute(sql).fetchdf()
+                    else:
+                        raise exec_err
+                else:
+                    raise exec_err
+
+            summary = self._generate_summary(question, sql, result_df, provider=provider)
+
+            sources = [{
+                "type": "structured_data",
+                "file_name": info.get('file_name', table_name),
+                "file_path": self.file_paths.get(table_name, ''),
+                "table_name": table_name,
+                "columns_used": info.get('columns', []),
+                "row_count_returned": len(result_df),
+                "total_rows": info.get('row_count', 0),
+                "sql_query": sql,
+            }]
+
+            return {
+                "answer": summary,
+                "sources": sources,
+                "sql": sql,
+                "result_data": result_df.to_dict('records') if len(result_df) <= 100 else result_df.head(100).to_dict('records'),
+                "result_columns": list(result_df.columns),
+            }
+
+        except Exception as e:
+            logger.error(f"   [{provider}] Query error: {e}")
+            return {
+                "answer": f"Error executing query: {str(e)}",
+                "sources": [{"error": str(e), "table_name": table_name}],
+                "sql": sql, "result_data": None,
+            }
+
+    def query_dual(self, question: str, table_name: Optional[str] = None) -> dict:
+        """Query with both OpenAI and Claude in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .config import LLM_PROVIDERS
+
+        results = {}
+
+        def _query_provider(prov):
+            return prov, self.query_with_provider(question, prov, table_name)
+
+        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
+            futures = {executor.submit(_query_provider, p): p for p in LLM_PROVIDERS}
+            for future in as_completed(futures):
+                try:
+                    prov, result = future.result()
+                    results[prov] = result
+                except Exception as e:
+                    prov = futures[future]
+                    logger.error(f"   [{prov}] Dual query failed: {e}")
+                    results[prov] = {
+                        "answer": f"Error from {prov}: {e}",
+                        "sources": [], "sql": None, "result_data": None,
+                    }
+
+        return results
+
     def query_with_context(
         self,
         question: str,
         context: str = "",
         table_name: Optional[str] = None,
+        provider: str = "gemini",
     ) -> Dict[str, Any]:
         """
         Query data with additional context from previous steps.
@@ -774,8 +1162,8 @@ class DataAnalyzerSQL:
         """
         if context:
             enriched = f"Context from previous analysis:\n{context[:500]}\n\nNew task: {question}"
-            return self.query(enriched, table_name)
-        return self.query(question, table_name)
+            return self.query_with_provider(enriched, provider, table_name) if provider != "gemini" else self.query(enriched, table_name)
+        return self.query_with_provider(question, provider, table_name) if provider != "gemini" else self.query(question, table_name)
 
     def select_table(self, question: str) -> Optional[str]:
         """

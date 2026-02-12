@@ -1,18 +1,22 @@
 """
 Unified LLM client with caching, cost tracking, retries, and timeouts.
+Supports multiple providers: Gemini, OpenAI, Claude (Anthropic).
 All LLM calls in the system should go through this module.
 """
 import hashlib
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from .config import (
     GOOGLE_API_KEY, GEMINI_MODEL,
+    OPENAI_API_KEY, OPENAI_MODEL,
+    ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
     LLM_PRICING, CACHE_DIR, CACHE_TTL_SECONDS, REDIS_URL,
-    LLM_TIMEOUT_SECONDS, LLM_MAX_RETRIES,
+    LLM_TIMEOUT_SECONDS, LLM_MAX_RETRIES, LLM_PROVIDERS,
 )
-from .types import LLMUsage, LLMResponse
+from .types import LLMUsage, LLMResponse, DualLLMResponse
 from .logger import logger
 
 # ── Cache Backend ────────────────────────────────────────────
@@ -72,6 +76,52 @@ def _cache_set(key: str, value: str, ttl: int):
         pass
 
 
+# ── LLM Factory ─────────────────────────────────────────────
+
+def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048):
+    """
+    Create a LlamaIndex LLM instance for the given provider.
+
+    Args:
+        provider: "openai" | "claude" | "gemini"
+        temperature: Sampling temperature
+        max_tokens: Max output tokens
+
+    Returns:
+        Tuple of (llm_instance, model_name)
+    """
+    if provider == "openai":
+        from llama_index.llms.openai import OpenAI
+        model = OPENAI_MODEL
+        llm = OpenAI(
+            api_key=OPENAI_API_KEY,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return llm, model
+    elif provider == "claude":
+        from llama_index.llms.anthropic import Anthropic
+        model = ANTHROPIC_MODEL
+        llm = Anthropic(
+            api_key=ANTHROPIC_API_KEY,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return llm, model
+    else:
+        from llama_index.llms.gemini import Gemini
+        model = GEMINI_MODEL
+        llm = Gemini(
+            api_key=GOOGLE_API_KEY,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return llm, model
+
+
 # ── Cost Estimation ──────────────────────────────────────────
 
 def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
@@ -99,34 +149,43 @@ def generate_text(
     json_mode: bool = False,
     cache_key: Optional[str] = None,
     ttl_s: int = CACHE_TTL_SECONDS,
+    provider: str = "gemini",
 ) -> LLMResponse:
     """
-    Generate text via Gemini, with caching and usage tracking.
+    Generate text via LLM, with caching and usage tracking.
 
     Args:
         prompt: The user/task prompt
-        system: System instruction (prepended)
+        system: System instruction
         model: Model name override
         temperature: Sampling temperature
         max_tokens: Max output tokens
         json_mode: If True, hint the model to return JSON
-        cache_key: Explicit cache key; if None, auto-derived from prompt
+        cache_key: Explicit cache key; if None, auto-derived
         ttl_s: Cache TTL in seconds
+        provider: LLM provider ("gemini" | "openai" | "claude")
 
     Returns:
         LLMResponse with text, usage info, cache status
     """
-    model = model or GEMINI_MODEL
+    # Resolve model from provider if not explicitly set
+    if not model:
+        if provider == "openai":
+            model = OPENAI_MODEL
+        elif provider == "claude":
+            model = ANTHROPIC_MODEL
+        else:
+            model = GEMINI_MODEL
 
-    # ── Build cache key ──
+    # ── Build cache key (includes provider) ──
     if cache_key is None:
-        key_data = f"{model}:{system[:200]}:{prompt}"
+        key_data = f"{provider}:{model}:{system[:200]}:{prompt}"
         cache_key = "llm:" + hashlib.sha256(key_data.encode()).hexdigest()[:32]
 
     # ── Check cache ──
     cached = _cache_get(cache_key)
     if cached is not None:
-        logger.info(f"[LLMClient] Cache HIT ({cache_key[:16]}...)")
+        logger.info(f"[LLMClient] Cache HIT ({provider}/{cache_key[:16]}...)")
         prompt_tok = estimate_tokens(prompt + system)
         comp_tok = estimate_tokens(cached)
         return LLMResponse(
@@ -139,33 +198,36 @@ def generate_text(
                 model=model,
                 latency_ms=0.0,
                 cache_hit=True,
+                provider=provider,
             ),
         )
 
-    # ── Call LLM ──
-    from llama_index.llms.gemini import Gemini
-
-    llm = Gemini(
-        api_key=GOOGLE_API_KEY,
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-
-    full_prompt = prompt
-    if system:
-        full_prompt = f"{system}\n\n{prompt}"
+    # ── Create LLM ──
+    llm, model = create_llm(provider, temperature, max_tokens)
 
     last_error = None
     for attempt in range(1 + LLM_MAX_RETRIES):
         try:
             start = time.time()
-            response = llm.complete(full_prompt)
+
+            # Use chat() for OpenAI/Claude (proper system prompt handling)
+            if provider in ("openai", "claude") and system:
+                from llama_index.core.llms import ChatMessage, MessageRole
+                messages = [
+                    ChatMessage(role=MessageRole.SYSTEM, content=system),
+                    ChatMessage(role=MessageRole.USER, content=prompt),
+                ]
+                response = llm.chat(messages)
+                text = response.message.content.strip()
+            else:
+                full_prompt = f"{system}\n\n{prompt}" if system else prompt
+                response = llm.complete(full_prompt)
+                text = response.text.strip()
+
             elapsed_ms = (time.time() - start) * 1000
-            text = response.text.strip()
 
             # ── Build usage ──
-            prompt_tok = estimate_tokens(full_prompt)
+            prompt_tok = estimate_tokens((system + prompt) if system else prompt)
             comp_tok = estimate_tokens(text)
             cost = estimate_cost(model, prompt_tok, comp_tok)
 
@@ -177,10 +239,11 @@ def generate_text(
                 model=model,
                 latency_ms=round(elapsed_ms, 1),
                 cache_hit=False,
+                provider=provider,
             )
 
             logger.info(
-                f"[LLMClient] {model} | {prompt_tok}+{comp_tok} tok | "
+                f"[LLMClient] {provider}/{model} | {prompt_tok}+{comp_tok} tok | "
                 f"${cost:.6f} | {elapsed_ms:.0f}ms"
             )
 
@@ -193,12 +256,12 @@ def generate_text(
             last_error = e
             if attempt < LLM_MAX_RETRIES:
                 wait = 2 ** attempt
-                logger.warning(f"[LLMClient] Retry {attempt+1} after {wait}s: {e}")
+                logger.warning(f"[LLMClient] {provider} retry {attempt+1} after {wait}s: {e}")
                 time.sleep(wait)
             else:
-                logger.error(f"[LLMClient] Failed after {1 + LLM_MAX_RETRIES} attempts: {e}")
+                logger.error(f"[LLMClient] {provider} failed after {1 + LLM_MAX_RETRIES} attempts: {e}")
 
-    raise RuntimeError(f"LLM call failed: {last_error}")
+    raise RuntimeError(f"LLM call failed ({provider}): {last_error}")
 
 
 def generate_json(
@@ -208,6 +271,7 @@ def generate_json(
     model: str = "",
     cache_key: Optional[str] = None,
     ttl_s: int = CACHE_TTL_SECONDS,
+    provider: str = "gemini",
 ) -> LLMResponse:
     """Generate text and parse as JSON. Raises on invalid JSON."""
     import re as _re
@@ -215,6 +279,7 @@ def generate_json(
     resp = generate_text(
         prompt, system=system, model=model,
         json_mode=True, cache_key=cache_key, ttl_s=ttl_s,
+        provider=provider,
     )
 
     # Strip markdown fences
@@ -236,3 +301,69 @@ def generate_json(
     resp.text = json.dumps(parsed)
     resp.raw = parsed
     return resp
+
+
+# ── Dual-Provider API ────────────────────────────────────────
+
+def generate_text_dual(
+    prompt: str,
+    *,
+    system: str = "",
+    temperature: float = 0.1,
+    max_tokens: int = 2048,
+    json_mode: bool = False,
+    cache_key: Optional[str] = None,
+    ttl_s: int = CACHE_TTL_SECONDS,
+    providers: Optional[List[str]] = None,
+) -> DualLLMResponse:
+    """
+    Generate text from both OpenAI and Claude in parallel.
+
+    Args:
+        prompt: The user/task prompt
+        system: System instruction
+        temperature: Sampling temperature
+        max_tokens: Max output tokens
+        json_mode: If True, hint the model to return JSON
+        cache_key: Explicit cache key
+        ttl_s: Cache TTL in seconds
+        providers: List of providers (default: LLM_PROVIDERS)
+
+    Returns:
+        DualLLMResponse with results from each provider
+    """
+    providers = providers or LLM_PROVIDERS
+    result = DualLLMResponse()
+
+    def _call_provider(prov: str):
+        try:
+            resp = generate_text(
+                prompt,
+                system=system,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                cache_key=f"{cache_key}:{prov}" if cache_key else None,
+                ttl_s=ttl_s,
+                provider=prov,
+            )
+            return prov, resp, None
+        except Exception as e:
+            logger.error(f"[LLMClient] {prov} failed in dual call: {e}")
+            return prov, None, str(e)
+
+    with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+        futures = [executor.submit(_call_provider, p) for p in providers]
+        for future in as_completed(futures):
+            prov, resp, error = future.result()
+            if prov == "gemini":
+                result.gemini = resp
+                result.gemini_error = error
+            elif prov == "openai":
+                result.openai = resp
+                result.openai_error = error
+            elif prov == "claude":
+                result.claude = resp
+                result.claude_error = error
+
+    return result

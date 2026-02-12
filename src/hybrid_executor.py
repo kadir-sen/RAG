@@ -298,6 +298,49 @@ class HybridExecutor:
             plan_rationale="Heuristic SQL chain",
         )
 
+    def execute_dual(self, query: str) -> Dict[str, Any]:
+        """
+        Execute a complex query with both OpenAI and Claude in parallel.
+        Plans once, then executes the plan with each provider independently.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .config import LLM_PROVIDERS
+
+        log_separator("Hybrid Executor (Dual-LLM)")
+        logger.info(f"[HybridExecutor] Dual query: {query[:100]}...")
+
+        expanded = self.jargon.expand_query(query)
+        table_context = self._build_table_context()
+        doc_context = self._build_doc_context()
+
+        # Plan once (plan structure is provider-independent)
+        plan = self.planner.plan(expanded, table_context, doc_context)
+        logger.info(f"[HybridExecutor] Plan: {len(plan.steps)} steps, executing with both providers...")
+
+        results = {}
+
+        def _execute_for_provider(provider: str):
+            result = self.executor.execute_with_provider(plan, provider)
+            result['query'] = query
+            result['query_type'] = self._determine_query_type(plan)
+            return provider, result
+
+        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
+            futures = {executor.submit(_execute_for_provider, p): p for p in LLM_PROVIDERS}
+            for future in as_completed(futures):
+                prov = futures[future]
+                try:
+                    _, result = future.result()
+                    results[prov] = result
+                except Exception as e:
+                    logger.error(f"[HybridExecutor] [{prov}] Failed: {e}")
+                    results[prov] = {
+                        "answer": f"Error from {prov}: {e}",
+                        "sources": [], "sql": None, "result_data": None,
+                    }
+
+        return results
+
     def _determine_query_type(self, plan: QueryPlan) -> str:
         """Determine the overall query type from a plan."""
         types = set()

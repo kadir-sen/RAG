@@ -1,6 +1,7 @@
 """
 Light Graph - Document-level graph for timeline and relationship queries.
 Stores nodes (documents) and edges (relationships) as JSON.
+DuckDB-backed correspondence table for fast SQL queries on notices.
 No external graph database required.
 """
 import json
@@ -10,6 +11,8 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple, Set
 from dataclasses import dataclass, field, asdict
 from collections import defaultdict
+
+import duckdb
 
 from .logger import logger
 from .config import BASE_DIR
@@ -72,10 +75,38 @@ class LightGraph:
     # Minimum Jaccard similarity for topic edges
     TOPIC_SIMILARITY_THRESHOLD = 0.3
 
+    # SQL patterns for direct timeline queries (avoid LLM)
+    _TIMELINE_SQL_PATTERNS = [
+        # "how many letters/notices/documents"
+        (r'(?:how\s+many)\s+(?:letters?|notices?|documents?)',
+         "SELECT COUNT(*) AS count FROM notices"),
+        # "letters from X"
+        (r'(?:letters?|notices?|documents?)\s+(?:from|sent\s+by)\s+(.+?)(?:\?|$)',
+         "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices WHERE LOWER(sender) LIKE '%{0}%' ORDER BY date"),
+        # "letters to X"
+        (r'(?:letters?|notices?|documents?)\s+(?:to|sent\s+to)\s+(.+?)(?:\?|$)',
+         "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices WHERE LOWER(recipient) LIKE '%{0}%' ORDER BY date"),
+        # "correspondence between X and Y"
+        (r'correspondence\s+between\s+(.+?)\s+and\s+(.+?)(?:\?|$)',
+         "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices WHERE (LOWER(sender) LIKE '%{0}%' AND LOWER(recipient) LIKE '%{1}%') OR (LOWER(sender) LIKE '%{1}%' AND LOWER(recipient) LIKE '%{0}%') ORDER BY date"),
+        # "latest/recent/last notice/letter"
+        (r'(?:latest|recent|last)\s+(?:letters?|notices?|documents?)',
+         "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices ORDER BY date DESC LIMIT 5"),
+        # "first/earliest notice/letter"
+        (r'(?:first|earliest)\s+(?:letters?|notices?|documents?)',
+         "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices ORDER BY date ASC LIMIT 5"),
+        # "documents about X"
+        (r'(?:documents?|letters?|notices?)\s+(?:about|regarding|related\s+to)\s+(.+?)(?:\?|$)',
+         "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices WHERE LOWER(subject) LIKE '%{0}%' ORDER BY date"),
+    ]
+
     def __init__(self):
         """Initialize light graph."""
         self.graph = DocumentGraph()
+        self._db = duckdb.connect(":memory:")
+        self._notices_table_ready = False
         self._load_graph()
+        self._sync_notices_to_duckdb()
 
     def _load_graph(self):
         """Load graph from disk."""
@@ -111,8 +142,123 @@ class LightGraph:
         except Exception as e:
             logger.error(f"[LightGraph] Error saving graph: {e}")
 
+    def _sync_notices_to_duckdb(self):
+        """Create and populate the notices DuckDB table from graph nodes."""
+        try:
+            self._db.execute("DROP TABLE IF EXISTS notices")
+            self._db.execute("""
+                CREATE TABLE notices (
+                    doc_id VARCHAR,
+                    date VARCHAR,
+                    sender VARCHAR,
+                    recipient VARCHAR,
+                    subject VARCHAR,
+                    doc_type VARCHAR,
+                    direction VARCHAR,
+                    contract_ref VARCHAR,
+                    project_name VARCHAR,
+                    file_name VARCHAR
+                )
+            """)
+
+            for doc_id, node in self.graph.nodes.items():
+                self._db.execute(
+                    "INSERT INTO notices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        doc_id,
+                        node.get("date"),
+                        node.get("sender"),
+                        node.get("recipient"),
+                        node.get("subject"),
+                        node.get("doc_type"),
+                        node.get("direction"),
+                        node.get("contract_ref"),
+                        node.get("project_name"),
+                        node.get("file_name"),
+                    ],
+                )
+
+            self._notices_table_ready = True
+            count = len(self.graph.nodes)
+            if count > 0:
+                logger.info(f"[LightGraph] Synced {count} notices to DuckDB")
+        except Exception as e:
+            logger.warning(f"[LightGraph] DuckDB sync failed: {e}")
+            self._notices_table_ready = False
+
+    def _try_timeline_sql(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        Try to answer a timeline query directly with SQL on the notices table.
+        Returns result dict or None if no pattern matched.
+        """
+        if not self._notices_table_ready:
+            return None
+
+        query_lower = query.strip().lower()
+
+        for pattern, sql_template in self._TIMELINE_SQL_PATTERNS:
+            m = re.search(pattern, query_lower, re.IGNORECASE)
+            if not m:
+                continue
+
+            # Fill in captured groups
+            groups = [g.strip() for g in m.groups()] if m.groups() else []
+            sql = sql_template
+            for i, g in enumerate(groups):
+                sql = sql.replace(f"{{{i}}}", g)
+
+            try:
+                result = self._db.execute(sql).fetchdf()
+                if result.empty:
+                    continue
+
+                # Format as readable answer
+                if "count" in result.columns:
+                    count = int(result.iloc[0]["count"])
+                    return {
+                        "answer": f"Found {count} document(s) matching your query.",
+                        "sources": [],
+                        "method": "sql_direct",
+                    }
+
+                # Table result
+                rows = []
+                for _, row in result.iterrows():
+                    entry = {}
+                    for col in result.columns:
+                        val = row[col]
+                        if val is not None and str(val) != "None":
+                            entry[col] = str(val)
+                    rows.append(entry)
+
+                # Build readable answer
+                lines = [f"Found {len(rows)} document(s):\n"]
+                for i, r in enumerate(rows, 1):
+                    date = r.get("date", "No date")
+                    sender = r.get("sender", "Unknown")
+                    recipient = r.get("recipient", "Unknown")
+                    subject = r.get("subject", "")
+                    lines.append(f"{i}. {date} | {sender} -> {recipient}: {subject}")
+
+                sources = [
+                    {"type": "graph_node", "doc_id": r.get("doc_id", ""), "file_name": r.get("file_name", "")}
+                    for r in rows if "doc_id" in r
+                ]
+
+                return {
+                    "answer": "\n".join(lines),
+                    "sources": sources,
+                    "method": "sql_direct",
+                }
+
+            except Exception as e:
+                logger.debug(f"[LightGraph] SQL pattern failed: {e}")
+                continue
+
+        return None
+
     def add_notice(self, notice: NoticeMetadata):
-        """Add a document node from notice metadata."""
+        """Add a document node from notice metadata and sync to DuckDB."""
         node = GraphNode(
             doc_id=notice.doc_id,
             date=notice.date,
@@ -130,6 +276,24 @@ class LightGraph:
             actions=getattr(notice, 'actions', []) or [],
         )
         self.graph.nodes[notice.doc_id] = asdict(node)
+
+        # Insert into DuckDB notices table
+        if self._notices_table_ready:
+            try:
+                self._db.execute(
+                    "INSERT INTO notices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        notice.doc_id, notice.date, notice.sender,
+                        notice.recipient, notice.subject, notice.doc_type,
+                        getattr(notice, 'direction', None),
+                        getattr(notice, 'contract_ref', None),
+                        getattr(notice, 'project_name', None),
+                        notice.file_name,
+                    ],
+                )
+            except Exception as e:
+                logger.debug(f"[LightGraph] DuckDB insert failed: {e}")
+
         logger.info(f"[LightGraph] Added node: {notice.doc_id}")
 
     def build_edges(self):
@@ -787,8 +951,8 @@ class LightGraph:
         max_nodes: int = 20,
     ) -> Dict[str, Any]:
         """
-        Use LLM to synthesize a natural language answer from timeline data.
-        Uses llm_client for caching, cost tracking, and prompt security.
+        Answer timeline queries. Tries deterministic SQL first,
+        falls back to LLM synthesis only when needed.
 
         Args:
             query: User's natural language question
@@ -797,6 +961,12 @@ class LightGraph:
         Returns:
             Dict with answer and sources
         """
+        # Try SQL-direct answer first (no LLM cost)
+        sql_result = self._try_timeline_sql(query)
+        if sql_result:
+            logger.info("[LightGraph] Timeline answered via SQL shortcut")
+            return sql_result
+
         from . import llm_client
         from .prompt_security import safe_render_prompt, build_system_prompt
 
@@ -904,7 +1074,7 @@ class LightGraph:
         }
 
     def rebuild_from_notices(self):
-        """Rebuild entire graph from saved notices."""
+        """Rebuild entire graph from saved notices and sync DuckDB."""
         logger.info("[LightGraph] Rebuilding graph from notices...")
 
         self.graph = DocumentGraph()
@@ -921,6 +1091,10 @@ class LightGraph:
 
         # Build edges
         self.build_edges()
+
+        # Re-sync DuckDB
+        self._sync_notices_to_duckdb()
+
         logger.info(f"[LightGraph] Rebuilt: {len(self.graph.nodes)} nodes, {len(self.graph.edges)} edges")
 
 

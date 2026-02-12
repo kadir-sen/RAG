@@ -2,11 +2,11 @@
 .git/
 .gitignore
 
-# Environment (secrets go via Cloud Run env vars)
+# Environment files (secrets via --set-env-vars)
 .env
 .env.*
 
-# Python
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
@@ -20,7 +20,7 @@ env/
 .idea/
 .claude/
 
-# Data (uploaded at runtime, not baked into image)
+# Data folders (not needed in cloud image)
 data/
 storage/
 cache/
@@ -33,15 +33,21 @@ tests/
 .coverage
 htmlcov/
 
-# Docs & misc
+# Docs
 docs/
-nul
-*.log
 
-# Downloaded data folders
+# Windows special files
+nul
+
+# Downloaded data folders with spaces
+Questions & Abbreviations*/
 Questions*/
+Real Life Contracts*/
 Real Life*/
+Sample Contract Document*/
 Sample Contract*/
+Sample Manpower Excel*/
 Sample Manpower*/
 Sample Progress*/
+Weekly Progress Reports*/
 Weekly Progress*/

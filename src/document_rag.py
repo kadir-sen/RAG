@@ -69,7 +69,7 @@ class DocumentRAG:
         Settings.embed_model = GoogleGenAIEmbedding(
             api_key=GOOGLE_API_KEY,
             model_name=EMBEDDING_MODEL,
-            output_dimensionality=EMBEDDING_DIMENSION,
+            embedding_config={"output_dimensionality": EMBEDDING_DIMENSION},
         )
         Settings.node_parser = SentenceSplitter(
             chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
@@ -470,6 +470,102 @@ class DocumentRAG:
 
         logger.info(f"✅ Found {len(sources)} unique sources")
         return {"answer": str(response), "sources": sources}
+
+    def _extract_sources(self, response) -> list:
+        """Extract sources from a LlamaIndex query response."""
+        sources = []
+        seen = set()
+
+        for i, node in enumerate(response.source_nodes, 1):
+            meta = node.metadata
+            file_name = meta.get("file_name", "Unknown")
+            file_path = meta.get("file_path", "")
+            score = round(node.score, 3) if node.score else None
+
+            try:
+                page_num = int(meta.get("page_number", 1))
+            except (ValueError, TypeError):
+                page_num = 1
+
+            try:
+                total_pages = int(meta.get("total_pages", 1))
+            except (ValueError, TypeError):
+                total_pages = 1
+
+            key = f"{file_name}_{page_num}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            text = node.text.strip()
+            sentences = text.replace('\n', ' ').split('. ')
+            highlight = '. '.join(sentences[:3])
+            if len(sentences) > 3:
+                highlight += '...'
+
+            sources.append({
+                "file_name": file_name,
+                "file_path": file_path,
+                "page_number": page_num,
+                "total_pages": total_pages,
+                "score": score,
+                "text_snippet": text[:500] + "..." if len(text) > 500 else text,
+                "highlight_text": highlight[:300],
+            })
+
+        return sources
+
+    def query_with_provider(self, question: str, provider: str, top_k: int = 5) -> dict:
+        """Query documents using a specific LLM provider for answer synthesis."""
+        from .llm_client import create_llm
+
+        logger.info(f"[DocumentRAG] Query with provider={provider}: {question[:80]}...")
+
+        if not self.index:
+            if not self.load_index():
+                return {
+                    "answer": "No documents indexed. Please upload documents first.",
+                    "sources": [],
+                }
+
+        llm, model_name = create_llm(provider)
+        logger.info(f"   Using {provider}/{model_name} for synthesis...")
+
+        query_engine = self.index.as_query_engine(
+            similarity_top_k=top_k,
+            llm=llm,
+        )
+        response = query_engine.query(question)
+        sources = self._extract_sources(response)
+
+        logger.info(f"   [{provider}] Found {len(sources)} sources")
+        return {"answer": str(response), "sources": sources}
+
+    def query_dual(self, question: str, top_k: int = 5) -> dict:
+        """Query with both OpenAI and Claude in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .config import LLM_PROVIDERS
+
+        results = {}
+
+        def _query_provider(prov):
+            return prov, self.query_with_provider(question, prov, top_k)
+
+        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
+            futures = {executor.submit(_query_provider, p): p for p in LLM_PROVIDERS}
+            for future in as_completed(futures):
+                try:
+                    prov, result = future.result()
+                    results[prov] = result
+                except Exception as e:
+                    prov = futures[future]
+                    logger.error(f"   [{prov}] Query failed: {e}")
+                    results[prov] = {
+                        "answer": f"Error from {prov}: {e}",
+                        "sources": [],
+                    }
+
+        return results
 
     def get_page_content(self, file_path: str, page_num: int) -> Optional[str]:
         """Get full content of a specific page for preview."""

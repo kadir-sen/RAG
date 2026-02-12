@@ -12,6 +12,7 @@ load_dotenv(Path(__file__).parent / ".env")
 
 import streamlit as st
 import pandas as pd
+import streamlit_authenticator as stauth
 
 # Page config - MUST be first
 st.set_page_config(
@@ -19,6 +20,47 @@ st.set_page_config(
     page_icon="💬",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+# ── Authentication ─────────────────────────────────────────
+AUTH_CONFIG = {
+    "credentials": {
+        "usernames": {
+            "admin": {
+                "email": "admin@company.com",
+                "first_name": "Admin",
+                "last_name": "User",
+                "logged_in": False,
+                "password": "$2b$12$aashT0HWtKa0viUSRXAlL.Wd2Ic52tTfp/lHGQOU0SMSU0uHAydPq",
+            },
+            "user1": {
+                "email": "user1@company.com",
+                "first_name": "User",
+                "last_name": "One",
+                "logged_in": False,
+                "password": "$2b$12$Kpo/x8Bj2z8AJkA9B5WLmunOjcgW4NenroFGrsyCmGls8QV3UI5RC",
+            },
+            "user2": {
+                "email": "user2@company.com",
+                "first_name": "User",
+                "last_name": "Two",
+                "logged_in": False,
+                "password": "$2b$12$Kpo/x8Bj2z8AJkA9B5WLmunOjcgW4NenroFGrsyCmGls8QV3UI5RC",
+            },
+        }
+    },
+    "cookie": {
+        "name": "rag_chatbot_auth",
+        "key": os.getenv("AUTH_COOKIE_KEY", "rag-chatbot-secret-key-2026"),
+        "expiry_days": 7,
+    },
+}
+
+authenticator = stauth.Authenticate(
+    AUTH_CONFIG["credentials"],
+    AUTH_CONFIG["cookie"]["name"],
+    AUTH_CONFIG["cookie"]["key"],
+    AUTH_CONFIG["cookie"]["expiry_days"],
 )
 
 # Dark theme CSS
@@ -147,6 +189,30 @@ st.markdown("""
     .stSpinner > div {
         border-color: #10a37f !important;
     }
+
+    /* Tabs for dual LLM answers */
+    .stTabs [data-baseweb="tab-list"] {
+        background-color: #2d2d44 !important;
+        border-radius: 8px;
+        padding: 0.25rem;
+        gap: 0.25rem;
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #e0e0e0 !important;
+        background-color: transparent !important;
+        border-radius: 6px;
+        padding: 0.5rem 1rem;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #404060 !important;
+        color: #10a37f !important;
+    }
+    .stTabs [data-baseweb="tab-panel"] {
+        background-color: #1f1f35 !important;
+        border: 1px solid #404060 !important;
+        border-radius: 0 0 8px 8px;
+        padding: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -181,7 +247,7 @@ def check_api_keys():
         st.error("⚠️ Configuration Error")
         for e in errors:
             st.warning(e)
-        st.code("# Create .env file:\nGOOGLE_API_KEY=your_key\nPINECONE_API_KEY=your_key")
+        st.code("# Create .env file:\nGOOGLE_API_KEY=your_key\nPINECONE_API_KEY=your_key\nOPENAI_API_KEY=your_key\nANTHROPIC_API_KEY=your_key")
         st.stop()
 
 
@@ -685,10 +751,98 @@ def render_sources(sources: list, msg_idx: int):
             st.markdown("---")
 
 
+def render_provider_answer(answer: dict, provider: str, msg_idx: int, tab_idx: int):
+    """Render a single provider's answer inside a tab."""
+    if not answer:
+        st.warning(f"No response from {provider}")
+        return
+
+    # Provider badge
+    badge_colors = {
+        "openai": ("background: #10a37f; color: white;", "OpenAI"),
+        "claude": ("background: #d97706; color: white;", "Claude"),
+    }
+    style, label = badge_colors.get(provider, ("background: #555; color: white;", provider))
+    st.markdown(
+        f'<span style="{style} padding: 0.25rem 0.75rem; border-radius: 1rem; '
+        f'font-size: 0.75rem; font-weight: 600;">{label}</span>',
+        unsafe_allow_html=True,
+    )
+
+    # Answer text
+    answer_text = answer.get("answer", answer.get("error", "No answer"))
+    st.markdown(answer_text)
+
+    # Sources
+    sources = answer.get("sources", [])
+    if sources:
+        render_sources(sources, msg_idx * 100 + tab_idx)
+
+    # SQL query
+    sql = answer.get("sql")
+    if sql:
+        with st.expander("🔍 SQL Query"):
+            st.code(sql, language="sql")
+
+    # Result data
+    result_data = answer.get("result_data")
+    if result_data:
+        with st.expander("📊 Data Results"):
+            df = pd.DataFrame(result_data)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Error
+    error = answer.get("error")
+    if error and not answer.get("answer"):
+        st.error(f"Error: {error}")
+
+
+def render_dual_answers(msg: dict, idx: int):
+    """Render dual-provider answers in tabs."""
+    answers = msg.get("dual_answers", {})
+    query_type = msg.get("query_type", "")
+
+    # Query type badge
+    badge_styles = {
+        "document": "background: #1e40af; color: #93c5fd;",
+        "data": "background: #166534; color: #86efac;",
+        "hybrid": "background: #92400e; color: #fcd34d;",
+    }
+    badge_style = badge_styles.get(query_type, "")
+    if badge_style:
+        st.markdown(
+            f'<span style="{badge_style} padding: 0.2rem 0.6rem; border-radius: 1rem; '
+            f'font-size: 0.7rem; font-weight: 600; text-transform: uppercase;">'
+            f'{query_type}</span>',
+            unsafe_allow_html=True,
+        )
+
+    # Build tabs dynamically from available providers
+    from src.config import LLM_PROVIDERS, GEMINI_MODEL, OPENAI_MODEL, ANTHROPIC_MODEL
+
+    provider_labels = {
+        "gemini": f"Gemini ({GEMINI_MODEL})",
+        "openai": f"OpenAI ({OPENAI_MODEL})",
+        "claude": f"Claude ({ANTHROPIC_MODEL})",
+    }
+    active_providers = [p for p in LLM_PROVIDERS if p in answers]
+    if not active_providers:
+        active_providers = list(answers.keys())
+
+    tab_names = [provider_labels.get(p, p) for p in active_providers]
+    tabs = st.tabs(tab_names)
+
+    for tab, prov in zip(tabs, active_providers):
+        with tab:
+            render_provider_answer(answers.get(prov, {}), prov, idx, active_providers.index(prov))
+
+
 def render_message(msg: dict, idx: int):
     """Render a chat message."""
     if msg["role"] == "user":
         render_user_message(msg["content"])
+    elif msg.get("dual_answers"):
+        render_dual_answers(msg, idx)
     else:
         render_assistant_message(msg["content"], msg.get("query_type", ""))
 
@@ -765,8 +919,9 @@ def render_welcome():
 
 
 def handle_input(user_input: str):
-    """Process user input."""
+    """Process user input. Uses dual-LLM if providers available, else single Gemini."""
     from src.router import get_router
+    from src.config import LLM_PROVIDERS
 
     st.session_state.messages.append({
         "role": "user",
@@ -774,23 +929,55 @@ def handle_input(user_input: str):
     })
 
     router = get_router()
-    result = router.route_and_execute(user_input)
 
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": result["answer"],
-        "sources": result.get("sources", []),
-        "query_type": result.get("query_type", ""),
-        "sql": result.get("sql"),
-        "result_data": result.get("result_data"),
-    })
+    if len(LLM_PROVIDERS) >= 2:
+        # Dual-LLM mode (Gemini + OpenAI)
+        result = router.route_and_execute_dual(user_input)
+        answers = result.get("answers", {})
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": "",
+            "dual_answers": answers,
+            "query_type": result.get("query_type", ""),
+        })
+    else:
+        # Single-LLM mode (Gemini only)
+        result = router.route_and_execute(user_input)
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": result.get("answer", "No answer"),
+            "query_type": result.get("query_type", ""),
+            "sources": result.get("sources", []),
+            "sql": result.get("sql"),
+            "result_data": result.get("result_data"),
+        })
 
 
 def main():
-    """Main application."""
+    """Main application with authentication gate."""
+    # ── Login gate ──
+    try:
+        authenticator.login()
+    except Exception as e:
+        st.error(e)
+
+    if st.session_state.get("authentication_status") is None:
+        st.info("Kullanici adi ve sifrenizi girin.")
+        return
+    if st.session_state.get("authentication_status") is False:
+        st.error("Kullanici adi veya sifre hatali.")
+        return
+
+    # ── Authenticated ──
     init_session()
     check_api_keys()
     render_sidebar()
+
+    # Logout button in sidebar
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown(f"**{st.session_state.get('name', '')}** olarak giris yapildi")
+        authenticator.logout("Cikis Yap")
 
     # PDF viewer (if active)
     render_pdf_viewer()

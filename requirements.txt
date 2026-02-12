@@ -1,8 +1,14 @@
 # Core Framework
 llama-index>=0.10.0
 llama-index-llms-gemini>=0.1.0
+llama-index-llms-openai>=0.1.0
+llama-index-llms-anthropic>=0.1.0
 llama-index-embeddings-google-genai>=0.1.0
 llama-index-vector-stores-pinecone>=0.1.0
+
+# Dual-LLM Providers
+openai>=1.10.0
+anthropic>=0.18.0
 
 # Document Processing
 pymupdf>=1.23.0
@@ -30,6 +36,13 @@ streamlit>=1.30.0
 
 # Caching
 diskcache>=5.6.0
+
+# Fuzzy Matching (OCR label recovery)
+rapidfuzz>=3.0.0
+
+# Authentication
+streamlit-authenticator>=0.3.0
+bcrypt>=4.0.0
 
 # Utilities
 python-dotenv>=1.0.0

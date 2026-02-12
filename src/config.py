@@ -11,11 +11,23 @@ load_dotenv(dotenv_path=env_path)
 # API Keys
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Model settings
-GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-05-20")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSION = 768  # MRL-reduced from 3072 default
+
+# Dual-LLM providers (built dynamically from available keys)
+# Gemini is always available (primary), others added if keys present
+LLM_PROVIDERS = ["gemini"]
+if OPENAI_API_KEY:
+    LLM_PROVIDERS.append("openai")
+if ANTHROPIC_API_KEY:
+    LLM_PROVIDERS.append("claude")
 
 # Pinecone settings
 PINECONE_INDEX_NAME = "agentic-rag"
@@ -43,7 +55,7 @@ MAX_SQL_RESULT_ROWS = 200
 # OCR Settings
 OCR_MODE = os.getenv("OCR_MODE", "auto")  # "auto" | "force" | "off"
 OCR_ENGINE = os.getenv("OCR_ENGINE", "tesseract")  # "tesseract" | "paddleocr"
-OCR_LANG = os.getenv("OCR_LANG", "eng")  # "eng" | "eng+tur" | etc.
+OCR_LANG = os.getenv("OCR_LANG", "eng")  # English-only (all documents are English)
 OCR_DPI = int(os.getenv("OCR_DPI", "200"))  # Image rendering DPI
 OCR_CACHE_DIR = str(BASE_DIR / ".cache" / "ocr")
 OCR_MAX_PAGES_PER_DOC = int(os.getenv("OCR_MAX_PAGES", "500"))
@@ -71,11 +83,19 @@ Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 # ── Cost Estimation (USD per 1M tokens) ─────────────────────
 LLM_PRICING = {
+    "gemini-2.5-flash-preview-05-20": {"input": 0.15, "output": 0.60},
     "gemini-flash-latest": {"input": 0.075, "output": 0.30},
     "gemini-2.0-flash": {"input": 0.075, "output": 0.30},
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
     "gemini-2.0-pro": {"input": 1.25, "output": 5.00},
+    # OpenAI
+    "gpt-4o": {"input": 2.50, "output": 10.00},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-4.1": {"input": 2.00, "output": 8.00},
+    # Claude
+    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
+    "claude-haiku-4-20250514": {"input": 0.80, "output": 4.00},
 }
 EMBEDDING_PRICING = {
     "gemini-embedding-001": 0.00002,  # per embedding
@@ -121,6 +141,15 @@ def validate_config() -> tuple[bool, list[str]]:
     elif len(PINECONE_API_KEY) < 20:
         errors.append("PINECONE_API_KEY appears invalid (too short).")
 
+    # Optional providers – warn but don't block startup
+    if not OPENAI_API_KEY:
+        import logging
+        logging.warning("OPENAI_API_KEY is not set. OpenAI provider will be unavailable.")
+
+    if not ANTHROPIC_API_KEY:
+        import logging
+        logging.warning("ANTHROPIC_API_KEY is not set. Claude provider will be unavailable.")
+
     return len(errors) == 0, errors
 
 
@@ -129,7 +158,11 @@ def print_config_status():
     print("\n=== Configuration Status ===")
     print(f"GOOGLE_API_KEY: {'✓ Set' if GOOGLE_API_KEY else '✗ Missing'}")
     print(f"PINECONE_API_KEY: {'✓ Set' if PINECONE_API_KEY else '✗ Missing'}")
+    print(f"OPENAI_API_KEY: {'✓ Set' if OPENAI_API_KEY else '✗ Missing'}")
+    print(f"ANTHROPIC_API_KEY: {'✓ Set' if ANTHROPIC_API_KEY else '✗ Missing'}")
     print(f"Model: {GEMINI_MODEL}")
+    print(f"OpenAI Model: {OPENAI_MODEL}")
+    print(f"Claude Model: {ANTHROPIC_MODEL}")
     print(f"Embedding: {EMBEDDING_MODEL}")
     print(f"Pinecone Index: {PINECONE_INDEX_NAME}")
     print(f"Data Dir: {DATA_DIR}")

@@ -428,7 +428,71 @@ class PlanExecutor:
             ],
         }
 
-    def _execute_sql_step(self, instruction: str, prev_results: Dict) -> Dict[str, Any]:
+    def execute_with_provider(self, plan: QueryPlan, provider: str) -> Dict[str, Any]:
+        """Execute plan with a specific LLM provider."""
+        logger.info(f"[Executor] Executing plan with provider={provider}: {len(plan.steps)} steps")
+
+        all_sources = []
+        step_results = {}
+        completed_ids = []
+
+        for step in plan.steps:
+            step_start = time.time()
+            instruction = step.instruction
+            for dep_id in step.depends_on:
+                if dep_id in step_results:
+                    prev = step_results[dep_id]
+                    placeholder = f"{{step_{dep_id}}}"
+                    if placeholder in instruction:
+                        instruction = instruction.replace(
+                            placeholder,
+                            str(prev.get('summary', prev.get('answer', '')))[:500]
+                        )
+
+            try:
+                if step.step_type == StepType.SQL.value:
+                    result = self._execute_sql_step(instruction, step_results, provider=provider)
+                elif step.step_type == StepType.DOCUMENT.value:
+                    result = self._execute_document_step(instruction, provider=provider)
+                elif step.step_type == StepType.TIMELINE.value:
+                    result = self._execute_timeline_step(instruction)
+                elif step.step_type == StepType.COMBINE.value:
+                    result = self._execute_combine_step(
+                        plan.original_query, instruction, step.depends_on, step_results,
+                        provider=provider,
+                    )
+                else:
+                    result = {"answer": f"Unknown step type: {step.step_type}", "sources": []}
+
+                answer = result.get('answer', '')
+                if answer.startswith("Error"):
+                    raise RuntimeError(answer)
+
+                step_results[step.step_id] = result
+                all_sources.extend(result.get('sources', []))
+                completed_ids.append(step.step_id)
+
+            except Exception as e:
+                logger.error(f"[Executor] [{provider}] Step {step.step_id} FAILED: {e}")
+                return {
+                    "answer": f"[{provider}] Step {step.step_id} failed: {e}",
+                    "sources": all_sources,
+                    "plan": self._build_plan_meta(plan),
+                    "sql": None, "result_data": None, "result_columns": None,
+                }
+
+        final = step_results.get(len(plan.steps) - 1, {})
+        return {
+            "answer": final.get('answer', 'No result produced'),
+            "sources": all_sources,
+            "plan": self._build_plan_meta(plan),
+            "sql": final.get('sql'),
+            "result_data": final.get('result_data'),
+            "result_columns": final.get('result_columns'),
+        }
+
+    def _execute_sql_step(self, instruction: str, prev_results: Dict,
+                          provider: str = "gemini") -> Dict[str, Any]:
         """Execute a SQL analysis step, passing context from prior steps."""
         context = ""
         for step_id, res in prev_results.items():
@@ -436,9 +500,12 @@ class PlanExecutor:
                 context += f"Step {step_id} result: {res['answer'][:300]}\n"
 
         if context:
-            result = self.data_analyzer.query_with_context(instruction, context)
+            result = self.data_analyzer.query_with_context(instruction, context, provider=provider)
         else:
-            result = self.data_analyzer.query(instruction)
+            if provider != "gemini":
+                result = self.data_analyzer.query_with_provider(instruction, provider)
+            else:
+                result = self.data_analyzer.query(instruction)
 
         return {
             "answer": result.get("answer", ""),
@@ -449,9 +516,12 @@ class PlanExecutor:
             "result_columns": result.get("result_columns"),
         }
 
-    def _execute_document_step(self, instruction: str) -> Dict[str, Any]:
+    def _execute_document_step(self, instruction: str, provider: str = "gemini") -> Dict[str, Any]:
         """Execute a document search step."""
-        result = self.document_rag.query(instruction)
+        if provider != "gemini":
+            result = self.document_rag.query_with_provider(instruction, provider)
+        else:
+            result = self.document_rag.query(instruction)
         return {
             "answer": result.get("answer", ""),
             "summary": result.get("answer", "")[:300],
@@ -475,6 +545,7 @@ class PlanExecutor:
         instruction: str,
         depends_on: List[int],
         prev_results: Dict,
+        provider: str = "gemini",
     ) -> Dict[str, Any]:
         """Combine results from previous steps using llm_client."""
         from . import llm_client
@@ -513,7 +584,7 @@ class PlanExecutor:
         system = build_system_prompt("You synthesize multiple analysis results into a single answer.")
 
         try:
-            resp = llm_client.generate_text(prompt, system=system, max_tokens=1024)
+            resp = llm_client.generate_text(prompt, system=system, max_tokens=1024, provider=provider)
 
             from .telemetry import get_current_trace
             trace = get_current_trace()
@@ -522,7 +593,7 @@ class PlanExecutor:
 
             answer = resp.text
         except Exception as e:
-            logger.error(f"[Executor] Combine error: {e}")
+            logger.error(f"[Executor] [{provider}] Combine error: {e}")
             answer = f"**Combined Results:**\n\n{combined_input}"
 
         return {

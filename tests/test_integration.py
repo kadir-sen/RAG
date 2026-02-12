@@ -248,13 +248,11 @@ run_test('QueryPlanner - JSON parsing', test_json_parsing)
 def test_router_complex_detection():
     from src.router import QueryRouter
 
-    # Mock _is_complex_query by creating a minimal instance-like check
-    # We test the logic directly
     complex_queries = [
         'Group by category then find the max',
         'Find outliers in the data',
         'Compare sales month-over-month',
-        'Grupla sonra en buyuk bul',
+        'Cross-reference the contract with actual data',
     ]
     simple_queries = [
         'What is the total revenue?',
@@ -262,13 +260,12 @@ def test_router_complex_detection():
         'Who sent the letter?',
     ]
 
-    # Test the static method logic inline
     def is_complex(query):
         q = query.lower()
         indicators = [
             ' then ', ' and then ', 'group by', 'compare', 'outlier',
             'above average', 'below average', 'month-over-month',
-            ' sonra ', 'grupla', 'aykiri',
+            'correlate', 'cross-reference', 'combined with',
         ]
         return any(ind in q for ind in indicators)
 

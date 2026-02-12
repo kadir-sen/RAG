@@ -3,8 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install system dependencies including Tesseract OCR
-RUN apt-get update && apt-get install -y \
-    build-essential \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     tesseract-ocr-tur \
@@ -18,20 +17,22 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . .
+COPY src/ ./src/
+COPY app.py .
+COPY .streamlit/ ./.streamlit/
 
-# Create cache and storage directories
-RUN mkdir -p .cache/ocr storage/parquet
+# Create runtime directories
+RUN mkdir -p data/documents data/tables storage cache logs/telemetry logs/ab .cache/ocr storage/parquet
 
-# Expose Streamlit port
-EXPOSE 8501
+# Cloud Run injects PORT env variable (default 8080)
+ENV PORT=8080
+EXPOSE 8080
 
-# Run Streamlit
-CMD ["streamlit", "run", "app.py", \
-     "--server.address", "0.0.0.0", \
-     "--server.port", "8501", \
-     "--server.maxUploadSize", "500", \
-     "--server.maxMessageSize", "500", \
-     "--server.enableXsrfProtection", "false", \
-     "--server.enableCORS", "false", \
-     "--server.enableWebsocketCompression", "false"]
+# Run Streamlit on Cloud Run's PORT
+CMD streamlit run app.py \
+    --server.address=0.0.0.0 \
+    --server.port=$PORT \
+    --server.headless=true \
+    --server.maxUploadSize=500 \
+    --server.maxMessageSize=500 \
+    --browser.gatherUsageStats=false

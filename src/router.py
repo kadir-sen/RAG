@@ -1,6 +1,5 @@
 """
-Query Router with multilingual support (English + Turkish).
-Routes queries to Document RAG, SQL Data Analyzer, or Timeline/Graph handler.
+Query Router - Routes queries to Document RAG, SQL Data Analyzer, or Timeline/Graph handler.
 
 Routing strategy (LLM-free by default):
   1. Heuristic keyword scoring
@@ -16,39 +15,27 @@ from .types import QueryType, RouterDecision, LLMUsage
 from .logger import logger, log_separator
 
 
-# ── Multilingual keyword sets ─────────────────────────────────
+# ── Keyword sets (English only) ───────────────────────────────
 
 DATA_KEYWORDS = {
-    # English
     "calculate", "sum", "average", "mean", "total", "count", "how many",
     "filter", "sort", "group by", "aggregate", "maximum", "minimum", "max", "min",
     "variance", "std", "deviation", "percentage", "ratio", "percent",
     "compare", "trend", "statistics", "column", "row", "table", "excel", "csv",
     "spreadsheet", "data", "number", "numeric", "value",
-    # Turkish
-    "hesapla", "toplam", "ortalama", "kaç tane", "kaç", "say", "sayı",
-    "filtrele", "sırala", "grupla", "gruplandır", "en büyük", "en küçük",
-    "yüzde", "oran", "kıyasla", "karşılaştır", "trend", "istatistik",
-    "sütun", "satır", "tablo", "veri", "değer",
+    "manpower", "equipment", "cost", "quantity", "rate", "amount",
 }
 
 DOCUMENT_KEYWORDS = {
-    # English
     "what does", "explain", "describe", "define", "definition", "meaning",
     "terms", "clause", "contract", "policy", "agreement", "section", "article",
     "according to", "mentioned in", "stated in", "says", "written",
     "liability", "obligation", "requirement", "condition", "provision",
     "report", "document", "text", "paragraph", "page", "summary", "summarize",
-    # Turkish
-    "ne demek", "açıkla", "tanımla", "tanım", "anlam", "anlat",
-    "şart", "madde", "sözleşme", "politika", "anlaşma", "bölüm", "kısım",
-    "göre", "belirtilen", "yazılan", "diyor", "yazan",
-    "yükümlülük", "sorumluluk", "gereklilik", "koşul", "hüküm",
-    "rapor", "raporda", "belge", "metin", "paragraf", "sayfa", "özet", "özetle",
+    "letter", "notice", "correspondence", "scope of work",
 }
 
 TIMELINE_KEYWORDS = {
-    # English
     "timeline", "chronology", "sequence", "history", "chain", "trace",
     "what happened", "when did", "order of events", "between dates",
     "who replied", "who responded", "who sent", "who received",
@@ -56,14 +43,7 @@ TIMELINE_KEYWORDS = {
     "correspondence", "letters sent", "letters received",
     "delay notices", "extension notices", "claim notices",
     "before", "after", "during", "period",
-    # Turkish
-    "zaman çizelgesi", "kronoloji", "sıralama", "geçmiş", "tarihçe",
-    "ne oldu", "ne zaman", "olaylar", "tarihler arasında",
-    "kim cevap verdi", "kim gönderdi", "kim aldı",
-    "bildirimler", "tüm bildirimler", "bildirimleri göster",
-    "yazışmalar", "gönderilen mektuplar",
-    "gecikme bildirimi", "uzatma bildirimi", "talep bildirimi",
-    "önce", "sonra", "döneminde",
+    "communication flow", "parties involved", "document trail",
 }
 
 
@@ -112,7 +92,7 @@ def _get_anchor_embeddings() -> Dict[str, list]:
         embed_model = GoogleGenAIEmbedding(
             api_key=GOOGLE_API_KEY,
             model_name=EMBEDDING_MODEL,
-            output_dimensionality=EMBEDDING_DIMENSION,
+            embedding_config={"output_dimensionality": EMBEDDING_DIMENSION},
         )
 
         _anchor_embeddings = {}
@@ -327,7 +307,7 @@ class QueryRouter:
             embed_model = GoogleGenAIEmbedding(
                 api_key=GOOGLE_API_KEY,
                 model_name=EMBEDDING_MODEL,
-                output_dimensionality=EMBEDDING_DIMENSION,
+                embedding_config={"output_dimensionality": EMBEDDING_DIMENSION},
             )
             query_vec = embed_model.get_text_embedding(query)
 
@@ -429,16 +409,11 @@ class QueryRouter:
         q = query.lower()
 
         complex_indicators = [
-            # Multi-step English
             ' then ', ' and then ', ' after that ', ' next ',
             'group by', 'compare', 'outlier',
             'above average', 'below average',
             'month-over-month', 'year-over-year',
-            # Multi-step Turkish
-            ' sonra ', ' ardından ', ' bundan sonra ',
-            'grupla', 'kıyasla', 'karşılaştır',
-            'aykırı', 'ortalamanın üstünde', 'ortalamanın altında',
-            'aydan aya', 'yıldan yıla',
+            'correlate', 'cross-reference', 'combined with',
         ]
 
         for indicator in complex_indicators:
@@ -446,8 +421,8 @@ class QueryRouter:
                 return True
 
         # Cross-source: needs both doc + data
-        has_doc = any(kw in q for kw in ['clause', 'contract', 'agreement', 'madde', 'sözleşme'])
-        has_data = any(kw in q for kw in ['calculate', 'total', 'average', 'count', 'hesapla', 'toplam'])
+        has_doc = any(kw in q for kw in ['clause', 'contract', 'agreement', 'letter', 'notice'])
+        has_data = any(kw in q for kw in ['calculate', 'total', 'average', 'count', 'amount', 'quantity'])
         if has_doc and has_data:
             return True
 
@@ -559,9 +534,9 @@ class QueryRouter:
             # === Pattern matching for different query types ===
 
             # 1. Communication flow queries
-            if any(kw in query_lower for kw in ['who sent', 'who received', 'kim gönderdi', 'kim aldı',
-                                                   'correspondence', 'yazışma', 'communication', 'iletişim',
-                                                   'kimden kime', 'from whom', 'sent to']):
+            if any(kw in query_lower for kw in ['who sent', 'who received',
+                                                   'correspondence', 'communication',
+                                                   'from whom', 'sent to']):
                 party = self._extract_party_from_query(query_lower)
                 flow = graph.communication_flow(party=party)
 
@@ -591,7 +566,7 @@ class QueryRouter:
                 return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
 
             # 2. Correspondence between two parties
-            if any(kw in query_lower for kw in ['between', 'arasında', 'arasindaki']):
+            if any(kw in query_lower for kw in ['between']):
                 parties = self._extract_two_parties(query_lower)
                 if parties:
                     corr = graph.correspondence_between(parties[0], parties[1])
@@ -609,9 +584,9 @@ class QueryRouter:
                     return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
 
             # 3. Project-based queries
-            if any(kw in query_lower for kw in ['project', 'proje', 'contract', 'sözleşme', 'sozlesme']):
-                project_filter = self._extract_filter_term(query_lower, ['project', 'proje'])
-                contract_ref = self._extract_filter_term(query_lower, ['contract', 'sözleşme', 'sozlesme'])
+            if any(kw in query_lower for kw in ['project', 'contract']):
+                project_filter = self._extract_filter_term(query_lower, ['project'])
+                contract_ref = self._extract_filter_term(query_lower, ['contract'])
                 proj_docs = graph.project_documents(project_filter=project_filter, contract_ref=contract_ref)
 
                 if proj_docs:
@@ -623,34 +598,51 @@ class QueryRouter:
                     return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
 
             # 4. Action-based queries
-            elif any(kw in query_lower for kw in ['delay', 'gecikme']):
+            elif any(kw in query_lower for kw in ['delay']):
                 delay_docs = graph.search_by_action('delay')
                 results = [d['node'] for d in delay_docs]
                 answer_prefix = "Documents mentioning delays:\n\n"
 
-            elif any(kw in query_lower for kw in ['claim', 'talep']):
+            elif any(kw in query_lower for kw in ['claim']):
                 claim_docs = graph.search_by_action('claim')
                 results = [d['node'] for d in claim_docs]
                 answer_prefix = "Documents mentioning claims:\n\n"
 
-            elif any(kw in query_lower for kw in ['approval', 'approve', 'onay']):
+            elif any(kw in query_lower for kw in ['approval', 'approve']):
                 approve_docs = graph.search_by_action('approve')
                 results = [d['node'] for d in approve_docs]
                 answer_prefix = "Documents related to approvals:\n\n"
 
-            elif any(kw in query_lower for kw in ['termination', 'terminate', 'fesih']):
+            elif any(kw in query_lower for kw in ['termination', 'terminate']):
                 term_docs = graph.search_by_action('terminate')
                 results = [d['node'] for d in term_docs]
                 answer_prefix = "Documents related to termination:\n\n"
 
-            # 5. All notices / list view
-            elif any(kw in query_lower for kw in ['all notices', 'list notices', 'show notices',
-                                                     'tüm bildirimler', 'bildirimleri göster']):
+            # 5. Project analysis queries (via DocumentAgent)
+            elif any(kw in query_lower for kw in ['analysis', 'insight', 'overview', 'issues',
+                                                    'parties involved', 'participants', 'summary of project']):
+                try:
+                    from .document_agent import get_document_agent
+                    agent = get_document_agent()
+                    agent_result = agent.answer_project_question(query)
+                    return {
+                        "query": query,
+                        "query_type": QueryType.TIMELINE.value,
+                        "answer": agent_result.get("answer", "No analysis available."),
+                        "sources": agent_result.get("sources", []),
+                    }
+                except Exception as e:
+                    logger.warning(f"   DocumentAgent error: {e}")
+                    results = graph.timeline()
+                    answer_prefix = "Document overview:\n\n"
+
+            # 6. All notices / list view
+            elif any(kw in query_lower for kw in ['all notices', 'list notices', 'show notices']):
                 results = graph.timeline()
                 answer_prefix = "All documents in chronological order:\n\n"
 
-            # 6. Chain/trace queries
-            elif 'chain' in query_lower or 'trace' in query_lower or 'zincir' in query_lower:
+            # 7. Chain/trace queries
+            elif 'chain' in query_lower or 'trace' in query_lower:
                 nodes = list(graph.graph.nodes.keys())
                 if nodes:
                     chain = graph.trace_chain(nodes[0], depth=5)
@@ -660,7 +652,7 @@ class QueryRouter:
                 else:
                     answer_prefix = "No documents in graph.\n\n"
 
-            # 7. Default: show timeline
+            # 8. Default: show timeline
             else:
                 results = graph.timeline()
                 answer_prefix = "Document timeline:\n\n"
@@ -763,8 +755,8 @@ class QueryRouter:
     def _extract_party_from_query(query_lower: str) -> Optional[str]:
         """Extract a party name from query text."""
         patterns = [
-            r'(?:from|by|for|tarafından)\s+"?([^"]+?)"?\s',
-            r'(?:to|kime)\s+"?([^"]+?)"?\s',
+            r'(?:from|by|for)\s+"?([^"]+?)"?\s',
+            r'(?:to)\s+"?([^"]+?)"?\s',
         ]
         for pattern in patterns:
             match = re.search(pattern, query_lower)
@@ -777,7 +769,6 @@ class QueryRouter:
         """Extract two party names from a between query."""
         patterns = [
             r'between\s+"?(.+?)"?\s+and\s+"?(.+?)"?(?:\s|$|\?)',
-            r'arasında\s+"?(.+?)"?\s+(?:ve|ile)\s+"?(.+?)"?(?:\s|$|\?)',
         ]
         for pattern in patterns:
             match = re.search(pattern, query_lower)
@@ -862,6 +853,130 @@ class QueryRouter:
 
         finally:
             finish_trace()
+
+    # ── Dual-LLM execution ───────────────────────────────────
+
+    def route_and_execute_dual(self, query: str) -> Dict[str, Any]:
+        """
+        Classify query and execute with both OpenAI and Claude in parallel.
+        Returns dual answers keyed by provider.
+        """
+        from .telemetry import start_trace, finish_trace
+
+        trace = start_trace(query)
+        log_separator("Processing Query (Dual-LLM)")
+        logger.info(f"Query: {query[:100]}...")
+
+        try:
+            expanded = self.jargon.expand_query(query)
+            if expanded != query:
+                logger.info(f"   Jargon expanded: {expanded[:100]}...")
+
+            # Complex query -> dual hybrid executor
+            if self._is_complex_query(query):
+                logger.info("   Detected complex query -> Hybrid Executor (Dual)")
+                trace.route = "HYBRID_COMPLEX_DUAL"
+                answers = self.hybrid_executor.execute_dual(query)
+                return {
+                    "query": query,
+                    "query_type": "hybrid",
+                    "answers": answers,
+                    "routing": {"decision": "hybrid_complex", "confidence": 1.0,
+                                "reasons": ["Complex multi-step query"], "used_llm": False},
+                }
+
+            # Classify once (uses existing 3-tier, no need to dual-head routing)
+            decision = self.classify_query(query)
+            trace.route = decision.query_type.value.upper() + "_DUAL"
+            if decision.llm_usage:
+                trace.record_llm_call(LLMUsage(
+                    prompt_tokens=decision.llm_usage.get("prompt_tokens", 0),
+                    completion_tokens=decision.llm_usage.get("completion_tokens", 0),
+                    cost_estimate=decision.llm_usage.get("cost", 0),
+                ))
+
+            logger.info(f"   Classified as: {decision.query_type.value.upper()} "
+                        f"(conf={decision.confidence:.2f})")
+
+            # Route to dual handlers
+            if decision.query_type == QueryType.DATA:
+                answers = self.data_analyzer.query_dual(expanded)
+            elif decision.query_type == QueryType.DOCUMENT:
+                answers = self.document_rag.query_dual(expanded)
+            elif decision.query_type == QueryType.TIMELINE:
+                single = self._handle_timeline_query(query)
+                answers = {"openai": single, "claude": single}
+            else:  # HYBRID
+                answers = self._handle_hybrid_query_dual(expanded)
+
+            result = {
+                "query": query,
+                "query_type": decision.query_type.value,
+                "answers": answers,
+                "routing": {
+                    "decision": decision.query_type.value,
+                    "confidence": decision.confidence,
+                    "reasons": decision.reasons,
+                    "used_llm": decision.used_llm,
+                },
+            }
+
+            logger.info("Query complete (dual-LLM)")
+            return result
+
+        finally:
+            finish_trace()
+
+    def _handle_hybrid_query_dual(self, query: str) -> Dict[str, Dict[str, Any]]:
+        """Handle hybrid query with both providers in parallel."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .config import LLM_PROVIDERS
+
+        def _run_hybrid(provider: str):
+            doc_result = self.document_rag.query_with_provider(query, provider)
+            data_result = self.data_analyzer.query_with_provider(query, provider)
+
+            from . import llm_client
+            from .prompt_security import safe_render_prompt, build_system_prompt
+
+            try:
+                prompt = safe_render_prompt(
+                    self.HYBRID_SYNTHESIS_PROMPT,
+                    user_query=query,
+                    doc_results=doc_result["answer"],
+                    data_results=data_result["answer"],
+                )
+                system = build_system_prompt("You synthesize information from multiple sources.")
+                resp = llm_client.generate_text(prompt, system=system, provider=provider)
+                combined_answer = resp.text
+            except Exception as e:
+                logger.error(f"   [{provider}] Hybrid synthesis error: {e}")
+                combined_answer = (
+                    f"**From Documents:**\n{doc_result['answer']}\n\n"
+                    f"**From Data Analysis:**\n{data_result['answer']}"
+                )
+
+            all_sources = doc_result.get("sources", []) + data_result.get("sources", [])
+            return {
+                "answer": combined_answer,
+                "sources": all_sources,
+                "sql": data_result.get("sql"),
+                "result_data": data_result.get("result_data"),
+                "result_columns": data_result.get("result_columns"),
+            }
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
+            futures = {executor.submit(_run_hybrid, p): p for p in LLM_PROVIDERS}
+            for future in as_completed(futures):
+                prov = futures[future]
+                try:
+                    results[prov] = future.result()
+                except Exception as e:
+                    logger.error(f"   [{prov}] Hybrid dual failed: {e}")
+                    results[prov] = {"answer": f"Error from {prov}: {e}", "sources": []}
+
+        return results
 
 
 # Singleton

@@ -98,6 +98,7 @@ class LLMUsage:
     model: str = ""
     latency_ms: float = 0.0
     cache_hit: bool = False
+    provider: str = ""  # "openai" | "claude" | "gemini"
 
 
 @dataclass
@@ -106,3 +107,14 @@ class LLMResponse:
     text: str
     usage: LLMUsage
     raw: Optional[Any] = None
+
+
+@dataclass
+class DualLLMResponse:
+    """Paired responses from LLM providers."""
+    gemini: Optional[LLMResponse] = None
+    openai: Optional[LLMResponse] = None
+    claude: Optional[LLMResponse] = None
+    gemini_error: Optional[str] = None
+    openai_error: Optional[str] = None
+    claude_error: Optional[str] = None

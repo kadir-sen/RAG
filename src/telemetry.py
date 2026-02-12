@@ -27,8 +27,17 @@ class QueryTrace:
     cache_hits: int = 0
     errors: List[str] = field(default_factory=list)
     steps: List[Dict[str, Any]] = field(default_factory=list)
+    provider_stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     _start_time: float = field(default_factory=time.time, repr=False)
+
+    def _ensure_provider(self, provider: str):
+        """Ensure provider stats entry exists."""
+        if provider and provider not in self.provider_stats:
+            self.provider_stats[provider] = {
+                "calls": 0, "tokens_in": 0, "tokens_out": 0,
+                "cost": 0.0, "cache_hits": 0,
+            }
 
     def record_llm_call(self, usage: LLMUsage):
         """Record a single LLM call's usage into the trace."""
@@ -38,6 +47,17 @@ class QueryTrace:
         self.cost_estimate += usage.cost_estimate
         if usage.cache_hit:
             self.cache_hits += 1
+
+        # Per-provider tracking
+        if usage.provider:
+            self._ensure_provider(usage.provider)
+            ps = self.provider_stats[usage.provider]
+            ps["calls"] += 1
+            ps["tokens_in"] += usage.prompt_tokens
+            ps["tokens_out"] += usage.completion_tokens
+            ps["cost"] += usage.cost_estimate
+            if usage.cache_hit:
+                ps["cache_hits"] += 1
 
     def record_error(self, error: str):
         self.errors.append(error)
@@ -69,13 +89,20 @@ class QueryTrace:
 
     def summary(self) -> str:
         """Human-readable one-line summary."""
-        return (
-            f"[Trace {self.request_id}] route={self.route} "
-            f"llm_calls={self.llm_calls} cache_hits={self.cache_hits} "
-            f"tokens={self.tokens_in}+{self.tokens_out} "
-            f"cost=${self.cost_estimate:.6f} latency={self.latency_ms:.0f}ms"
-            + (f" errors={len(self.errors)}" if self.errors else "")
-        )
+        parts = [
+            f"[Trace {self.request_id}] route={self.route}",
+            f"llm_calls={self.llm_calls} cache_hits={self.cache_hits}",
+            f"tokens={self.tokens_in}+{self.tokens_out}",
+            f"cost=${self.cost_estimate:.6f} latency={self.latency_ms:.0f}ms",
+        ]
+        if self.errors:
+            parts.append(f"errors={len(self.errors)}")
+        if self.provider_stats:
+            prov_parts = []
+            for prov, ps in self.provider_stats.items():
+                prov_parts.append(f"{prov}({ps['calls']}calls/${ps['cost']:.4f})")
+            parts.append(f"providers=[{', '.join(prov_parts)}]")
+        return " ".join(parts)
 
 
 # ── Thread-local current trace ───────────────────────────────

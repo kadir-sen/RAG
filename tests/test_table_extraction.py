@@ -224,16 +224,15 @@ class TestDataAnalyzerParquet:
 
         # Initialize analyzer and register view
         with patch('src.data_analyzer_sql.GOOGLE_API_KEY', 'test_key'):
-            with patch('src.data_analyzer_sql.Gemini'):
-                analyzer = DataAnalyzerSQL()
-                success = analyzer.register_parquet_view(str(parquet_path))
+            analyzer = DataAnalyzerSQL()
+            success = analyzer.register_parquet_view(str(parquet_path))
 
-                assert success is True
-                assert "test" in analyzer.tables
+            assert success is True
+            assert "test" in analyzer.tables
 
-                # Query the view
-                result = analyzer.conn.execute("SELECT * FROM test").fetchdf()
-                assert len(result) == 3
+            # Query the view
+            result = analyzer.conn.execute("SELECT * FROM test").fetchdf()
+            assert len(result) == 3
 
 
 class TestTableIngestion:

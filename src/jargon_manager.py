@@ -40,6 +40,7 @@ class JargonManager:
         "YTD": "Year to Date",
         "PO": "Purchase Order",
         "PR": "Purchase Requisition",
+        "T&C": "Terms and Conditions",
         # Common construction/contract abbreviations
         "BOQ": "Bill of Quantities",
         "BOM": "Bill of Materials",
@@ -58,6 +59,7 @@ class JargonManager:
         "QC": "Quality Control",
         "HSE": "Health Safety and Environment",
         "EHS": "Environment Health and Safety",
+        "QHSE": "Quality Health Safety and Environment",
         "MEP": "Mechanical Electrical and Plumbing",
         "HVAC": "Heating Ventilation and Air Conditioning",
         "P&ID": "Piping and Instrumentation Diagram",
@@ -84,6 +86,7 @@ class JargonManager:
         "LOA": "Letter of Acceptance",
         "MOM": "Minutes of Meeting",
         "NCR": "Non-Conformance Report",
+        "NCN": "Non-Conformance Notice",
         "RCA": "Root Cause Analysis",
         "CAPA": "Corrective and Preventive Action",
         "EPC": "Engineering Procurement and Construction",
@@ -103,6 +106,30 @@ class JargonManager:
         "FAT": "Factory Acceptance Test",
         "SAT": "Site Acceptance Test",
         "O&M": "Operation and Maintenance",
+        # Project-specific (TABH / Dubai construction)
+        "TABH": "The Address Boulevard Hotel",
+        "DPR": "Daily Progress Report",
+        "NOC": "No Objection Certificate",
+        "NOD": "Notice of Delay",
+        "NOP": "Notice of Progress",
+        "CCTV": "Closed Circuit Television",
+        "UPS": "Uninterruptible Power Supply",
+        "LTR": "Letter",
+        "DEWA": "Dubai Electricity and Water Authority",
+        "DM": "Dubai Municipality",
+        "JAFZA": "Jebel Ali Free Zone Authority",
+        "AED": "United Arab Emirates Dirham",
+        "UAE": "United Arab Emirates",
+        "GCC": "Gulf Cooperation Council",
+        "LEED": "Leadership in Energy and Environmental Design",
+        "MDC": "Main Distribution Center",
+        "CMAR": "Construction Management at Risk",
+        "TIR": "Technical Inspection Report",
+        "DPS": "Dubai Properties",
+        "MVP": "Material Verification Procedure",
+        "BMM": "Building Maintenance and Management",
+        "TCI": "TCI Engineering",
+        "SIRA": "Systematic Integrated Risk Assessment",
     }
 
     def __init__(self):
@@ -168,10 +195,10 @@ class JargonManager:
                 row = df.iloc[i]
                 val0 = str(row.iloc[0]).lower() if pd.notna(row.iloc[0]) else ""
                 val1 = str(row.iloc[1]).lower() if pd.notna(row.iloc[1]) else ""
-                if any(kw in val0 for kw in ['abbreviation', 'abbr', 'term', 'kisaltma', 'acronym']):
+                if any(kw in val0 for kw in ['abbreviation', 'abbr', 'term', 'acronym']):
                     header_row = i
                     break
-                if any(kw in val1 for kw in ['meaning', 'definition', 'anlam', 'full', 'description']):
+                if any(kw in val1 for kw in ['meaning', 'definition', 'full', 'description']):
                     header_row = i
                     break
 
