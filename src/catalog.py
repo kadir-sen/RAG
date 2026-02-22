@@ -44,6 +44,14 @@ class TableMetadata:
     # Jargon/abbreviation context for columns
     column_jargon: Dict[str, str] = field(default_factory=dict)  # col_name -> expanded meaning
 
+    # Table-level metadata for query routing (notice-like enrichment)
+    description: str = ""  # Human-readable summary (auto-generated)
+    semantic_tags: List[str] = field(default_factory=list)  # Keywords for matching
+    header_metadata: Dict[str, str] = field(default_factory=dict)  # label -> value from source
+
+    # Template tracking
+    template_id: Optional[str] = None  # ID of template used for extraction
+
     # Timestamps
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     file_hash: str = ""  # For deduplication
@@ -89,7 +97,14 @@ class TableCatalog:
         logger.info(f"[Catalog] Initialized with {len(self.entries)} entries")
 
     def _load_catalog(self):
-        """Load catalog from disk."""
+        """Load catalog from disk (try GCS first if local missing)."""
+        if not self.catalog_path.exists():
+            try:
+                from . import gcs_storage
+                gcs_storage.sync_catalog_from_gcs()
+                gcs_storage.sync_all_parquets_from_gcs()
+            except Exception:
+                pass
         if not self.catalog_path.exists():
             return
 
@@ -137,6 +152,13 @@ class TableCatalog:
                 json.dump(data, f, indent=2, ensure_ascii=False)
 
             logger.info(f"[Catalog] Saved {len(data)} entries")
+
+            # Sync to GCS
+            try:
+                from . import gcs_storage
+                gcs_storage.sync_catalog_to_gcs()
+            except Exception:
+                pass
         except Exception as e:
             logger.error(f"[Catalog] Error saving catalog: {e}")
 
@@ -205,6 +227,15 @@ class TableCatalog:
         """Add a table to an entry."""
         entry.tables.append(table_meta)
         self._save_catalog()
+
+        # Sync parquet to GCS
+        try:
+            from . import gcs_storage
+            if table_meta.parquet_path and Path(table_meta.parquet_path).exists():
+                gcs_storage.sync_parquet_to_gcs(table_meta.parquet_path)
+        except Exception:
+            pass
+
         logger.info(f"[Catalog] Added table: {table_meta.table_name}")
 
     def get_entry(self, source_file: str) -> Optional[CatalogEntry]:
@@ -251,8 +282,8 @@ class TableCatalog:
         logger.info(f"[Catalog] Removed {len(keys_to_remove)} entries for: {file_name}")
 
     def clear_all(self):
-        """Clear all entries and parquet files."""
-        # Delete all parquet files
+        """Clear all entries and parquet files (local + GCS)."""
+        # Delete all local parquet files
         for parquet_file in self.parquet_dir.glob("*.parquet"):
             try:
                 parquet_file.unlink()
@@ -261,6 +292,14 @@ class TableCatalog:
 
         self.entries.clear()
         self._save_catalog()
+
+        # Clear GCS
+        try:
+            from . import gcs_storage
+            gcs_storage.clear_gcs_tables()
+        except Exception:
+            pass
+
         logger.info("[Catalog] Cleared all entries")
 
     def get_stats(self) -> Dict[str, Any]:

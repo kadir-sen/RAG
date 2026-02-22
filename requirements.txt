@@ -14,6 +14,7 @@ anthropic>=0.18.0
 pymupdf>=1.23.0
 python-docx>=1.1.0
 openpyxl>=3.1.0
+xlrd>=2.0.1
 
 # Table Extraction
 pdfplumber>=0.10.0
@@ -41,8 +42,13 @@ diskcache>=5.6.0
 rapidfuzz>=3.0.0
 
 # Authentication
-streamlit-authenticator>=0.3.0
 bcrypt>=4.0.0
+
+# Cloud Storage (table persistence)
+google-cloud-storage>=2.14.0
+
+# Email parsing
+extract-msg>=0.47.0
 
 # Utilities
 python-dotenv>=1.0.0

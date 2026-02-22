@@ -290,9 +290,9 @@ class DocumentRAG:
         file_path: str,
         ocr_mode: Optional[str] = None,
         ocr_language: Optional[str] = None,
-    ) -> bool:
+    ) -> Optional[List[Document]]:
         """
-        Add a document to the index with deduplication.
+        Parse a document and return new Document objects.
 
         Args:
             file_path: Path to document file
@@ -300,7 +300,7 @@ class DocumentRAG:
             ocr_language: OCR language ("eng", "eng+tur") - only for PDFs
 
         Returns:
-            True if document was added successfully
+            List of new Document objects, or None if failed
         """
         path = Path(file_path)
         file_name = path.name
@@ -320,7 +320,7 @@ class DocumentRAG:
             new_docs = self.parse_txt(file_path)
         else:
             logger.warning(f"   Unsupported file type: {extension}")
-            return False
+            return None
 
         if new_docs:
             self.documents.extend(new_docs)
@@ -336,9 +336,63 @@ class DocumentRAG:
                 "doc_id": generate_doc_id(file_path),
             }
             log_document_processing(file_name, "Added", f"{len(new_docs)} pages ({ocr_pages} OCR)")
-            return True
+            return new_docs
 
-        return False
+        return None
+
+    def add_document_from_pages(
+        self,
+        file_path: str,
+        page_texts: Dict[int, str],
+        metadata: Optional[Dict] = None,
+    ) -> Optional[List[Document]]:
+        """
+        Create Document objects from pre-parsed page texts (e.g., email body).
+
+        Args:
+            file_path: Original file path (for metadata)
+            page_texts: Dict mapping page_number -> text content
+            metadata: Additional metadata to attach to each document
+
+        Returns:
+            List of Document objects, or None if empty
+        """
+        path = Path(file_path)
+        file_name = path.name
+
+        # Delete existing vectors for this file
+        self._delete_file_vectors(file_name)
+
+        new_docs = []
+        for page_num, text in sorted(page_texts.items()):
+            if not text or not text.strip():
+                continue
+            doc_meta = {
+                "file_name": file_name,
+                "file_path": str(file_path),
+                "file_type": path.suffix.lower(),
+                "page_number": page_num,
+                "total_pages": len(page_texts),
+                "doc_id": generate_doc_id(file_path),
+            }
+            if metadata:
+                doc_meta.update(metadata)
+
+            new_docs.append(Document(text=text.strip(), metadata=doc_meta))
+
+        if new_docs:
+            self.documents.extend(new_docs)
+            self.file_registry[file_name] = {
+                "file_path": str(file_path),
+                "file_type": path.suffix.lower(),
+                "page_count": len(new_docs),
+                "ocr_pages": 0,
+                "doc_id": generate_doc_id(file_path),
+            }
+            log_document_processing(file_name, "Added", f"{len(new_docs)} pages (from pages)")
+            return new_docs
+
+        return None
 
     def add_documents_from_folder(self, folder_path: str) -> int:
         """Add all supported documents from a folder."""
@@ -389,6 +443,38 @@ class DocumentRAG:
             import traceback
             logger.error(traceback.format_exc())
             return False
+
+    def insert_documents(self, new_docs: List[Document]) -> bool:
+        """
+        Add new documents to existing Pinecone index incrementally.
+        Avoids full rebuild - only embeds and uploads the new documents.
+        """
+        if not new_docs:
+            return False
+
+        # Ensure index exists (load from Pinecone or build fresh)
+        if not self.index:
+            if not self.load_index():
+                # No existing index - need full build for the first time
+                return self.build_index()
+
+        log_separator("Incremental Index Update")
+        logger.info(f"Inserting {len(new_docs)} new document(s) into existing index...")
+
+        try:
+            for doc in new_docs:
+                self.index.insert(doc)
+
+            stats = self.pinecone_index.describe_index_stats()
+            logger.info(f"   Total vectors after insert: {stats.get('total_vector_count', 0)}")
+            return True
+        except Exception as e:
+            logger.error(f"Error inserting documents: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Fallback to full rebuild
+            logger.info("Falling back to full index rebuild...")
+            return self.build_index()
 
     def load_index(self) -> bool:
         """Load existing index from Pinecone."""

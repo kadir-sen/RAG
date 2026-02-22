@@ -595,7 +595,7 @@ class DataAnalyzerSQL:
             return False
 
     def load_from_catalog(self) -> int:
-        """Load all tables from the catalog as parquet views."""
+        """Load tables from the catalog as parquet views. Skips already-loaded tables."""
         try:
             from .catalog import get_catalog
             catalog = get_catalog()
@@ -603,6 +603,9 @@ class DataAnalyzerSQL:
 
             count = 0
             for table_meta in all_tables:
+                # Skip already loaded tables
+                if table_meta.table_name in self.tables:
+                    continue
                 parquet_path = table_meta.parquet_path
                 if not Path(parquet_path).exists():
                     logger.warning(f"[Catalog] Parquet not found: {parquet_path}")
@@ -611,12 +614,17 @@ class DataAnalyzerSQL:
                     self.tables[table_meta.table_name]["source_file"] = table_meta.source_file
                     self.tables[table_meta.table_name]["source_type"] = table_meta.source_type
                     self.tables[table_meta.table_name]["extraction_method"] = table_meta.extraction_method
+                    # Store enriched metadata for query routing
+                    self.tables[table_meta.table_name]["description"] = getattr(table_meta, 'description', '')
+                    self.tables[table_meta.table_name]["semantic_tags"] = getattr(table_meta, 'semantic_tags', [])
+                    self.tables[table_meta.table_name]["header_metadata"] = getattr(table_meta, 'header_metadata', {})
                     count += 1
 
-            # Create combined views for multi-sheet source files
-            self._create_combined_views()
+            # Only rebuild combined views if new tables were added
+            if count > 0:
+                self._create_combined_views()
 
-            logger.info(f"[Catalog] Loaded {count} tables from catalog")
+            logger.info(f"[Catalog] Loaded {count} new tables from catalog")
             return count
         except Exception as e:
             logger.error(f"[Catalog] Error loading from catalog: {e}")
@@ -711,7 +719,7 @@ class DataAnalyzerSQL:
         return self.tables.get(table_name)
 
     def get_all_tables_summary(self) -> str:
-        """Get summary of all tables for routing."""
+        """Get summary of all tables for routing, including metadata."""
         if not self.tables:
             return "No data tables loaded."
 
@@ -720,7 +728,19 @@ class DataAnalyzerSQL:
             cols = ', '.join(info.get('columns', [])[:5])
             if len(info.get('columns', [])) > 5:
                 cols += '...'
-            summaries.append(f"- {name}: {info.get('row_count', 0)} rows | Columns: {cols}")
+            line = f"- {name}: {info.get('row_count', 0)} rows | Columns: {cols}"
+
+            # Add description if available
+            desc = info.get('description', '')
+            if desc:
+                line += f"\n  Description: {desc}"
+
+            # Add semantic tags if available
+            tags = info.get('semantic_tags', [])
+            if tags:
+                line += f"\n  Tags: {', '.join(tags[:8])}"
+
+            summaries.append(line)
 
         return '\n'.join(summaries)
 
@@ -1197,7 +1217,7 @@ class DataAnalyzerSQL:
             if name.lower() in question_lower:
                 return name
 
-        # Strategy 3: Column name matching — score tables by column relevance
+        # Strategy 3: Multi-signal scoring (columns + tags + description)
         question_words = set(re.findall(r'\b\w{3,}\b', question_lower))
         # Also expand jargon in question words
         expanded_words = set()
@@ -1210,11 +1230,34 @@ class DataAnalyzerSQL:
         best_match = None
         best_score = 0
         for name, info in self.tables.items():
+            score = 0
+
+            # Column name matching
             columns = info.get('columns', [])
             col_words = set()
             for c in columns:
                 col_words.update(c.lower().split('_'))
-            score = len(expanded_words & col_words)
+            score += len(expanded_words & col_words)
+
+            # Semantic tag matching (weighted higher)
+            tags = set(info.get('semantic_tags', []))
+            tag_words = set()
+            for t in tags:
+                tag_words.update(t.lower().split('_'))
+            score += len(expanded_words & tag_words) * 3
+
+            # Description keyword matching
+            desc = info.get('description', '').lower()
+            desc_words = set(re.findall(r'\b\w{3,}\b', desc))
+            score += len(expanded_words & desc_words) * 2
+
+            # Header metadata matching (project name, date, etc.)
+            hdr_meta = info.get('header_metadata', {})
+            for key, val in hdr_meta.items():
+                val_lower = str(val).lower()
+                if any(w in val_lower for w in expanded_words):
+                    score += 4  # Strong signal: query mentions project/date from header
+
             # Bonus for combined views
             if info.get('is_combined'):
                 score += 2

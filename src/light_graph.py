@@ -348,6 +348,42 @@ class LightGraph:
         logger.info(f"[LightGraph] Built {len(self.graph.edges)} edges")
         self._save_graph()
 
+    def add_edges_for_node(self, new_node_id: str):
+        """
+        Build edges only between a new node and all existing nodes.
+        O(n) instead of O(n²) - used for incremental updates during upload.
+        """
+        new_node = self.graph.nodes.get(new_node_id)
+        if not new_node:
+            return
+
+        for node_id, existing_node in self.graph.nodes.items():
+            if node_id == new_node_id:
+                continue
+
+            edges = []
+
+            ref_edge = self._check_reference_edge(new_node, existing_node)
+            if ref_edge:
+                edges.append(ref_edge)
+            party_edge = self._check_same_party_edge(new_node, existing_node)
+            if party_edge:
+                edges.append(party_edge)
+            topic_edge = self._check_topic_edge(new_node, existing_node)
+            if topic_edge:
+                edges.append(topic_edge)
+            contract_edge = self._check_contract_edge(new_node, existing_node)
+            if contract_edge:
+                edges.append(contract_edge)
+            reply_edge = self._check_reply_edge(new_node, existing_node)
+            if reply_edge:
+                edges.append(reply_edge)
+
+            self.graph.edges.extend([asdict(e) for e in edges])
+
+        logger.info(f"[LightGraph] Added edges for node: {new_node_id}")
+        self._save_graph()
+
     def _check_reference_edge(
         self,
         node_a: Dict,
@@ -1111,7 +1147,7 @@ def get_light_graph() -> LightGraph:
 
 
 def add_document_to_graph(notice: NoticeMetadata):
-    """Add a document to the graph and rebuild edges."""
+    """Add a document to the graph and build edges incrementally."""
     graph = get_light_graph()
     graph.add_notice(notice)
-    graph.build_edges()
+    graph.add_edges_for_node(notice.doc_id)

@@ -15,7 +15,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Model settings
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-05-20")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -30,7 +30,7 @@ if ANTHROPIC_API_KEY:
     LLM_PROVIDERS.append("claude")
 
 # Pinecone settings
-PINECONE_INDEX_NAME = "agentic-rag"
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "hybrid-rag")
 PINECONE_DIMENSION = EMBEDDING_DIMENSION
 
 # Paths
@@ -83,7 +83,8 @@ Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 # ── Cost Estimation (USD per 1M tokens) ─────────────────────
 LLM_PRICING = {
-    "gemini-2.5-flash-preview-05-20": {"input": 0.15, "output": 0.60},
+    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
+    "gemini-2.5-flash-lite": {"input": 0.075, "output": 0.30},
     "gemini-flash-latest": {"input": 0.075, "output": 0.30},
     "gemini-2.0-flash": {"input": 0.075, "output": 0.30},
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
@@ -111,6 +112,36 @@ MAX_PLAN_STEPS = int(os.getenv("MAX_PLAN_STEPS", "5"))
 # ── Feature Flags ───────────────────────────────────────────
 ENABLE_TIMELINE = os.getenv("ENABLE_TIMELINE", "true").lower() == "true"
 ENABLE_AB_TESTING = os.getenv("ENABLE_AB_TESTING", "false").lower() == "true"
+
+# ── Template-Based Extraction ──────────────────────────────
+TEMPLATE_FILE = STORAGE_DIR / "parquet" / "templates.json"
+TEMPLATE_CONFIDENCE_THRESHOLD = float(os.getenv("TEMPLATE_THRESHOLD", "0.85"))
+TEMPLATE_REVIEW_THRESHOLD = float(os.getenv("TEMPLATE_REVIEW_THRESHOLD", "0.70"))
+
+# ── Chat Memory ───────────────────────────────────────────
+CHAT_MEMORY_MESSAGES = int(os.getenv("CHAT_MEMORY_MESSAGES", "6"))
+CHAT_MEMORY_MAX_CHARS = int(os.getenv("CHAT_MEMORY_MAX_CHARS", "8000"))
+
+# ── Session ───────────────────────────────────────────────
+SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me-in-production")
+SESSION_TTL = int(os.getenv("SESSION_TTL", "86400"))  # 24 hours
+
+# ── Conversations ─────────────────────────────────────────
+CONVERSATIONS_DIR = STORAGE_DIR / "conversations"
+CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Email Processing ────────────────────────────────────────
+EMAILS_DIR = DATA_DIR / "emails"
+EMAILS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Format Converter ────────────────────────────────────────
+CONVERTERS_DIR = STORAGE_DIR / "converters"
+CONVERTERS_DIR.mkdir(parents=True, exist_ok=True)
+CONVERTER_REGISTRY_FILE = CONVERTERS_DIR / "registry.json"
+SCHEMAS_DIR = STORAGE_DIR / "schemas"
+SCHEMAS_DIR.mkdir(parents=True, exist_ok=True)
+CONVERTER_CONFIDENCE_THRESHOLD = float(os.getenv("CONVERTER_THRESHOLD", "0.6"))
+CONVERTER_CODE_TIMEOUT = int(os.getenv("CONVERTER_TIMEOUT", "30"))
 
 # ── Notice Extraction ───────────────────────────────────────
 NOTICE_LLM_CONFIDENCE_THRESHOLD = float(os.getenv("NOTICE_LLM_THRESHOLD", "0.75"))

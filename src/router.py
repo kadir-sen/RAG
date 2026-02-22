@@ -862,6 +862,7 @@ class QueryRouter:
         Returns dual answers keyed by provider.
         """
         from .telemetry import start_trace, finish_trace
+        from .config import LLM_PROVIDERS
 
         trace = start_trace(query)
         log_separator("Processing Query (Dual-LLM)")
@@ -905,7 +906,7 @@ class QueryRouter:
                 answers = self.document_rag.query_dual(expanded)
             elif decision.query_type == QueryType.TIMELINE:
                 single = self._handle_timeline_query(query)
-                answers = {"openai": single, "claude": single}
+                answers = {p: single for p in LLM_PROVIDERS}
             else:  # HYBRID
                 answers = self._handle_hybrid_query_dual(expanded)
 

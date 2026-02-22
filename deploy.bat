@@ -12,7 +12,7 @@ REM ============================================================
 setlocal enabledelayedexpansion
 
 REM ── Ayarlar ──────────────────────────────────────────────
-set PROJECT_ID=rag-chatbot-app
+set PROJECT_ID=gen-lang-client-0623898146
 set SERVICE_NAME=rag-chatbot
 set REGION=europe-west1
 
@@ -121,7 +121,7 @@ gcloud run deploy %SERVICE_NAME% ^
     --cpu=1 ^
     --timeout=300 ^
     --max-instances=3 ^
-    --set-env-vars="%ENV_VARS%" ^
+    --set-env-vars="%ENV_VARS%,GCS_BUCKET_NAME=rag-chatbot-tables" ^
     --quiet
 
 if %errorlevel% neq 0 (
