@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
+import pandas as pd
+
 from .logger import logger
 
 
@@ -218,6 +220,93 @@ def _process_email(file_path: str) -> ProcessingResult:
     return result
 
 
+def _enrich_table_metadata(
+    table_meta: "TableMetadata",
+    df: pd.DataFrame,
+    target_schema: str,
+    file_path: str,
+) -> None:
+    """
+    Extract search metadata from converted DataFrame.
+    No LLM calls - pure pandas analysis.
+    Populates description, semantic_tags, header_metadata on TableMetadata.
+    """
+    filename = Path(file_path).stem
+
+    # --- 1. Date Range ---
+    date_cols = [c for c in df.columns if "date" in c.lower()]
+    period_parts = []
+    for col in date_cols:
+        dates = pd.to_datetime(df[col], errors="coerce").dropna()
+        if not dates.empty:
+            min_d, max_d = dates.min(), dates.max()
+            if min_d.month == max_d.month and min_d.year == max_d.year:
+                period_parts.append(f"{min_d.strftime('%B %Y')}")
+            else:
+                period_parts.append(
+                    f"{min_d.strftime('%B %Y')} - {max_d.strftime('%B %Y')}"
+                )
+
+    # --- 2. Sheet names (multi-sheet IPC) ---
+    sheet_names = []
+    if "_sheet_name" in df.columns:
+        sheet_names = df["_sheet_name"].dropna().unique().tolist()
+
+    # --- 3. Schema-based tags ---
+    SCHEMA_TAGS = {
+        "equipment_log": [
+            "equipment", "machinery", "deployment", "hours", "utilization",
+        ],
+        "ipc_sample": [
+            "ipc", "progress", "boq", "quantities", "financial", "cumulative",
+        ],
+        "manpower_production": [
+            "manpower", "workforce", "workers", "production", "labor",
+        ],
+    }
+    tags = list(SCHEMA_TAGS.get(target_schema, []))
+
+    # --- 4. Content-based tags ---
+    for col_name in ["Block", "block"]:
+        if col_name in df.columns:
+            blocks = df[col_name].dropna().unique()[:5]
+            tags.extend([f"block_{b}" for b in blocks if str(b).strip()])
+
+    tags.append(target_schema.replace("_", " "))
+
+    # --- 5. Header metadata ---
+    header_meta = {
+        "target_schema": target_schema,
+        "source_file": filename,
+        "row_count": str(len(df)),
+    }
+    if period_parts:
+        header_meta["period"] = period_parts[0]
+    if sheet_names:
+        header_meta["sheets"] = ", ".join(str(s) for s in sheet_names[:6])
+
+    # --- 6. Build description ---
+    schema_names = {
+        "equipment_log": "Equipment Log",
+        "ipc_sample": "IPC (Interim Progress Certificate)",
+        "manpower_production": "Manpower Production Log",
+    }
+    desc_parts = [schema_names.get(target_schema, target_schema)]
+    if period_parts:
+        desc_parts.append(period_parts[0])
+    desc_parts.append(f"from {filename}")
+    desc_parts.append(f"({len(df)} rows)")
+
+    table_meta.description = " - ".join(desc_parts)
+    table_meta.semantic_tags = tags
+    table_meta.header_metadata = header_meta
+
+    logger.info(
+        f"[FileRouter] Enriched metadata: {table_meta.description}, "
+        f"tags={len(tags)}"
+    )
+
+
 def _process_data_file(file_path: str) -> ProcessingResult:
     """
     Process a data file (Excel, CSV).
@@ -261,6 +350,13 @@ def _process_data_file(file_path: str) -> ProcessingResult:
                 columns=list(conv_result.df.columns),
                 extraction_method="converter",
             )
+
+            # Enrich metadata for searchability
+            _enrich_table_metadata(
+                table_meta, conv_result.df,
+                conv_result.target_schema or "", file_path,
+            )
+
             catalog.add_table(entry, table_meta)
 
             # Load into DuckDB

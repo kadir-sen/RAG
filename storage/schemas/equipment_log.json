@@ -1,0 +1,42 @@
+{
+  "schema_id": "equipment_log",
+  "name": "Equipment Log",
+  "description": "Daily equipment/machinery deployment tracking across construction blocks and floors with hourly utilization",
+  "columns": [
+    {
+      "name": "Date",
+      "dtype": "date",
+      "required": true,
+      "description": "Work date",
+      "aliases": ["date", "tarih", "gun", "work_date"]
+    },
+    {
+      "name": "Block",
+      "dtype": "string",
+      "required": true,
+      "description": "Construction block identifier",
+      "aliases": ["block", "blok", "building"]
+    },
+    {
+      "name": "Floor",
+      "dtype": "string",
+      "required": true,
+      "description": "Floor number or reference",
+      "aliases": ["floor", "kat", "level", "storey"]
+    },
+    {
+      "name": "Machinery Name",
+      "dtype": "string",
+      "required": true,
+      "description": "Equipment or machinery type name",
+      "aliases": ["machinery", "equipment", "ekipman", "machine", "machinery_name"]
+    },
+    {
+      "name": "Estimated Machinery Hours",
+      "dtype": "float",
+      "required": true,
+      "description": "Estimated operating hours for the machinery",
+      "aliases": ["hours", "saat", "machinery hours", "estimated_hours", "operating_hours"]
+    }
+  ]
+}

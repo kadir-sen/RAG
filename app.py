@@ -962,12 +962,19 @@ def render_sidebar():
         )
 
         if all_files:
-            for f in all_files:
+            progress = st.progress(0, text="Processing files...")
+            for i, f in enumerate(all_files):
+                progress.progress(
+                    (i) / len(all_files),
+                    text=f"Processing {f.name} ({i+1}/{len(all_files)})...",
+                )
                 result = process_unified_upload(f)
                 if result.success:
                     _render_upload_result(f.name, result)
                 elif result.file_type != "duplicate" and result.error:
                     st.warning(f"Could not process {f.name}: {result.error}")
+            progress.progress(1.0, text="All files processed.")
+            progress.empty()
 
         st.markdown("---")
 

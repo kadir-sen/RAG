@@ -1,0 +1,63 @@
+{
+  "schema_id": "manpower_production",
+  "name": "Manpower Production Log",
+  "description": "Daily workforce deployment and productivity tracking with trade types, worker counts, and output quantities",
+  "columns": [
+    {
+      "name": "Date",
+      "dtype": "date",
+      "required": true,
+      "description": "Work date",
+      "aliases": ["date", "tarih", "gun", "work_date"]
+    },
+    {
+      "name": "Block",
+      "dtype": "string",
+      "required": true,
+      "description": "Construction block identifier",
+      "aliases": ["block", "blok", "building"]
+    },
+    {
+      "name": "Floor",
+      "dtype": "string",
+      "required": true,
+      "description": "Floor number or reference",
+      "aliases": ["floor", "kat", "level", "storey"]
+    },
+    {
+      "name": "Activity Description",
+      "dtype": "string",
+      "required": true,
+      "description": "Construction activity being performed",
+      "aliases": ["activity_description", "activity", "work_description", "task"]
+    },
+    {
+      "name": "Job Description",
+      "dtype": "string",
+      "required": true,
+      "description": "Worker trade or job type",
+      "aliases": ["job_description", "trade", "job", "worker_type", "craft"]
+    },
+    {
+      "name": "Number of Workers",
+      "dtype": "int",
+      "required": true,
+      "description": "Count of workers deployed",
+      "aliases": ["number_of_workers", "workers", "headcount", "manpower", "worker_count"]
+    },
+    {
+      "name": "Quantification",
+      "dtype": "float",
+      "required": true,
+      "description": "Quantity of work output produced",
+      "aliases": ["quantification", "quantity", "output", "production", "qty"]
+    },
+    {
+      "name": "Unit of Measure",
+      "dtype": "string",
+      "required": true,
+      "description": "Unit for the quantification value",
+      "aliases": ["unit_of_measure", "unit", "uom"]
+    }
+  ]
+}

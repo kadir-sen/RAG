@@ -1,0 +1,112 @@
+{
+  "schema_id": "ipc_sample",
+  "name": "IPC (Interim Progress Certificate)",
+  "description": "Construction project progress reporting with activity codes, quantities, financial tracking, and cumulative progress percentages",
+  "columns": [
+    {
+      "name": "Activity Code",
+      "dtype": "string",
+      "required": true,
+      "description": "Activity or work item code",
+      "aliases": ["activity_code", "code", "item_code", "wbs"]
+    },
+    {
+      "name": "Activity Name",
+      "dtype": "string",
+      "required": true,
+      "description": "Activity or work item description",
+      "aliases": ["activity_name", "activity", "description", "item_name", "work_item"]
+    },
+    {
+      "name": "Unit",
+      "dtype": "string",
+      "required": true,
+      "description": "Unit of measurement",
+      "aliases": ["unit", "uom", "unit_of_measure"]
+    },
+    {
+      "name": "BOQ Qty",
+      "dtype": "float",
+      "required": true,
+      "description": "Bill of Quantities total quantity",
+      "aliases": ["boq_qty", "boq_quantity", "contract_qty", "total_qty"]
+    },
+    {
+      "name": "Unit Rate",
+      "dtype": "float",
+      "required": true,
+      "description": "Price per unit",
+      "aliases": ["unit_rate", "rate", "unit_price", "price"]
+    },
+    {
+      "name": "Total BOQ Amount",
+      "dtype": "float",
+      "required": true,
+      "description": "Total contract amount (BOQ Qty x Unit Rate)",
+      "aliases": ["total_boq_amount", "total_amount", "contract_amount", "boq_amount"]
+    },
+    {
+      "name": "Previous %",
+      "dtype": "float",
+      "required": false,
+      "description": "Previous period progress percentage",
+      "aliases": ["previous_pct", "prev_percent", "previous_progress"]
+    },
+    {
+      "name": "Previous Amount",
+      "dtype": "float",
+      "required": false,
+      "description": "Previous period certified amount",
+      "aliases": ["previous_amount", "prev_amount"]
+    },
+    {
+      "name": "Current %",
+      "dtype": "float",
+      "required": false,
+      "description": "Current period progress percentage",
+      "aliases": ["current_pct", "curr_percent", "current_progress"]
+    },
+    {
+      "name": "Current Amount",
+      "dtype": "float",
+      "required": false,
+      "description": "Current period certified amount",
+      "aliases": ["current_amount", "curr_amount"]
+    },
+    {
+      "name": "Cumulative %",
+      "dtype": "float",
+      "required": false,
+      "description": "Cumulative progress percentage to date",
+      "aliases": ["cumulative_pct", "cum_percent", "total_progress"]
+    },
+    {
+      "name": "Cumulative Amount",
+      "dtype": "float",
+      "required": false,
+      "description": "Cumulative certified amount to date",
+      "aliases": ["cumulative_amount", "cum_amount", "total_certified"]
+    },
+    {
+      "name": "Previous Qty",
+      "dtype": "float",
+      "required": false,
+      "description": "Previous period completed quantity",
+      "aliases": ["previous_qty", "prev_qty"]
+    },
+    {
+      "name": "Current Qty",
+      "dtype": "float",
+      "required": false,
+      "description": "Current period completed quantity",
+      "aliases": ["current_qty", "curr_qty"]
+    },
+    {
+      "name": "Cumulative Qty",
+      "dtype": "float",
+      "required": false,
+      "description": "Cumulative completed quantity to date",
+      "aliases": ["cumulative_qty", "cum_qty", "total_qty_done"]
+    }
+  ]
+}

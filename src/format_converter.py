@@ -98,13 +98,24 @@ class FormatConverter:
             return None
 
     def _read_sample(self, file_path: str) -> Optional[pd.DataFrame]:
-        """Read sample data from file (first sheet, up to 20 rows)."""
+        """Read sample data from file (all sheets concatenated, up to 20 rows)."""
         ext = Path(file_path).suffix.lower()
         try:
             if ext == ".csv":
                 df = pd.read_csv(file_path, nrows=20)
             elif ext in (".xlsx", ".xls"):
-                df = pd.read_excel(file_path, nrows=20)
+                xls = pd.ExcelFile(file_path)
+                if len(xls.sheet_names) == 1:
+                    df = pd.read_excel(file_path, nrows=20)
+                else:
+                    # Multi-sheet: concat all with _sheet_name column
+                    frames = []
+                    for sheet in xls.sheet_names:
+                        sdf = pd.read_excel(file_path, sheet_name=sheet, nrows=20)
+                        if not sdf.empty:
+                            sdf["_sheet_name"] = sheet
+                            frames.append(sdf)
+                    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
             else:
                 return None
 
@@ -115,6 +126,29 @@ class FormatConverter:
             return df
         except Exception as e:
             logger.warning(f"[FormatConverter] Cannot read sample from {file_path}: {e}")
+            return None
+
+    def _read_file(self, file_path: str) -> Optional[pd.DataFrame]:
+        """Read full file (all sheets concatenated for xlsx)."""
+        ext = Path(file_path).suffix.lower()
+        try:
+            if ext == ".csv":
+                return pd.read_csv(file_path)
+            elif ext in (".xlsx", ".xls"):
+                xls = pd.ExcelFile(file_path)
+                if len(xls.sheet_names) == 1:
+                    return pd.read_excel(file_path)
+                # Multi-sheet: concat all with _sheet_name column
+                frames = []
+                for sheet in xls.sheet_names:
+                    sdf = pd.read_excel(file_path, sheet_name=sheet)
+                    if not sdf.empty:
+                        sdf["_sheet_name"] = sheet
+                        frames.append(sdf)
+                return pd.concat(frames, ignore_index=True) if frames else None
+            return None
+        except Exception as e:
+            logger.warning(f"[FormatConverter] Cannot read file {file_path}: {e}")
             return None
 
     def _detect_target_schema(
@@ -202,10 +236,14 @@ If the file doesn't clearly match any schema, set schema_id to null and confiden
 
         prompt = self._build_generation_prompt(source_desc, target_desc)
         system = (
-            "You are a Python data engineer. Write clean, correct pandas code. "
-            "Always define a function: def convert(df: pd.DataFrame) -> pd.DataFrame. "
+            "You are a Python data engineer specializing in construction project data. "
+            "Write clean, correct pandas code. "
+            "Always define: def convert(df: pd.DataFrame) -> pd.DataFrame. "
             "Only use pandas, numpy, re, datetime, math. "
-            "Handle missing values gracefully. Return a clean DataFrame."
+            "Handle missing values gracefully. Return a clean DataFrame. "
+            "If the input has a '_sheet_name' column, it means data was concatenated "
+            "from multiple Excel sheets - preserve or transform this column as needed. "
+            "Common construction terms: BOQ, IPC, MEP, DPR, VO, EOT."
         )
 
         # Attempt 1
@@ -315,13 +353,12 @@ Return ONLY the Python code, wrapped in ```python``` markers.
             result.validation_errors.append(f"Unsafe code: {error}")
             return result
 
-        # Read full file
-        ext = Path(file_path).suffix.lower()
+        # Read full file (multi-sheet aware)
         try:
-            if ext == ".csv":
-                df = pd.read_csv(file_path)
-            else:
-                df = pd.read_excel(file_path)
+            df = self._read_file(file_path)
+            if df is None or df.empty:
+                result.validation_errors.append("Cannot read file or file is empty")
+                return result
         except Exception as e:
             result.validation_errors.append(f"Cannot read file: {e}")
             return result
@@ -382,13 +419,12 @@ Return ONLY the Python code, wrapped in ```python``` markers.
             company_id=company_id,
         )
 
-        # Read file
-        ext = Path(file_path).suffix.lower()
+        # Read file (multi-sheet aware)
         try:
-            if ext == ".csv":
-                df = pd.read_csv(file_path)
-            else:
-                df = pd.read_excel(file_path)
+            df = self._read_file(file_path)
+            if df is None or df.empty:
+                result.validation_errors.append("Cannot read file or file is empty")
+                return result
         except Exception as e:
             result.validation_errors.append(f"Cannot read file: {e}")
             return result
