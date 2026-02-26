@@ -20,9 +20,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY app.py .
 COPY .streamlit/ ./.streamlit/
+COPY scripts/ ./scripts/
+COPY formatlar/ ./formatlar/
 
 # Create runtime directories
-RUN mkdir -p data/documents data/tables storage cache logs/telemetry logs/ab .cache/ocr storage/parquet
+RUN mkdir -p data/documents data/tables data/emails storage cache logs/telemetry logs/ab .cache/ocr storage/parquet storage/converters storage/conversations
+
+# Copy target schemas (needed for converter pipeline)
+COPY storage/schemas/ ./storage/schemas/
 
 # Cloud Run injects PORT env variable (default 8080)
 ENV PORT=8080

@@ -22,7 +22,8 @@ env/
 
 # Data (uploaded at runtime, not baked into image)
 data/
-storage/
+storage/*
+!storage/schemas/
 cache/
 .cache/
 logs/

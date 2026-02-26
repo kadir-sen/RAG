@@ -22,7 +22,8 @@ env/
 
 # Data folders (not needed in cloud image)
 data/
-storage/
+storage/*
+!storage/schemas/
 cache/
 .cache/
 logs/
