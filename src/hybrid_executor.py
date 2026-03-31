@@ -124,7 +124,7 @@ class HybridExecutor:
         Execute a query using the planner for complex queries, or directly for simple ones.
 
         Args:
-            query: User query (may be in English or Turkish)
+            query: User query
 
         Returns:
             Dict with answer, sources, plan details, and optional SQL/data
@@ -189,14 +189,10 @@ class HybridExecutor:
         """Check if a query needs SQL chaining."""
         q = query.lower()
         chain_indicators = [
-            'then', 'sonra', 'ardından',
-            'after that', 'bundan sonra',
-            'group by', 'grupla',
-            'outlier', 'aykırı',
-            'compare', 'kıyasla',
-            'top', 'bottom', 'en yüksek', 'en düşük',
+            'then', 'after that', 'group by',
+            'outlier', 'compare',
+            'top', 'bottom',
             'above average', 'below average',
-            'ortalamanın üstünde', 'ortalamanın altında',
         ]
         return any(ind in q for ind in chain_indicators)
 
@@ -206,8 +202,7 @@ class HybridExecutor:
         steps = []
 
         # Pattern: group by + aggregate
-        if 'group' in q and any(agg in q for agg in ['max', 'min', 'avg', 'average', 'sum', 'count',
-                                                       'en büyük', 'en küçük', 'ortalama', 'toplam']):
+        if 'group' in q and any(agg in q for agg in ['max', 'min', 'avg', 'average', 'sum', 'count']):
             steps.append(PlanStep(
                 step_id=0,
                 step_type=StepType.SQL.value,
@@ -223,7 +218,7 @@ class HybridExecutor:
             ))
 
         # Pattern: outlier detection
-        elif 'outlier' in q or 'aykırı' in q:
+        elif 'outlier' in q:
             steps.append(PlanStep(
                 step_id=0,
                 step_type=StepType.SQL.value,
@@ -245,7 +240,7 @@ class HybridExecutor:
             ))
 
         # Pattern: compare / top-N
-        elif any(kw in q for kw in ['compare', 'kıyasla', 'top', 'bottom', 'en yüksek', 'en düşük']):
+        elif any(kw in q for kw in ['compare', 'top', 'bottom']):
             steps.append(PlanStep(
                 step_id=0,
                 step_type=StepType.SQL.value,
@@ -261,7 +256,7 @@ class HybridExecutor:
             ))
 
         # Pattern: above/below average
-        elif any(kw in q for kw in ['above average', 'below average', 'ortalamanın üstünde', 'ortalamanın altında']):
+        elif any(kw in q for kw in ['above average', 'below average']):
             steps.append(PlanStep(
                 step_id=0,
                 step_type=StepType.SQL.value,
@@ -297,6 +292,74 @@ class HybridExecutor:
             steps=steps,
             plan_rationale="Heuristic SQL chain",
         )
+
+    def execute_multi_table(self, query: str, provider: str = "gemini") -> Dict[str, Any]:
+        """Execute a query that requires data from multiple tables.
+        Identifies relevant tables, queries each separately, then combines results via LLM.
+        """
+        from . import llm_client
+        from .prompt_security import build_system_prompt
+
+        log_separator("Multi-Table Query")
+        logger.info(f"[HybridExecutor] Multi-table: {query[:100]}...")
+
+        expanded = self.jargon.expand_query(query)
+        relevant_tables = self.data_analyzer.select_tables(expanded, max_tables=3)
+
+        if not relevant_tables:
+            return {"answer": "No relevant tables found.", "sources": [], "sql": None, "result_data": None}
+        if len(relevant_tables) == 1:
+            return self.data_analyzer.query(expanded)
+
+        logger.info(f"[HybridExecutor] Querying {len(relevant_tables)} tables: {relevant_tables}")
+
+        # Query each table independently
+        table_results = {}
+        all_sources = []
+        for tname in relevant_tables:
+            try:
+                result = self.data_analyzer.query(expanded, table_name=tname)
+                table_results[tname] = result
+                all_sources.extend(result.get("sources", []))
+            except Exception as e:
+                logger.warning(f"[HybridExecutor] Table {tname} query failed: {e}")
+                table_results[tname] = {"answer": f"Error: {e}", "sources": []}
+
+        # Combine results via LLM
+        combine_parts = []
+        for tname, result in table_results.items():
+            combine_parts.append(f"TABLE: {tname}\nAnswer: {result.get('answer', 'No result')}")
+
+        combine_prompt = (
+            f"The user asked: {expanded}\n\n"
+            f"Results from multiple data tables:\n\n"
+            + "\n\n".join(combine_parts)
+            + "\n\nCombine these results into a single comprehensive construction project analysis:\n"
+            "1. Present data from each source with specific numbers\n"
+            "2. Cross-reference: if equipment hours are high, do manpower numbers support that activity level?\n"
+            "3. If IPC progress data exists alongside production data, compare planned vs actual\n"
+            "4. Highlight any mismatches (e.g., high manpower but low production = productivity concern)\n"
+            "5. Conclude with an actionable summary for the project manager"
+        )
+
+        try:
+            system = build_system_prompt("You are a construction project data analyst.")
+            resp = llm_client.generate_text(combine_prompt, system=system, provider=provider)
+            combined_answer = resp.text
+        except Exception as e:
+            logger.error(f"[HybridExecutor] Combine failed: {e}")
+            combined_answer = "\n\n".join(
+                f"**{tname}**: {r.get('answer', 'No result')}" for tname, r in table_results.items()
+            )
+
+        return {
+            "answer": combined_answer,
+            "sources": all_sources,
+            "sql": {tname: r.get("sql") for tname, r in table_results.items()},
+            "result_data": None,
+            "query_type": "data",
+            "multi_table": True,
+        }
 
     def execute_dual(self, query: str) -> Dict[str, Any]:
         """

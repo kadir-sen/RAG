@@ -76,6 +76,64 @@ def _cache_set(key: str, value: str, ttl: int):
         pass
 
 
+# ── Anthropic SDK Wrapper (no llama_index dependency) ────────
+
+class _AnthropicCompletionResponse:
+    """Mimics LlamaIndex CompletionResponse."""
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _AnthropicChatResponse:
+    """Mimics LlamaIndex ChatResponse."""
+    def __init__(self, text: str):
+        self.message = type('Msg', (), {'content': text})()
+
+
+class _AnthropicWrapper:
+    """Thin wrapper around anthropic SDK matching LlamaIndex LLM interface."""
+
+    def __init__(self, api_key: str, model: str, temperature: float = 0.1, max_tokens: int = 2048):
+        import anthropic
+        self.client = anthropic.Anthropic(api_key=api_key)
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+    def complete(self, prompt: str):
+        resp = self.client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text
+        return _AnthropicCompletionResponse(text)
+
+    def chat(self, messages):
+        api_messages = []
+        system_text = ""
+        for m in messages:
+            role = getattr(m, 'role', 'user')
+            content = getattr(m, 'content', str(m))
+            role_str = str(role).lower().replace('messageRole.', '').replace('messagerole.', '')
+            if role_str == 'system':
+                system_text = content
+            else:
+                api_messages.append({"role": role_str, "content": content})
+        kwargs = dict(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            messages=api_messages,
+        )
+        if system_text:
+            kwargs["system"] = system_text
+        resp = self.client.messages.create(**kwargs)
+        text = resp.content[0].text
+        return _AnthropicChatResponse(text)
+
+
 # ── LLM Factory ─────────────────────────────────────────────
 
 def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048):
@@ -101,9 +159,8 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048):
         )
         return llm, model
     elif provider == "claude":
-        from llama_index.llms.anthropic import Anthropic
         model = ANTHROPIC_MODEL
-        llm = Anthropic(
+        llm = _AnthropicWrapper(
             api_key=ANTHROPIC_API_KEY,
             model=model,
             temperature=temperature,

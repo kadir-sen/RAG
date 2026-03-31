@@ -8,35 +8,35 @@
       "dtype": "date",
       "required": true,
       "description": "Work date",
-      "aliases": ["date", "tarih", "gun", "work_date"]
+      "aliases": ["date", "work_date"]
     },
     {
       "name": "Block",
       "dtype": "string",
       "required": true,
       "description": "Construction block identifier",
-      "aliases": ["block", "blok", "building"]
+      "aliases": ["block", "building"]
     },
     {
       "name": "Floor",
       "dtype": "string",
       "required": true,
       "description": "Floor number or reference",
-      "aliases": ["floor", "kat", "level", "storey"]
+      "aliases": ["floor", "level", "storey"]
     },
     {
       "name": "Machinery Name",
       "dtype": "string",
       "required": true,
       "description": "Equipment or machinery type name",
-      "aliases": ["machinery", "equipment", "ekipman", "machine", "machinery_name"]
+      "aliases": ["machinery", "equipment", "machine", "machinery_name"]
     },
     {
       "name": "Estimated Machinery Hours",
       "dtype": "float",
       "required": true,
       "description": "Estimated operating hours for the machinery",
-      "aliases": ["hours", "saat", "machinery hours", "estimated_hours", "operating_hours"]
+      "aliases": ["hours", "machinery hours", "estimated_hours", "operating_hours"]
     }
   ]
 }

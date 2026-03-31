@@ -20,12 +20,12 @@ REDACTION_PATTERNS = [
     (r'\b[A-Za-z0-9_-]{32,}\b', lambda m: m.group()[:8] + '...' if len(m.group()) > 40 else m.group()),
     # Email addresses (partial redaction)
     (r'\b([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b', r'\1[at]\2'),
-    # Phone numbers (Turkish format)
+    # Phone numbers
     (r'\b(?:\+90|0)?[\s-]?5\d{2}[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b', '[PHONE_REDACTED]'),
     # CVV (3-4 digits near card context)
     (r'\b(?:cvv|cvc|cvv2|security code)[:\s]*\d{3,4}\b', '[CVV_REDACTED]'),
     # OTP codes
-    (r'\b(?:otp|verification code|dogrulama kodu)[:\s]*\d{4,8}\b', '[OTP_REDACTED]'),
+    (r'\b(?:otp|verification code)[:\s]*\d{4,8}\b', '[OTP_REDACTED]'),
 ]
 
 

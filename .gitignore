@@ -64,3 +64,18 @@ htmlcov/
 
 # Docker (keep Dockerfile, ignore runtime)
 docker-compose.override.yml
+
+# Runtime caches
+cache/
+
+# Claude Code
+.claude/
+
+# Test/sample documents (large files)
+26.02.07 - New Docs/
+
+# Frontend dependencies
+frontend/node_modules/
+
+# Windows artifacts
+NUL

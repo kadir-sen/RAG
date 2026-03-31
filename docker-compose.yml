@@ -1,4 +1,21 @@
 services:
+  # New: FastAPI backend + React frontend
+  api:
+    build: .
+    container_name: doc-analysis-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - APP_MODE=api
+      - PORT=8000
+    volumes:
+      - ./storage:/app/storage
+      - ./data:/app/data
+    restart: unless-stopped
+
+  # Legacy: Streamlit chatbot (keep during migration)
   rag-chatbot:
     build: .
     container_name: agentic-rag-chatbot
@@ -6,6 +23,27 @@ services:
       - "8501:8501"
     env_file:
       - .env
+    environment:
+      - APP_MODE=main
+      - PORT=8501
     volumes:
       - ./uploads:/app/uploads
+      - ./storage:/app/storage
+      - ./data:/app/data
+    restart: unless-stopped
+
+  rag-debug:
+    build: .
+    container_name: agentic-rag-debug
+    ports:
+      - "8502:8502"
+    env_file:
+      - .env
+    environment:
+      - APP_MODE=debug
+      - PORT=8502
+    volumes:
+      - ./storage:/app/storage
+      - ./data:/app/data
+      - ./formatlar:/app/formatlar
     restart: unless-stopped

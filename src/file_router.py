@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from .logger import logger
+from .table_normalizer import parse_mixed_datetime
 
 
 # Extension to file type mapping
@@ -62,19 +63,51 @@ def route_file(file_path: str) -> ProcessingResult:
 
     logger.info(f"[FileRouter] Routing {Path(file_path).name} -> {file_type}")
 
+    # Register in document registry for tracking
+    from .document_registry import get_document_registry
+    from .document_rag import generate_doc_id
+    registry = get_document_registry()
+    try:
+        file_size_kb = Path(file_path).stat().st_size // 1024
+    except OSError:
+        file_size_kb = 0
+    record = registry.register(
+        file_name=Path(file_path).name,
+        file_path=file_path,
+        file_size_kb=file_size_kb,
+        file_type=file_type,
+        extension=ext,
+    )
+    doc_id = record.doc_id
+
     if file_type == "document":
-        return _process_document(file_path)
+        result = _process_document(file_path)
     elif file_type == "email":
-        return _process_email(file_path)
+        result = _process_email(file_path)
     elif file_type == "data":
-        return _process_data_file(file_path)
+        result = _process_data_file(file_path)
     else:
-        return ProcessingResult(
+        result = ProcessingResult(
             success=False,
             file_path=file_path,
             file_type="unknown",
             error=f"Unsupported file type: {ext}",
         )
+
+    # Update registry with result
+    if result.success:
+        table_names = []
+        if hasattr(result, 'converter_used') and result.converter_used:
+            table_names.append(result.converter_used)
+        registry.mark_completed(
+            doc_id,
+            table_names=table_names,
+            notice_extracted=result.notice_extracted,
+        )
+    elif result.error:
+        registry.mark_error(doc_id, result.error)
+
+    return result
 
 
 def _process_document(file_path: str) -> ProcessingResult:
@@ -122,15 +155,27 @@ def _process_document(file_path: str) -> ProcessingResult:
             except Exception as e:
                 logger.warning(f"[FileRouter] Notice extraction error: {e}")
 
-            # Table extraction for PDFs
+            # Quick truncation summary (no LLM — fast)
+            if doc_text_by_page and result.notice_summary:
+                full_text = "\n".join(
+                    doc_text_by_page[p] for p in sorted(doc_text_by_page.keys())
+                ).strip()
+                if full_text:
+                    result.notice_summary["summary"] = (
+                        full_text[:200].strip() + "..." if len(full_text) > 200 else full_text
+                    )
+
+            # Table extraction for PDFs (direct — skips duplicate OCR analysis)
             if filename.lower().endswith(".pdf"):
                 try:
-                    from .table_ingestion import ingest_file
-                    ingestion_result = ingest_file(file_path)
-                    result.tables_extracted = ingestion_result.tables_extracted
-                    result.total_rows = ingestion_result.total_rows
+                    from .pdf_table_extractor import extract_pdf_tables
+                    tables = extract_pdf_tables(file_path, save_parquet=True)
+                    result.tables_extracted = len(tables)
+                    result.total_rows = sum(
+                        getattr(t, "row_count", 0) for t in tables
+                    )
 
-                    if ingestion_result.tables_extracted > 0:
+                    if result.tables_extracted > 0:
                         analyzer = get_data_analyzer()
                         analyzer.load_from_catalog()
                 except Exception as e:
@@ -188,6 +233,26 @@ def _process_email(file_path: str) -> ProcessingResult:
         except Exception as e:
             logger.warning(f"[FileRouter] Email notice extraction error: {e}")
 
+        # 2b. Enrich notice with email parser metadata (sender/recipient/cc)
+        if result.notice_summary and parsed:
+            ns = result.notice_summary
+            if not ns.get("sender") and parsed.sender:
+                ns["sender"] = parsed.sender
+            if not ns.get("recipient") and parsed.recipients:
+                ns["recipient"] = ", ".join(parsed.recipients)
+            if not ns.get("cc_list") and parsed.cc:
+                ns["cc_list"] = parsed.cc
+
+        # 2c. Quick truncation summary (no LLM — fast)
+        if page_texts and result.notice_summary:
+            full_text = "\n".join(
+                page_texts[p] for p in sorted(page_texts.keys())
+            ).strip()
+            if full_text:
+                result.notice_summary["summary"] = (
+                    full_text[:200].strip() + "..." if len(full_text) > 200 else full_text
+                )
+
         # 3. Process attachments recursively
         if parsed.attachments:
             att_dir = Path(EMAILS_DIR) / f"{Path(file_path).stem}_attachments"
@@ -237,7 +302,7 @@ def _enrich_table_metadata(
     date_cols = [c for c in df.columns if "date" in c.lower()]
     period_parts = []
     for col in date_cols:
-        dates = pd.to_datetime(df[col], errors="coerce").dropna()
+        dates = parse_mixed_datetime(df[col]).dropna()
         if not dates.empty:
             min_d, max_d = dates.min(), dates.max()
             if min_d.month == max_d.month and min_d.year == max_d.year:
@@ -310,87 +375,137 @@ def _enrich_table_metadata(
 def _process_data_file(file_path: str) -> ProcessingResult:
     """
     Process a data file (Excel, CSV).
-    Try format converter first, fallback to existing pipeline.
+    Format converter validates against known schemas (no LLM).
+    Multi-sheet files (e.g. IPC) produce multiple tables.
+    Fallback to raw ingestion if no schema matches.
     """
     from .data_analyzer_sql import get_data_analyzer
 
     result = ProcessingResult(success=False, file_path=file_path, file_type="data")
     filename = Path(file_path).name
 
-    # Step 1: Try format converter
+    # Step 1: Try format converter (direct schema validation, no LLM)
     try:
-        from .format_converter import get_format_converter
+        from .schema_converter import get_format_converter
 
         converter = get_format_converter()
-        conv_result = converter.process_excel(file_path)
+        conv_results = converter.process_excel(file_path)
 
-        if conv_result and conv_result.success and conv_result.df is not None:
-            # Converter succeeded - save as parquet and register
+        if conv_results:
             from .catalog import get_catalog, TableMetadata
 
             catalog = get_catalog()
-            entry = catalog.add_entry(file_path, "excel", ocr_decision="converter")
+            entry = catalog.add_entry(file_path, "excel", ocr_decision="direct")
+            tables_saved = 0
+            total_rows = 0
+            ipc_table_names = []  # Track IPC tables for unified view
 
-            table_id = catalog.generate_table_id(
-                file_path, sheet_name=conv_result.target_schema
-            )
-            parquet_path = catalog.generate_parquet_path(table_id)
-            conv_result.df.to_parquet(str(parquet_path), index=False)
+            for conv_result in conv_results:
+                if not conv_result.success or conv_result.df is None:
+                    continue
 
-            table_name = f"t_{table_id}"
-            table_meta = TableMetadata(
-                table_id=table_id,
-                source_file=file_path,
-                source_type="excel",
-                table_name=table_name,
-                parquet_path=str(parquet_path),
-                sheet_name=conv_result.target_schema,
-                row_count=len(conv_result.df),
-                column_count=len(conv_result.df.columns),
-                columns=list(conv_result.df.columns),
-                extraction_method="converter",
-            )
+                # Use sheet_name for multi-sheet, target_schema for single
+                sheet_label = conv_result.sheet_name or conv_result.target_schema
+                table_id = catalog.generate_table_id(
+                    file_path, sheet_name=sheet_label,
+                    target_schema=conv_result.target_schema,
+                )
+                parquet_path = catalog.generate_parquet_path(table_id)
+                conv_result.df.to_parquet(str(parquet_path), index=False)
 
-            # Enrich metadata for searchability
-            _enrich_table_metadata(
-                table_meta, conv_result.df,
-                conv_result.target_schema or "", file_path,
-            )
+                table_name = f"t_{table_id}"
+                table_meta = TableMetadata(
+                    table_id=table_id,
+                    source_file=file_path,
+                    source_type="excel",
+                    table_name=table_name,
+                    parquet_path=str(parquet_path),
+                    sheet_name=sheet_label,
+                    row_count=len(conv_result.df),
+                    column_count=len(conv_result.df.columns),
+                    columns=list(conv_result.df.columns),
+                    extraction_method="direct_schema",
+                )
 
-            catalog.add_table(entry, table_meta)
+                # Enrich metadata for searchability
+                _enrich_table_metadata(
+                    table_meta, conv_result.df,
+                    conv_result.target_schema or "", file_path,
+                )
 
-            # Load into DuckDB
-            analyzer = get_data_analyzer()
-            analyzer.load_from_catalog()
+                # Extract table insight (pandas-based, no LLM)
+                try:
+                    from .table_insight_extractor import extract_table_insight
+                    insight = extract_table_insight(
+                        conv_result.df, file_path,
+                        conv_result.target_schema or "",
+                    )
+                    table_meta.insight = insight
+                except Exception as ie:
+                    logger.warning(f"[FileRouter] Insight extraction error: {ie}")
 
-            result.success = True
-            result.tables_extracted = 1
-            result.total_rows = len(conv_result.df)
-            result.converter_used = conv_result.converter_id
-            result.converter_generated = conv_result.generated
-            result.target_schema = conv_result.target_schema
+                # Table summary (pandas-based, no LLM)
+                try:
+                    from .content_generator import summarize_table
+                    table_meta.summary = summarize_table(
+                        conv_result.df, conv_result.target_schema or "", filename,
+                    )
+                except Exception as se:
+                    logger.warning(f"[FileRouter] Table summary error: {se}")
 
-            logger.info(f"[FileRouter] Data file converted: {filename} -> {conv_result.target_schema}")
-            return result
+                catalog.add_table(entry, table_meta)
+                tables_saved += 1
+                total_rows += len(conv_result.df)
+                if conv_result.target_schema == "ipc_sample":
+                    ipc_table_names.append(table_name)
+
+            if tables_saved > 0:
+                # Load all tables into DuckDB
+                analyzer = get_data_analyzer()
+                analyzer.load_from_catalog()
+
+                # Create unified view for multi-sheet IPC files
+                if len(ipc_table_names) > 1:
+                    try:
+                        analyzer.create_ipc_unified_view(ipc_table_names)
+                        logger.info(f"[FileRouter] IPC unified view created from "
+                                    f"{len(ipc_table_names)} sheets")
+                    except Exception as ue:
+                        logger.warning(f"[FileRouter] IPC unified view failed: {ue}")
+
+                result.success = True
+                result.tables_extracted = tables_saved
+                result.total_rows = total_rows
+                result.converter_used = conv_results[0].converter_id
+                result.target_schema = conv_results[0].target_schema
+
+                logger.info(f"[FileRouter] Data file processed: {filename} "
+                            f"-> {tables_saved} tables, {total_rows} rows")
+                return result
 
     except Exception as e:
         logger.info(f"[FileRouter] Format converter skipped/failed for {filename}: {e}")
 
-    # Step 2: Fallback to existing pipeline
+    # Step 2: Fallback — direct Excel extraction (no OCR, no TableIngestionPipeline)
     try:
-        from .table_ingestion import ingest_file
+        from .excel_table_extractor import extract_excel_tables
+        from .catalog import get_catalog
 
-        ingestion_result = ingest_file(file_path)
-        result.tables_extracted = ingestion_result.tables_extracted
-        result.total_rows = ingestion_result.total_rows
+        metadata_list = extract_excel_tables(file_path, save_parquet=True)
+        if metadata_list:
+            catalog = get_catalog()
+            tables_saved = len(metadata_list)
+            total_rows = sum(m.row_count for m in metadata_list)
 
-        if ingestion_result.tables_extracted > 0:
             analyzer = get_data_analyzer()
             analyzer.load_from_catalog()
             result.success = True
-            logger.info(f"[FileRouter] Data file ingested via pipeline: {filename}")
+            result.tables_extracted = tables_saved
+            result.total_rows = total_rows
+            logger.info(f"[FileRouter] Data file extracted directly: {filename} "
+                        f"-> {tables_saved} tables, {total_rows} rows")
         else:
-            # Direct load fallback
+            # Last resort: direct pandas load into DuckDB
             analyzer = get_data_analyzer()
             if analyzer.load_file(file_path):
                 result.success = True
@@ -412,4 +527,72 @@ def _process_data_file(file_path: str) -> ProcessingResult:
             result.error = str(e2)
             logger.error(f"[FileRouter] Data file processing failed: {e2}")
 
+    return result
+
+
+def delete_document(doc_id: str) -> Dict[str, Any]:
+    """Delete a document from all stores (registry, DuckDB, catalog, RAG, notices, disk).
+
+    Returns a summary dict of what was cleaned up.
+    """
+    from .document_registry import get_document_registry
+
+    registry = get_document_registry()
+    record = registry.get(doc_id)
+    if not record:
+        return {"error": "Document not found", "doc_id": doc_id}
+
+    result: Dict[str, Any] = {"doc_id": doc_id, "file_name": record.file_name}
+
+    # 1. DuckDB tables
+    if record.table_names:
+        try:
+            from .data_analyzer_sql import get_data_analyzer
+            analyzer = get_data_analyzer()
+            result["tables_dropped"] = analyzer.drop_tables(record.table_names)
+        except Exception as e:
+            logger.warning(f"[Delete] DuckDB cleanup failed: {e}")
+
+    # 2. Catalog + Parquet files
+    try:
+        from .catalog import get_catalog
+        get_catalog().remove_entry(record.file_path)
+        result["catalog_cleaned"] = True
+    except Exception as e:
+        logger.warning(f"[Delete] Catalog cleanup failed: {e}")
+
+    # 3. RAG / Pinecone vectors
+    try:
+        from .document_rag import get_document_rag
+        get_document_rag().clear_file(record.file_name)
+        result["rag_cleaned"] = True
+    except Exception as e:
+        logger.warning(f"[Delete] RAG cleanup failed: {e}")
+
+    # 4. Notice JSON
+    try:
+        from .notice_extractor import get_notice_extractor
+        extractor = get_notice_extractor()
+        if extractor.delete_notice(doc_id):
+            result["notice_cleaned"] = True
+    except Exception as e:
+        logger.warning(f"[Delete] Notice cleanup failed: {e}")
+
+    # 5. Source file on disk + GCS
+    try:
+        fp = Path(record.file_path)
+        if fp.exists():
+            fp.unlink()
+            result["file_deleted"] = True
+            logger.info(f"[Delete] Removed file: {fp}")
+        from .gcs_storage import delete_uploaded_file_from_gcs
+        delete_uploaded_file_from_gcs(record.file_path)
+    except Exception as e:
+        logger.warning(f"[Delete] Disk cleanup failed: {e}")
+
+    # 6. Registry record (last — after all cleanup)
+    registry.delete(doc_id)
+    result["registry_cleaned"] = True
+
+    logger.info(f"[Delete] Document deleted: {record.file_name} ({doc_id})")
     return result

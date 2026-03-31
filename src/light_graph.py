@@ -95,9 +95,15 @@ class LightGraph:
         # "first/earliest notice/letter"
         (r'(?:first|earliest)\s+(?:letters?|notices?|documents?)',
          "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices ORDER BY date ASC LIMIT 5"),
-        # "documents about X"
+        # "documents about X" (search subject + topics)
         (r'(?:documents?|letters?|notices?)\s+(?:about|regarding|related\s+to)\s+(.+?)(?:\?|$)',
-         "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices WHERE LOWER(subject) LIKE '%{0}%' ORDER BY date"),
+         "SELECT date, sender, recipient, subject, doc_type, file_name FROM notices WHERE LOWER(subject) LIKE '%{0}%' OR LOWER(topics) LIKE '%{0}%' ORDER BY date"),
+        # "actions/tasks from documents"
+        (r'(?:actions?|tasks?|items?)\s+(?:from|in)\s+(?:documents?|letters?|notices?)',
+         "SELECT date, sender, subject, actions, file_name FROM notices WHERE actions IS NOT NULL AND actions != '' ORDER BY date DESC"),
+        # "documents with topic X"
+        (r'topic\s+(.+?)(?:\?|$)',
+         "SELECT date, sender, recipient, subject, topics, file_name FROM notices WHERE LOWER(topics) LIKE '%{0}%' ORDER BY date"),
     ]
 
     def __init__(self):
@@ -157,13 +163,17 @@ class LightGraph:
                     direction VARCHAR,
                     contract_ref VARCHAR,
                     project_name VARCHAR,
-                    file_name VARCHAR
+                    file_name VARCHAR,
+                    topics VARCHAR,
+                    actions VARCHAR
                 )
             """)
 
             for doc_id, node in self.graph.nodes.items():
+                topics_str = ", ".join(node.get("topics", []) or [])
+                actions_str = ", ".join(node.get("actions", []) or [])
                 self._db.execute(
-                    "INSERT INTO notices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO notices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         doc_id,
                         node.get("date"),
@@ -175,6 +185,8 @@ class LightGraph:
                         node.get("contract_ref"),
                         node.get("project_name"),
                         node.get("file_name"),
+                        topics_str,
+                        actions_str,
                     ],
                 )
 
@@ -280,8 +292,10 @@ class LightGraph:
         # Insert into DuckDB notices table
         if self._notices_table_ready:
             try:
+                topics_str = ", ".join(notice.key_topics or [])
+                actions_str = ", ".join(getattr(notice, 'actions', []) or [])
                 self._db.execute(
-                    "INSERT INTO notices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO notices VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         notice.doc_id, notice.date, notice.sender,
                         notice.recipient, notice.subject, notice.doc_type,
@@ -289,6 +303,8 @@ class LightGraph:
                         getattr(notice, 'contract_ref', None),
                         getattr(notice, 'project_name', None),
                         notice.file_name,
+                        topics_str,
+                        actions_str,
                     ],
                 )
             except Exception as e:
@@ -339,8 +355,18 @@ class LightGraph:
                 if reply_edge:
                     edges.append(reply_edge)
 
-                # Add edges to graph
-                self.graph.edges.extend([asdict(e) for e in edges])
+                # Add edges to graph (bidirectional)
+                for e in edges:
+                    self.graph.edges.append(asdict(e))
+                    # Add inverse edge
+                    inv = GraphEdge(
+                        from_doc=e.to_doc,
+                        to_doc=e.from_doc,
+                        edge_type=e.edge_type,
+                        weight=e.weight,
+                        why=e.why,
+                    )
+                    self.graph.edges.append(asdict(inv))
 
         # 6. Build chronological chains within parties/threads
         self._build_chronological_edges()
@@ -379,7 +405,17 @@ class LightGraph:
             if reply_edge:
                 edges.append(reply_edge)
 
-            self.graph.edges.extend([asdict(e) for e in edges])
+            # Add edges (bidirectional)
+            for e in edges:
+                self.graph.edges.append(asdict(e))
+                inv = GraphEdge(
+                    from_doc=e.to_doc,
+                    to_doc=e.from_doc,
+                    edge_type=e.edge_type,
+                    weight=e.weight,
+                    why=e.why,
+                )
+                self.graph.edges.append(asdict(inv))
 
         logger.info(f"[LightGraph] Added edges for node: {new_node_id}")
         self._save_graph()
@@ -573,8 +609,16 @@ class LightGraph:
         """Normalize party name for comparison."""
         if not name:
             return ""
+        # Handle "John Doe <john@company.com>" format
+        if "<" in name:
+            name = name.split("<")[0].strip()
+        name = name.strip("'\"").replace("\u200b", "")
         # Remove common suffixes and normalize
         name = name.lower().strip()
+        # Remove titles
+        for title in ['mr.', 'mrs.', 'ms.', 'dr.', 'eng.', 'prof.']:
+            if name.startswith(title):
+                name = name[len(title):].strip()
         for suffix in ['ltd', 'inc', 'corp', 'llc', 'co', 'company', 'limited']:
             name = re.sub(rf'\b{suffix}\b\.?', '', name)
         return re.sub(r'\s+', ' ', name).strip()
@@ -816,6 +860,93 @@ class LightGraph:
                     pass
 
         return results
+
+    # Scope-to-doc_type mapping for search_broad
+    SCOPE_TO_DOC_TYPES = {
+        "correspondence": ["letter", "notice", "email", "transmittal"],
+        "notice": ["notice"],
+        "email": ["email"],
+        "report": ["report", "dpr"],
+        "contract": ["contract"],
+        "minutes": ["minutes"],
+    }
+
+    def search_broad(
+        self,
+        terms: List[str],
+        scope: Optional[str] = None,
+        limit: int = 25,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search documents across actions, topics, and subject using
+        multiple search terms. Optionally filter by document scope.
+
+        Args:
+            terms: List of search terms (e.g. ["delay", "NOD", "extension of time"])
+            scope: Optional document scope filter ("correspondence", "notice", etc.)
+            limit: Max results
+
+        Returns:
+            List of matching node dicts sorted by relevance then date
+        """
+        if not self._notices_table_ready or not terms:
+            return []
+
+        try:
+            # Build WHERE conditions: match any term across subject/topics/actions
+            term_conditions = []
+            params = []
+            for term in terms:
+                t = f"%{term.lower()}%"
+                term_conditions.append(
+                    "(LOWER(subject) LIKE ? OR LOWER(topics) LIKE ? OR LOWER(actions) LIKE ?)"
+                )
+                params.extend([t, t, t])
+
+            where = " OR ".join(term_conditions)
+
+            # Scope filter: restrict to matching doc_types
+            if scope and scope in self.SCOPE_TO_DOC_TYPES:
+                doc_types = self.SCOPE_TO_DOC_TYPES[scope]
+                placeholders = ", ".join(["?"] * len(doc_types))
+                where = f"({where}) AND LOWER(doc_type) IN ({placeholders})"
+                params.extend([dt.lower() for dt in doc_types])
+
+            sql = f"""
+                SELECT doc_id, date, sender, recipient, subject,
+                       doc_type, direction, file_name, topics, actions
+                FROM notices
+                WHERE {where}
+                ORDER BY date DESC
+                LIMIT ?
+            """
+            params.append(limit)
+
+            rows = self._db.execute(sql, params).fetchall()
+            cols = ["doc_id", "date", "sender", "recipient", "subject",
+                    "doc_type", "direction", "file_name", "topics", "actions"]
+
+            results = []
+            for row in rows:
+                node = dict(zip(cols, row))
+                # Relevance score: count how many terms matched
+                text_blob = " ".join([
+                    (node.get("subject") or ""),
+                    (node.get("topics") or ""),
+                    (node.get("actions") or ""),
+                ]).lower()
+                score = sum(1 for t in terms if t.lower() in text_blob)
+                node["relevance_score"] = score
+                results.append(node)
+
+            # Sort by relevance (desc) then date (desc)
+            results.sort(key=lambda x: (-x.get("relevance_score", 0), x.get("date") or ""))
+
+            return results
+
+        except Exception as e:
+            logger.warning(f"[LightGraph] search_broad error: {e}")
+            return []
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get graph statistics."""
@@ -1109,21 +1240,258 @@ class LightGraph:
             "sources": sources,
         }
 
-    def rebuild_from_notices(self):
-        """Rebuild entire graph from saved notices and sync DuckDB."""
-        logger.info("[LightGraph] Rebuilding graph from notices...")
+    # ── Document Clustering ──────────────────────────────────
+
+    def _normalize_party(self, name: str) -> str:
+        """Normalize party name for clustering."""
+        if not name:
+            return ""
+        # Strip quotes, whitespace, zero-width chars
+        name = name.strip().strip("'\"").replace("\u200b", "")
+        # Take first meaningful part (before angle bracket or comma)
+        if "<" in name:
+            name = name.split("<")[0].strip()
+        return name.lower()
+
+    def cluster_documents(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Cluster all documents by common properties.
+        Returns dict of cluster_name -> list of nodes, sorted chronologically.
+
+        Strategy (priority):
+        1. Sender-Recipient pairs (correspondence clusters)
+        2. Project name
+        3. Contract reference
+        4. Common topics (connected components on same_topic edges)
+        5. Unclustered
+        """
+        clusters: Dict[str, List[Dict[str, Any]]] = {}
+        assigned: Set[str] = set()
+
+        # 1. Correspondence clusters (A <-> B)
+        party_pairs: Dict[tuple, list] = defaultdict(list)
+        for node_id, node in self.graph.nodes.items():
+            sender = self._normalize_party(node.get("sender", ""))
+            recipient = self._normalize_party(node.get("recipient", ""))
+            if sender and recipient:
+                pair_key = tuple(sorted([sender, recipient]))
+                party_pairs[pair_key].append((node_id, node))
+
+        for (a, b), items in party_pairs.items():
+            if len(items) >= 2:
+                cluster_name = f"Yazisma: {a.title()} <-> {b.title()}"
+                clusters[cluster_name] = sorted(
+                    [item[1] for item in items],
+                    key=lambda n: n.get("date") or ""
+                )
+                for nid, _ in items:
+                    assigned.add(nid)
+
+        # 2. Project clusters
+        project_groups: Dict[str, list] = defaultdict(list)
+        for node_id, node in self.graph.nodes.items():
+            if node_id in assigned:
+                continue
+            proj = node.get("project_name", "")
+            if proj:
+                project_groups[proj].append((node_id, node))
+
+        for proj, items in project_groups.items():
+            cluster_name = f"Proje: {proj}"
+            clusters[cluster_name] = sorted(
+                [item[1] for item in items],
+                key=lambda n: n.get("date") or ""
+            )
+            for nid, _ in items:
+                assigned.add(nid)
+
+        # 3. Contract ref clusters
+        contract_groups: Dict[str, list] = defaultdict(list)
+        for node_id, node in self.graph.nodes.items():
+            if node_id in assigned:
+                continue
+            ref = node.get("contract_ref", "")
+            if ref:
+                contract_groups[ref].append((node_id, node))
+
+        for ref, items in contract_groups.items():
+            cluster_name = f"Sozlesme: {ref}"
+            clusters[cluster_name] = sorted(
+                [item[1] for item in items],
+                key=lambda n: n.get("date") or ""
+            )
+            for nid, _ in items:
+                assigned.add(nid)
+
+        # 4. Topic clusters via connected components on same_topic edges
+        topic_adj: Dict[str, Set[str]] = defaultdict(set)
+        for edge in self.graph.edges:
+            if edge.get("edge_type") == "same_topic":
+                a, b = edge["from_doc"], edge["to_doc"]
+                if a not in assigned and b not in assigned:
+                    topic_adj[a].add(b)
+                    topic_adj[b].add(a)
+
+        visited: Set[str] = set()
+        for start_node in topic_adj:
+            if start_node in visited or start_node in assigned:
+                continue
+            # BFS for connected component
+            component: List[str] = []
+            queue = [start_node]
+            while queue:
+                current = queue.pop(0)
+                if current in visited or current in assigned:
+                    continue
+                visited.add(current)
+                component.append(current)
+                queue.extend(topic_adj.get(current, set()) - visited)
+
+            if len(component) >= 2:
+                nodes_in_cluster = [self.graph.nodes[nid] for nid in component
+                                    if nid in self.graph.nodes]
+                topics: Set[str] = set()
+                for n in nodes_in_cluster:
+                    topics.update(n.get("topics", []))
+                topic_label = ", ".join(list(topics)[:3])
+                cluster_name = f"Konu: {topic_label}"
+                clusters[cluster_name] = sorted(
+                    nodes_in_cluster, key=lambda n: n.get("date") or ""
+                )
+                assigned.update(component)
+
+        # 5. Unclustered
+        unclustered = []
+        for node_id, node in self.graph.nodes.items():
+            if node_id not in assigned:
+                unclustered.append(node)
+        if unclustered:
+            clusters["Diger"] = sorted(unclustered, key=lambda n: n.get("date") or "")
+
+        return clusters
+
+    def get_cluster_summary(self, cluster_name: str = None) -> str:
+        """Get a formatted summary of document clusters."""
+        clusters = self.cluster_documents()
+
+        if cluster_name:
+            # Find matching cluster (partial match)
+            for name, nodes in clusters.items():
+                if cluster_name.lower() in name.lower():
+                    lines = [f"**{name}** ({len(nodes)} dokuman):\n"]
+                    for n in nodes:
+                        date = n.get("date", "N/A")
+                        sender = n.get("sender", "?")
+                        recipient = n.get("recipient", "?")
+                        subject = n.get("subject", "")
+                        fname = n.get("file_name", "")
+                        lines.append(
+                            f"- **{date}** | {sender} -> {recipient}: "
+                            f"{subject} *({fname})*"
+                        )
+                    return "\n".join(lines)
+            return f"'{cluster_name}' ile eslesen kume bulunamadi."
+
+        # All clusters overview
+        lines = [f"**{len(clusters)} dokuman kumesi bulundu:**\n"]
+        for name, nodes in clusters.items():
+            date_range = ""
+            dates = [n.get("date") for n in nodes if n.get("date")]
+            if dates:
+                date_range = f" ({min(dates)} - {max(dates)})"
+            lines.append(f"- **{name}** — {len(nodes)} dokuman{date_range}")
+        return "\n".join(lines)
+
+    def search_by_topic(self, topic: str, limit: int = 20) -> List[Dict]:
+        """Search documents by topic, subject, sender, recipient, or filename."""
+        if not self._notices_table_ready:
+            return []
+        try:
+            pattern = f"%{topic.lower()}%"
+            rows = self._db.execute(
+                """
+                SELECT doc_id, file_name, date, sender, recipient, subject, doc_type, topics
+                FROM notices
+                WHERE LOWER(subject) LIKE ?
+                   OR LOWER(topics) LIKE ?
+                   OR LOWER(sender) LIKE ?
+                   OR LOWER(recipient) LIKE ?
+                   OR LOWER(file_name) LIKE ?
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                [pattern, pattern, pattern, pattern, pattern, limit],
+            ).fetchall()
+            cols = ["doc_id", "file_name", "date", "sender", "recipient", "subject", "doc_type", "topics"]
+            return [dict(zip(cols, row)) for row in rows]
+        except Exception as e:
+            logger.warning(f"[LightGraph] search_by_topic error: {e}")
+            return []
+
+    def get_document_stats(self) -> Dict[str, Any]:
+        """Get general document statistics."""
+        stats = {
+            "total_documents": len(self.graph.nodes),
+            "total_edges": len(self.graph.edges),
+            "by_type": {},
+            "by_sender": {},
+            "date_range": {},
+            "edge_types": {},
+        }
+
+        # Type distribution
+        for node in self.graph.nodes.values():
+            dtype = node.get("doc_type", "unknown") or "unknown"
+            stats["by_type"][dtype] = stats["by_type"].get(dtype, 0) + 1
+
+        # Top senders
+        sender_counts = {}
+        dates = []
+        for node in self.graph.nodes.values():
+            sender = node.get("sender", "")
+            if sender:
+                sender_counts[sender] = sender_counts.get(sender, 0) + 1
+            date = node.get("date", "")
+            if date:
+                dates.append(date)
+
+        # Top 10 senders
+        sorted_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        stats["by_sender"] = dict(sorted_senders)
+
+        # Date range
+        if dates:
+            stats["date_range"] = {"earliest": min(dates), "latest": max(dates)}
+
+        # Edge type distribution
+        for edge in self.graph.edges:
+            etype = edge.get("edge_type", "unknown")
+            stats["edge_types"][etype] = stats["edge_types"].get(etype, 0) + 1
+
+        return stats
+
+    def rebuild_from_notices(self) -> int:
+        """Rebuild entire graph from saved notices and sync DuckDB. Returns loaded count."""
+        notice_files = list(NOTICES_DIR.glob("*.json"))
+        total = len(notice_files)
+        logger.info(f"[LightGraph] Rebuilding graph from {total} notices...")
 
         self.graph = DocumentGraph()
+        loaded = 0
 
         # Load all notices
-        for notice_path in NOTICES_DIR.glob("*.json"):
+        for idx, notice_path in enumerate(notice_files):
             try:
                 with open(notice_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 notice = NoticeMetadata(**data)
                 self.add_notice(notice)
+                loaded += 1
             except Exception as e:
                 logger.warning(f"[LightGraph] Error loading notice {notice_path.name}: {e}")
+
+            if (idx + 1) % 10 == 0:
+                logger.info(f"[LightGraph] Loaded {idx + 1}/{total} notices...")
 
         # Build edges
         self.build_edges()
@@ -1131,7 +1499,11 @@ class LightGraph:
         # Re-sync DuckDB
         self._sync_notices_to_duckdb()
 
-        logger.info(f"[LightGraph] Rebuilt: {len(self.graph.nodes)} nodes, {len(self.graph.edges)} edges")
+        logger.info(
+            f"[LightGraph] Rebuilt: {loaded}/{total} notices, "
+            f"{len(self.graph.nodes)} nodes, {len(self.graph.edges)} edges"
+        )
+        return loaded
 
 
 # Singleton

@@ -132,6 +132,44 @@ class JargonManager:
         "SIRA": "Systematic Integrated Risk Assessment",
     }
 
+    # Domain concept groups: maps a concept to related search terms
+    DOMAIN_CONCEPT_GROUPS = {
+        "delay": [
+            "delay", "NOD", "notice of delay", "postponement",
+            "extension of time", "EOT", "delayed", "late completion",
+            "schedule delay", "time extension",
+        ],
+        "claim": [
+            "claim", "notice of claim", "compensation",
+            "loss and expense", "damages", "liquidated damages",
+            "LD", "LAD", "entitlement",
+        ],
+        "approval": [
+            "approval", "approve", "consent", "no objection",
+            "NOC", "acceptance", "LOA", "approved",
+        ],
+        "variation": [
+            "variation", "change order", "VO", "modification",
+            "amendment", "revised scope", "scope change",
+        ],
+        "payment": [
+            "payment", "IPC", "interim payment", "invoice",
+            "valuation", "certification", "progress payment",
+        ],
+        "termination": [
+            "termination", "terminate", "cancellation",
+            "suspension", "suspend", "breach of contract",
+        ],
+        "progress": [
+            "progress", "DPR", "daily progress", "milestone",
+            "schedule", "programme", "completion",
+        ],
+        "quality": [
+            "quality", "NCR", "NCN", "non-conformance",
+            "defect", "deficiency", "inspection", "QA", "QC",
+        ],
+    }
+
     def __init__(self):
         """Initialize jargon manager."""
         # abbreviation -> full meaning
@@ -347,6 +385,63 @@ class JargonManager:
             return clean, " - ".join(expanded_parts)
 
         return clean, None
+
+    def expand_domain_concepts(self, query: str) -> List[str]:
+        """
+        Expand domain concepts in a query to related search terms.
+        Unlike expand_query (which handles abbreviations), this maps
+        semantic concepts to broader term sets.
+
+        Example:
+            "delay events" -> ["delay", "NOD", "notice of delay", "postponement", ...]
+
+        Args:
+            query: User query text
+
+        Returns:
+            List of related search terms (deduplicated)
+        """
+        query_lower = query.lower()
+        terms: Set[str] = set()
+
+        for concept, related in self.DOMAIN_CONCEPT_GROUPS.items():
+            if concept in query_lower:
+                terms.update(related)
+
+        return list(terms)
+
+    def get_concept_search_terms(self, query: str) -> List[str]:
+        """
+        Combine abbreviation expansion and domain concept expansion
+        to produce a comprehensive list of search terms.
+
+        Args:
+            query: User query text
+
+        Returns:
+            Deduplicated list of search terms
+        """
+        terms: Set[str] = set()
+
+        # 1. Domain concept expansion
+        terms.update(self.expand_domain_concepts(query))
+
+        # 2. Find any abbreviations in the query and add their meanings
+        for found in self.find_related_terms(query):
+            terms.add(found["abbreviation"])
+            terms.add(found["meaning"].lower())
+
+        # 3. If no concept groups matched, use key words from the query
+        if not terms:
+            stop_words = {"what", "are", "the", "in", "is", "a", "an", "of",
+                          "how", "many", "show", "me", "list", "all", "from",
+                          "to", "and", "or", "for", "with", "about", "do"}
+            for word in query.lower().split():
+                word = word.strip("?.,!")
+                if word and len(word) > 2 and word not in stop_words:
+                    terms.add(word)
+
+        return list(terms)
 
     def build_column_context(self, columns: List[str]) -> str:
         """

@@ -106,9 +106,9 @@ if not defined ENV_VARS (
 
 echo [OK] API key'ler okundu.
 
-REM ── 7. Deploy to Cloud Run (source-based) ──────────────
+REM ── 7. Deploy Main App to Cloud Run ────────────────────
 echo.
-echo [*] Cloud Run'a deploy ediliyor...
+echo [*] Ana uygulama Cloud Run'a deploy ediliyor...
 echo     Bu islem ilk seferde 5-10 dakika surebilir.
 echo.
 
@@ -117,39 +117,66 @@ gcloud run deploy %SERVICE_NAME% ^
     --region=%REGION% ^
     --platform=managed ^
     --allow-unauthenticated ^
-    --memory=1Gi ^
-    --cpu=1 ^
+    --memory=2Gi ^
+    --cpu=2 ^
     --timeout=300 ^
     --max-instances=3 ^
-    --set-env-vars="%ENV_VARS%,GCS_BUCKET_NAME=rag-chatbot-tables" ^
+    --set-env-vars="%ENV_VARS%,GCS_BUCKET_NAME=rag-chatbot-tables,APP_MODE=api" ^
     --quiet
 
 if %errorlevel% neq 0 (
     echo.
-    echo [!] Deploy basarisiz oldu. Hatalari kontrol edin.
+    echo [!] Ana uygulama deploy basarisiz oldu. Hatalari kontrol edin.
     pause
     exit /b 1
 )
 
-REM ── 8. URL'yi al ──────────────────────────────────────
+REM ── 8. Deploy Debug Service to Cloud Run ──────────────
+echo.
+echo [*] Debug servisi Cloud Run'a deploy ediliyor...
+echo.
+
+gcloud run deploy %SERVICE_NAME%-debug ^
+    --source=. ^
+    --region=%REGION% ^
+    --platform=managed ^
+    --allow-unauthenticated ^
+    --memory=1Gi ^
+    --cpu=1 ^
+    --timeout=300 ^
+    --max-instances=2 ^
+    --set-env-vars="%ENV_VARS%,GCS_BUCKET_NAME=rag-chatbot-tables,APP_MODE=debug" ^
+    --quiet
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [!] Debug servisi deploy basarisiz oldu (opsiyonel, devam ediliyor).
+)
+
+REM ── 9. URL'leri al ─────────────────────────────────────
 echo.
 echo ============================================
 echo   DEPLOY BASARILI!
 echo ============================================
 echo.
 
+echo [Ana Uygulama URL]:
 gcloud run services describe %SERVICE_NAME% --region=%REGION% --format="value(status.url)"
 
 echo.
-echo Yukaridaki URL'yi paylasarak uygulamaya erisebilirsiniz.
+echo [Debug Servisi URL]:
+gcloud run services describe %SERVICE_NAME%-debug --region=%REGION% --format="value(status.url)" 2>nul
+if %errorlevel% neq 0 (
+    echo   Debug servisi deploy edilmemis.
+)
+
 echo.
-echo Giris bilgileri:
+echo Giris bilgileri (ana uygulama):
 echo   admin / admin123
 echo   user1 / user123
 echo   user2 / user123
 echo.
-echo Sifreleri degistirmek icin app.py'deki AUTH_CREDENTIALS
-echo bolumundeki bcrypt hash'leri guncelleyin.
+echo Debug servisi: Giris gerektirmez, sadece gozlem amacli.
 echo ============================================
 echo.
 pause

@@ -28,6 +28,10 @@ cache/
 .cache/
 logs/
 
+# Frontend (rebuilt in Docker, node_modules is huge)
+frontend/node_modules/
+frontend/dist/
+
 # Tests
 tests/
 .pytest_cache/

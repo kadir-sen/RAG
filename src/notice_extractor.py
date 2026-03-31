@@ -147,6 +147,9 @@ class NoticeMetadata:
     # Evidence
     evidence_spans: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Summary
+    summary: str = ""
+
     # Metadata
     extraction_method: str = "regex"  # regex | regex+llm
     extracted_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -1138,6 +1141,11 @@ class NoticeExtractor:
             json.dump(asdict(notice), f, indent=2, ensure_ascii=False)
 
         logger.info(f"[NoticeExtractor] Saved notice: {notice_path.name}")
+        try:
+            from .gcs_storage import sync_uploaded_file_to_gcs
+            sync_uploaded_file_to_gcs(str(notice_path))
+        except Exception:
+            pass
         return str(notice_path)
 
     def load_notice(self, doc_id: str) -> Optional[NoticeMetadata]:
@@ -1155,6 +1163,20 @@ class NoticeExtractor:
     def list_notices(self) -> List[str]:
         """List all extracted notice doc_ids."""
         return [p.stem for p in NOTICES_DIR.glob("*.json")]
+
+    def delete_notice(self, doc_id: str) -> bool:
+        """Delete notice JSON for a given doc_id. Returns True if deleted."""
+        notice_path = NOTICES_DIR / f"{doc_id}.json"
+        if notice_path.exists():
+            notice_path.unlink()
+            try:
+                from .gcs_storage import delete_uploaded_file_from_gcs
+                delete_uploaded_file_from_gcs(str(notice_path))
+            except Exception:
+                pass
+            logger.info(f"[Notice] Deleted notice: {doc_id}")
+            return True
+        return False
 
 
 # Singleton

@@ -111,12 +111,11 @@ def sync_catalog_to_gcs():
 
 
 def sync_catalog_from_gcs():
-    """Download catalog.json from GCS if local is missing."""
+    """Always download catalog.json from GCS (Cloud Run is stateless)."""
     if not is_enabled():
         return
-    if not CATALOG_FILE.exists():
-        PARQUET_DIR.mkdir(parents=True, exist_ok=True)
-        download_file(_CATALOG_BLOB, str(CATALOG_FILE))
+    PARQUET_DIR.mkdir(parents=True, exist_ok=True)
+    download_file(_CATALOG_BLOB, str(CATALOG_FILE))
 
 
 def sync_parquet_to_gcs(parquet_path: str):
@@ -128,7 +127,7 @@ def sync_parquet_to_gcs(parquet_path: str):
 
 
 def sync_all_parquets_from_gcs():
-    """Download all parquet files from GCS to local."""
+    """Always download all parquet files from GCS (Cloud Run is stateless)."""
     if not is_enabled():
         return
     PARQUET_DIR.mkdir(parents=True, exist_ok=True)
@@ -139,9 +138,8 @@ def sync_all_parquets_from_gcs():
         if not filename or not filename.endswith(".parquet"):
             continue
         local_path = PARQUET_DIR / filename
-        if not local_path.exists():
-            if download_file(blob_name, str(local_path)):
-                count += 1
+        if download_file(blob_name, str(local_path)):
+            count += 1
     if count > 0:
         logger.info(f"[GCS] Downloaded {count} parquet files")
 
@@ -212,6 +210,115 @@ def sync_converter_registry_from_gcs():
     if not CONVERTER_REGISTRY_FILE.exists():
         CONVERTER_REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
         download_file(_CONVERTER_REGISTRY_BLOB, str(CONVERTER_REGISTRY_FILE))
+
+
+# ── Review session sync ──────────────────────────────────
+
+_REVIEW_SESSIONS_PREFIX = "review_sessions/"
+
+
+def sync_review_session_to_gcs(session_id: str):
+    """Upload a single review session JSON to GCS."""
+    if not is_enabled():
+        return
+    from .config import REVIEW_SESSIONS_DIR
+    local_path = REVIEW_SESSIONS_DIR / f"{session_id}.json"
+    if local_path.exists():
+        upload_file(str(local_path), f"{_REVIEW_SESSIONS_PREFIX}{session_id}.json")
+
+
+def sync_review_sessions_from_gcs():
+    """Download all review session JSON files from GCS (if local missing)."""
+    if not is_enabled():
+        return
+    from .config import REVIEW_SESSIONS_DIR
+    REVIEW_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    blobs = list_blobs(_REVIEW_SESSIONS_PREFIX)
+    count = 0
+    for blob_name in blobs:
+        filename = blob_name.replace(_REVIEW_SESSIONS_PREFIX, "")
+        if not filename or not filename.endswith(".json"):
+            continue
+        local_path = REVIEW_SESSIONS_DIR / filename
+        if not local_path.exists():
+            if download_file(blob_name, str(local_path)):
+                count += 1
+    if count > 0:
+        logger.info(f"[GCS] Downloaded {count} review session files")
+
+
+# ── Document registry sync ──────────────────────────────
+
+_DOCUMENT_REGISTRY_BLOB = "registry/document_registry.json"
+
+
+def sync_document_registry_to_gcs():
+    """Upload document_registry.json to GCS."""
+    if not is_enabled():
+        return
+    from .config import STORAGE_DIR
+    registry_file = STORAGE_DIR / "document_registry.json"
+    if registry_file.exists():
+        upload_file(str(registry_file), _DOCUMENT_REGISTRY_BLOB)
+
+
+def sync_document_registry_from_gcs():
+    """Always download document_registry.json from GCS (Cloud Run is stateless)."""
+    if not is_enabled():
+        return
+    from .config import STORAGE_DIR
+    registry_file = STORAGE_DIR / "document_registry.json"
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    download_file(_DOCUMENT_REGISTRY_BLOB, str(registry_file))
+
+
+# ── Uploaded source files sync ──────────────────────────
+
+_UPLOADS_PREFIX = "uploads/"
+
+
+def sync_uploaded_file_to_gcs(file_path: str):
+    """Upload a single source file (email/doc/table) to GCS after upload."""
+    if not is_enabled():
+        return
+    p = Path(file_path)
+    from .config import DATA_DIR
+    try:
+        rel = p.relative_to(DATA_DIR)
+        upload_file(file_path, f"{_UPLOADS_PREFIX}{rel.as_posix()}")
+    except ValueError:
+        pass
+
+
+def sync_all_uploads_from_gcs():
+    """Always download all uploaded source files from GCS (Cloud Run is stateless)."""
+    if not is_enabled():
+        return
+    from .config import DATA_DIR
+    blobs = list_blobs(_UPLOADS_PREFIX)
+    count = 0
+    for blob_name in blobs:
+        rel = blob_name.replace(_UPLOADS_PREFIX, "")
+        if not rel:
+            continue
+        local_path = DATA_DIR / rel
+        if download_file(blob_name, str(local_path)):
+            count += 1
+    if count > 0:
+        logger.info(f"[GCS] Downloaded {count} uploaded source files")
+
+
+def delete_uploaded_file_from_gcs(file_path: str):
+    """Delete a source file from GCS when user deletes it."""
+    if not is_enabled():
+        return
+    p = Path(file_path)
+    from .config import DATA_DIR
+    try:
+        rel = p.relative_to(DATA_DIR)
+        delete_blob(f"{_UPLOADS_PREFIX}{rel.as_posix()}")
+    except ValueError:
+        pass
 
 
 def clear_gcs_tables():

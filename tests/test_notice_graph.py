@@ -138,30 +138,6 @@ class TestNoticeExtractor:
         assert "claim" in actions
         assert "delay" in actions
 
-    def test_language_detection_english(self):
-        """Test English language detection."""
-        from src.notice_extractor import NoticeExtractor
-
-        extractor = NoticeExtractor()
-
-        text = "Dear Sir, We are writing to inform you regarding the contract terms."
-
-        lang = extractor._detect_language(text)
-
-        assert lang == "en"
-
-    def test_language_detection_turkish(self):
-        """Test Turkish language detection."""
-        from src.notice_extractor import NoticeExtractor
-
-        extractor = NoticeExtractor()
-
-        text = "Sayın yetkili, sözleşme şartları ile ilgili bilgilendirme yapıyoruz."
-
-        lang = extractor._detect_language(text)
-
-        assert lang == "tr"
-
     def test_doc_type_detection(self):
         """Test document type detection."""
         from src.notice_extractor import NoticeExtractor
@@ -497,6 +473,188 @@ class TestRouterTimeline:
             query_lower = query.lower()
             matches = sum(1 for kw in TIMELINE_KEYWORDS if kw in query_lower)
             assert matches < 2, f"Query should not match timeline: {query}"
+
+
+class TestCompoundQueryHandling:
+    """Tests for compound query intent parsing, domain concept expansion, and broad search."""
+
+    def test_parse_compound_intent_delay_correspondence(self):
+        """Verify 'delay events in correspondence' extracts both semantic and scope."""
+        from src.router import QueryRouter
+
+        router = QueryRouter.__new__(QueryRouter)  # skip __init__ for unit test
+        result = router._parse_compound_intent("what are the delay events in the correspondence")
+        assert result["semantic"] == "delay"
+        assert result["scope"] == "correspondence"
+
+    def test_parse_compound_intent_claims_letters(self):
+        """Verify 'claims mentioned in the letters' extracts claim + correspondence."""
+        from src.router import QueryRouter
+
+        router = QueryRouter.__new__(QueryRouter)
+        result = router._parse_compound_intent("what claims are mentioned in the letters")
+        assert result["semantic"] == "claim"
+        assert result["scope"] == "correspondence"
+
+    def test_parse_compound_intent_approval_notices(self):
+        """Verify 'approval related notices' extracts approval + notice."""
+        from src.router import QueryRouter
+
+        router = QueryRouter.__new__(QueryRouter)
+        result = router._parse_compound_intent("show me approval related notices")
+        assert result["semantic"] == "approval"
+        assert result["scope"] == "notice"
+
+    def test_parse_compound_intent_single_keyword_no_scope(self):
+        """Single-keyword query without scope returns None for scope."""
+        from src.router import QueryRouter
+
+        router = QueryRouter.__new__(QueryRouter)
+        result = router._parse_compound_intent("what are the delays")
+        assert result["semantic"] == "delay"
+        assert result["scope"] is None
+
+    def test_parse_compound_intent_no_semantic(self):
+        """Query with scope but no semantic returns None for semantic."""
+        from src.router import QueryRouter
+
+        router = QueryRouter.__new__(QueryRouter)
+        result = router._parse_compound_intent("show all correspondence")
+        assert result["semantic"] is None
+        assert result["scope"] == "correspondence"
+
+    def test_expand_domain_concepts_delay(self):
+        """Verify domain concept expansion for delay-related query."""
+        from src.jargon_manager import JargonManager
+
+        jm = JargonManager()
+        terms = jm.expand_domain_concepts("what are the delay events")
+        assert "delay" in terms
+        assert "NOD" in terms
+        assert "extension of time" in terms
+        assert "EOT" in terms
+        assert "postponement" in terms
+
+    def test_expand_domain_concepts_claim(self):
+        """Verify domain concept expansion for claim-related query."""
+        from src.jargon_manager import JargonManager
+
+        jm = JargonManager()
+        terms = jm.expand_domain_concepts("what claims exist")
+        assert "claim" in terms
+        assert "notice of claim" in terms
+        assert "damages" in terms
+
+    def test_expand_domain_concepts_no_match(self):
+        """Query with no matching concepts returns empty list."""
+        from src.jargon_manager import JargonManager
+
+        jm = JargonManager()
+        terms = jm.expand_domain_concepts("hello world")
+        assert terms == []
+
+    def test_get_concept_search_terms_combines_sources(self):
+        """get_concept_search_terms combines domain concepts and abbreviation expansion."""
+        from src.jargon_manager import JargonManager
+
+        jm = JargonManager()
+        terms = jm.get_concept_search_terms("what are the delay events in the EOT notice")
+        # Should have domain concept terms for "delay"
+        assert "NOD" in terms
+        assert "postponement" in terms
+        # Should also have abbreviation expansion for "EOT"
+        assert any("extension of time" in t.lower() for t in terms)
+
+    def test_search_broad_with_scope(self):
+        """Test search_broad filters by scope (doc_type)."""
+        from src.light_graph import LightGraph
+
+        graph = LightGraph()
+        # Add test notices
+        graph.graph.nodes = {
+            "doc1": {
+                "doc_id": "doc1", "date": "2024-01-10", "sender": "A",
+                "recipient": "B", "subject": "Notice of Delay for Block A",
+                "doc_type": "notice", "direction": "outgoing",
+                "file_name": "notice_001.pdf", "topics": "delay, block a",
+                "actions": "delay", "ref_numbers": [], "cc_list": [],
+            },
+            "doc2": {
+                "doc_id": "doc2", "date": "2024-01-15", "sender": "B",
+                "recipient": "A", "subject": "Monthly Progress Report",
+                "doc_type": "report", "direction": "incoming",
+                "file_name": "report_001.pdf", "topics": "progress, delay",
+                "actions": "progress", "ref_numbers": [], "cc_list": [],
+            },
+            "doc3": {
+                "doc_id": "doc3", "date": "2024-01-20", "sender": "A",
+                "recipient": "B", "subject": "Letter regarding delay compensation",
+                "doc_type": "letter", "direction": "outgoing",
+                "file_name": "letter_001.pdf", "topics": "delay, claim",
+                "actions": "claim", "ref_numbers": [], "cc_list": [],
+            },
+        }
+        graph._sync_notices_to_duckdb()
+
+        # Search for delay in correspondence scope (letter, notice, email, transmittal)
+        results = graph.search_broad(["delay"], scope="correspondence")
+
+        doc_ids = [r["doc_id"] for r in results]
+        assert "doc1" in doc_ids  # notice about delay
+        assert "doc3" in doc_ids  # letter about delay
+        assert "doc2" not in doc_ids  # report is not correspondence
+
+    def test_search_broad_multi_field(self):
+        """Test that search_broad finds terms in subject even if not in actions."""
+        from src.light_graph import LightGraph
+
+        graph = LightGraph()
+        graph.graph.nodes = {
+            "doc1": {
+                "doc_id": "doc1", "date": "2024-02-01", "sender": "X",
+                "recipient": "Y", "subject": "Extension of Time request",
+                "doc_type": "letter", "direction": "outgoing",
+                "file_name": "eot_letter.pdf", "topics": "",
+                "actions": "request",  # NOT tagged as delay action
+                "ref_numbers": [], "cc_list": [],
+            },
+        }
+        graph._sync_notices_to_duckdb()
+
+        results = graph.search_broad(["extension of time", "delay", "EOT"])
+
+        assert len(results) >= 1
+        assert results[0]["doc_id"] == "doc1"
+
+    def test_search_broad_empty_terms(self):
+        """Empty terms list returns empty results."""
+        from src.light_graph import LightGraph
+
+        graph = LightGraph()
+        results = graph.search_broad([])
+        assert results == []
+
+    def test_build_compound_answer(self):
+        """Test _build_compound_answer produces readable output."""
+        from src.router import QueryRouter
+
+        router = QueryRouter.__new__(QueryRouter)
+        intent = {"semantic": "delay", "scope": "correspondence"}
+        matched_docs = [
+            {
+                "doc_id": "d1", "date": "2024-01-10", "sender": "Contractor A",
+                "recipient": "Owner B", "subject": "Notice of Delay",
+                "doc_type": "notice", "file_name": "notice_001.pdf", "actions": "delay",
+            },
+        ]
+        rag_result = {"answer": "The contractor notified delay due to weather conditions."}
+
+        answer = router._build_compound_answer("delay events", intent, matched_docs, rag_result)
+
+        assert "1 correspondence" in answer.lower() or "1" in answer
+        assert "delay" in answer.lower()
+        assert "notice_001.pdf" in answer
+        assert "weather conditions" in answer
 
 
 if __name__ == "__main__":

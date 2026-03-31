@@ -8,21 +8,21 @@
       "dtype": "date",
       "required": true,
       "description": "Work date",
-      "aliases": ["date", "tarih", "gun", "work_date"]
+      "aliases": ["date", "work_date"]
     },
     {
       "name": "Block",
       "dtype": "string",
       "required": true,
       "description": "Construction block identifier",
-      "aliases": ["block", "blok", "building"]
+      "aliases": ["block", "building"]
     },
     {
       "name": "Floor",
       "dtype": "string",
       "required": true,
       "description": "Floor number or reference",
-      "aliases": ["floor", "kat", "level", "storey"]
+      "aliases": ["floor", "level", "storey"]
     },
     {
       "name": "Activity Description",

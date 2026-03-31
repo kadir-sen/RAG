@@ -19,16 +19,25 @@ class TestShouldOcrPage:
     def ocr_pipeline(self):
         """Create OCR pipeline for testing."""
         # Mock OCR availability
-        with patch('src.ocr_pipeline.TESSERACT_AVAILABLE', True):
-            from src.ocr_pipeline import OCRPipeline
+        with patch('src.ocr.TESSERACT_AVAILABLE', True):
+            from src.ocr import OCRPipeline
             pipeline = OCRPipeline(mode="auto")
             return pipeline
 
+    def _mock_page(self, text="", images=None, width=612, height=792):
+        """Create a properly mocked fitz.Page."""
+        page = Mock()
+        page.get_text.return_value = text
+        page.get_images.return_value = images or []
+        rect = Mock()
+        rect.width = width
+        rect.height = height
+        page.rect = rect
+        return page
+
     def test_empty_page_needs_ocr(self, ocr_pipeline):
         """Empty page should trigger OCR."""
-        page = Mock()
-        page.get_text.return_value = ""
-        page.get_images.return_value = []
+        page = self._mock_page(text="")
 
         needs_ocr, stats = ocr_pipeline.should_ocr_page(page)
 
@@ -37,9 +46,7 @@ class TestShouldOcrPage:
 
     def test_short_text_needs_ocr(self, ocr_pipeline):
         """Very short text should trigger OCR."""
-        page = Mock()
-        page.get_text.return_value = "Hello"  # Only 5 chars
-        page.get_images.return_value = []
+        page = self._mock_page(text="Hello")
 
         needs_ocr, stats = ocr_pipeline.should_ocr_page(page)
 
@@ -48,9 +55,7 @@ class TestShouldOcrPage:
 
     def test_normal_text_no_ocr(self, ocr_pipeline):
         """Normal text page should not need OCR."""
-        page = Mock()
-        page.get_text.return_value = "This is a normal page with plenty of text content. " * 10
-        page.get_images.return_value = []
+        page = self._mock_page(text="This is a normal page with plenty of text content. " * 10)
 
         needs_ocr, stats = ocr_pipeline.should_ocr_page(page)
 
@@ -59,9 +64,7 @@ class TestShouldOcrPage:
 
     def test_low_alpha_ratio_needs_ocr(self, ocr_pipeline):
         """Page with mostly non-alpha chars should trigger OCR."""
-        page = Mock()
-        page.get_text.return_value = "123456789012345678901234567890@@@@@@@@@@"  # Low alpha ratio
-        page.get_images.return_value = []
+        page = self._mock_page(text="123456789012345678901234567890@@@@@@@@@@")
 
         needs_ocr, stats = ocr_pipeline.should_ocr_page(page)
 
@@ -74,8 +77,8 @@ class TestDetectTableStructure:
 
     @pytest.fixture
     def ocr_pipeline(self):
-        with patch('src.ocr_pipeline.TESSERACT_AVAILABLE', True):
-            from src.ocr_pipeline import OCRPipeline
+        with patch('src.ocr.TESSERACT_AVAILABLE', True):
+            from src.ocr import OCRPipeline
             return OCRPipeline(mode="auto")
 
     def test_detect_tab_separated_table(self, ocr_pipeline):
@@ -113,7 +116,7 @@ class TestOCRCache:
 
     def test_cache_miss_returns_none(self, tmp_path):
         """Cache miss should return None."""
-        from src.ocr_pipeline import OCRCache
+        from src.ocr import OCRCache
 
         cache = OCRCache(cache_dir=str(tmp_path / "ocr_cache"))
         result = cache.get("hash123", 1, 200, "eng", "tesseract")
@@ -122,7 +125,7 @@ class TestOCRCache:
 
     def test_cache_set_and_get(self, tmp_path):
         """Cache should store and retrieve results."""
-        from src.ocr_pipeline import OCRCache, OCRResult
+        from src.ocr import OCRCache, OCRResult
 
         cache = OCRCache(cache_dir=str(tmp_path / "ocr_cache"))
 
@@ -145,7 +148,7 @@ class TestOCRCache:
 
     def test_different_params_different_cache(self, tmp_path):
         """Different params should have separate cache entries."""
-        from src.ocr_pipeline import OCRCache, OCRResult
+        from src.ocr import OCRCache, OCRResult
 
         cache = OCRCache(cache_dir=str(tmp_path / "ocr_cache"))
 
@@ -170,8 +173,8 @@ class TestOCRModeOff:
 
     def test_ocr_off_skips_ocr(self):
         """OCR off mode should never use OCR."""
-        with patch('src.ocr_pipeline.TESSERACT_AVAILABLE', True):
-            from src.ocr_pipeline import OCRPipeline
+        with patch('src.ocr.TESSERACT_AVAILABLE', True):
+            from src.ocr import OCRPipeline
 
             pipeline = OCRPipeline(mode="off")
 

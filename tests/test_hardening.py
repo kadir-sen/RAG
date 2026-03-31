@@ -128,7 +128,7 @@ run_test('SQL sanitize table name', test_sanitize_table)
 
 # ========== TEST 8: Pydantic SQL schema ==========
 def test_pydantic_sql_schema():
-    from src.schemas import SQLGenerationResult
+    from src.types import SQLGenerationResult
 
     # Valid query
     result = SQLGenerationResult(
@@ -165,7 +165,7 @@ run_test('Pydantic SQL schema validation', test_pydantic_sql_schema)
 
 # ========== TEST 9: Pydantic plan schema ==========
 def test_pydantic_plan_schema():
-    from src.schemas import PlanStepSchema, QueryPlanSchema
+    from src.types import PlanStepSchema, QueryPlanSchema
 
     step = PlanStepSchema(
         type='sql',
@@ -388,16 +388,17 @@ def test_lazy_summary():
 
     analyzer = DataAnalyzerSQL.__new__(DataAnalyzerSQL)
 
-    # Small result (1 row, 1 col) -> lazy
+    # All non-empty results should go to LLM (lazy disabled for richer answers)
     small_df = pd.DataFrame({'total': [42]})
-    assert analyzer._should_lazy_summarize(small_df) == True
+    assert analyzer._should_lazy_summarize(small_df) == False
 
+    # Empty results should still be lazy (no need for LLM)
+    empty_df = pd.DataFrame()
+    assert analyzer._should_lazy_summarize(empty_df) == True
+
+    # Lazy summary still works as fallback when called directly
     summary = analyzer._lazy_summary('What is total?', 'SELECT SUM(x)', small_df)
     assert '42' in summary
-
-    # 3 rows, 2 cols = 6 cells -> lazy
-    medium_df = pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})
-    assert analyzer._should_lazy_summarize(medium_df) == True
 
     # Large result (100 rows) -> not lazy
     large_df = pd.DataFrame({'a': range(100), 'b': range(100)})
@@ -492,7 +493,7 @@ run_test('Planner - MAX_PLAN_STEPS guardrail', test_planner_max_steps)
 
 # ========== TEST 23: Classification schema ==========
 def test_classification_schema():
-    from src.schemas import ClassificationResult
+    from src.types import ClassificationResult
 
     result = ClassificationResult(
         query_type='DATA',
@@ -517,14 +518,15 @@ def test_complex_query_detection():
 
     router = QueryRouter.__new__(QueryRouter)
 
-    # Complex queries
+    # Complex queries (only truly sequential multi-step)
     assert router._is_complex_query('Group by category then find the max') == True
-    assert router._is_complex_query('Find outliers in the data') == True
     assert router._is_complex_query('Compare sales month-over-month') == True
 
-    # Simple queries
+    # Simple queries (cross-source detection now handled by LLM classifier)
     assert router._is_complex_query('What is the total revenue?') == False
     assert router._is_complex_query('Show me all records') == False
+    assert router._is_complex_query('Find outliers in the data') == False
+    assert router._is_complex_query('Compare contract terms with quantities') == False
 
 run_test('Complex query detection', test_complex_query_detection)
 
@@ -545,6 +547,186 @@ def test_config_values():
     assert CACHE_TTL_SECONDS == 3600
 
 run_test('Config - hardening values', test_config_values)
+
+
+# ========== Construction Domain Tests ==========
+
+# ── Router: Construction query routing ──
+
+def test_router_construction_equipment():
+    """Equipment queries should route to DATA."""
+    from src.router import QueryRouter
+    router = QueryRouter.__new__(QueryRouter)
+    for q in [
+        'total crane hours by block',
+        'which equipment was used on floor 3',
+        'average daily utilization of machinery',
+        'how many types of equipment',
+    ]:
+        decision = router._classify_heuristic(q)
+        assert decision is not None, f'Heuristic returned None for: {q}'
+        assert decision.query_type.value == 'data', f'Expected DATA for "{q}", got {decision.query_type.value}'
+
+run_test('Construction routing - equipment queries → DATA', test_router_construction_equipment)
+
+
+def test_router_construction_manpower():
+    """Manpower/worker queries should route to DATA."""
+    from src.router import QueryRouter
+    router = QueryRouter.__new__(QueryRouter)
+    for q in [
+        'how many workers by block',
+        'breakdown of trades on site',
+        'daily headcount trend',
+        'what are the activities',
+    ]:
+        decision = router._classify_heuristic(q)
+        assert decision is not None, f'Heuristic returned None for: {q}'
+        assert decision.query_type.value == 'data', f'Expected DATA for "{q}", got {decision.query_type.value}'
+
+run_test('Construction routing - manpower queries → DATA', test_router_construction_manpower)
+
+
+def test_router_construction_document():
+    """Contract/clause queries should route to DOCUMENT."""
+    from src.router import QueryRouter
+    router = QueryRouter.__new__(QueryRouter)
+    for q in [
+        'what does clause 5 say about liability',
+        'explain the terms and conditions in the agreement',
+        'summarize the contract scope of work obligation',
+    ]:
+        decision = router._classify_heuristic(q)
+        assert decision is not None, f'Heuristic returned None for: {q}'
+        assert decision.query_type.value == 'document', f'Expected DOCUMENT for "{q}", got {decision.query_type.value}'
+
+run_test('Construction routing - contract queries → DOCUMENT', test_router_construction_document)
+
+
+# ── Date parsing: construction date formats ──
+
+def test_date_parsing_construction_formats():
+    """Date parser must handle all construction document formats."""
+    import pandas as pd
+    from src.table_normalizer import parse_mixed_datetime
+
+    test_cases = [
+        ('2.01.2025', 2025, 1, 2),        # Dotted day-first
+        ('2025-06-21', 2025, 6, 21),       # ISO
+        ('09/18/2027', 2027, 9, 18),       # US slash
+        ('15-Jan-2025', 2025, 1, 15),      # DD-MMM-YYYY
+        ('2025/03/15', 2025, 3, 15),       # YYYY/MM/DD
+        ('01 March 2025', 2025, 3, 1),     # DD Month YYYY
+    ]
+    for date_str, exp_year, exp_month, exp_day in test_cases:
+        series = pd.Series([date_str])
+        result = parse_mixed_datetime(series)
+        parsed = result.iloc[0]
+        assert not pd.isna(parsed), f'Failed to parse: {date_str}'
+        assert parsed.year == exp_year, f'{date_str}: expected year {exp_year}, got {parsed.year}'
+        assert parsed.month == exp_month, f'{date_str}: expected month {exp_month}, got {parsed.month}'
+        assert parsed.day == exp_day, f'{date_str}: expected day {exp_day}, got {parsed.day}'
+
+run_test('Date parsing - construction document formats', test_date_parsing_construction_formats)
+
+
+# ── SQL: No LIMIT injection ──
+
+def test_no_limit_injection():
+    """SQL queries must NOT have LIMIT forced by the system."""
+    from src.data_analyzer_sql import DataAnalyzerSQL
+    # Verify the prompt instructs no LIMIT
+    assert 'Do NOT add LIMIT' in DataAnalyzerSQL.SQL_GENERATION_PROMPT
+    # Verify MAX_RESULT_ROWS alias is gone
+    import src.data_analyzer_sql as module
+    assert not hasattr(module, 'MAX_RESULT_ROWS'), 'MAX_RESULT_ROWS should be removed'
+
+run_test('SQL - no LIMIT injection', test_no_limit_injection)
+
+
+# ── Schema hints: construction analytics ──
+
+def test_schema_hints_contain_formulas():
+    """Schema hints must contain real construction analytics formulas."""
+    from src.data_analyzer_sql import DataAnalyzerSQL
+    hints = DataAnalyzerSQL.SCHEMA_SQL_HINTS
+
+    # Equipment log must mention utilization analysis
+    assert 'utilization' in hints['equipment_log'].lower()
+    assert 'overtime' in hints['equipment_log'].lower() or 'shifts' in hints['equipment_log'].lower()
+
+    # Manpower must mention productivity formula
+    assert 'productivity' in hints['manpower_production'].lower()
+    assert 'NULLIF' in hints['manpower_production']  # Safe division
+
+    # IPC must mention progress calculation and remaining
+    assert 'progress' in hints['ipc_sample'].lower()
+    assert 'remaining' in hints['ipc_sample'].lower() or 'Remaining' in hints['ipc_sample']
+
+run_test('Schema hints - construction analytics formulas', test_schema_hints_contain_formulas)
+
+
+# ── Deterministic shortcuts: coverage ──
+
+def test_deterministic_shortcut_coverage():
+    """Key construction queries must have deterministic shortcuts."""
+    from src.data_analyzer_sql import DataAnalyzerSQL
+    shortcuts = DataAnalyzerSQL._SCHEMA_SHORTCUTS
+
+    # Equipment shortcuts
+    eq_patterns = [p for p, _ in shortcuts['equipment_log']]
+    assert len(eq_patterns) >= 6, f'Expected >=6 equipment shortcuts, got {len(eq_patterns)}'
+
+    # Manpower shortcuts
+    mp_patterns = [p for p, _ in shortcuts['manpower_production']]
+    assert len(mp_patterns) >= 7, f'Expected >=7 manpower shortcuts, got {len(mp_patterns)}'
+
+    # IPC shortcuts
+    ipc_patterns = [p for p, _ in shortcuts['ipc_sample']]
+    assert len(ipc_patterns) >= 6, f'Expected >=6 IPC shortcuts, got {len(ipc_patterns)}'
+
+    # Verify productivity shortcut exists in manpower
+    import re
+    has_productivity = any(re.search(p, 'productivity output per worker') for p, _ in shortcuts['manpower_production'])
+    assert has_productivity, 'Missing productivity shortcut in manpower'
+
+    # Verify remaining/balance shortcut exists in IPC
+    has_remaining = any(re.search(p, 'remaining balance work') for p, _ in shortcuts['ipc_sample'])
+    assert has_remaining, 'Missing remaining/balance shortcut in IPC'
+
+run_test('Deterministic shortcuts - construction coverage', test_deterministic_shortcut_coverage)
+
+
+# ── SQL Generation Prompt: construction intelligence ──
+
+def test_sql_prompt_construction_intelligence():
+    """SQL prompt must include construction-specific query patterns."""
+    from src.data_analyzer_sql import DataAnalyzerSQL
+    prompt = DataAnalyzerSQL.SQL_GENERATION_PROMPT
+
+    assert 'productivity' in prompt.lower()
+    assert 'utilization' in prompt.lower()
+    assert 'NULLIF' in prompt  # Safe division
+    assert 'ROUND' in prompt  # Clean numeric output
+    assert 'ILIKE' in prompt  # Fuzzy matching for trades/blocks
+    assert 'construction' in prompt.lower()
+
+run_test('SQL prompt - construction intelligence', test_sql_prompt_construction_intelligence)
+
+
+# ── Summary Prompt: construction context ──
+
+def test_summary_prompt_construction_context():
+    """Summary prompt must guide construction-domain interpretation."""
+    from src.data_analyzer_sql import DataAnalyzerSQL
+    prompt = DataAnalyzerSQL.SUMMARY_PROMPT
+
+    assert 'construction' in prompt.lower()
+    assert 'anomal' in prompt.lower()  # anomaly detection
+    assert 'trend' in prompt.lower() or 'Trend' in prompt
+    assert 'block' in prompt.lower() or 'Block' in prompt
+
+run_test('Summary prompt - construction context', test_summary_prompt_construction_context)
 
 
 # ========== SUMMARY ==========

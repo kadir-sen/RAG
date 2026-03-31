@@ -11,7 +11,7 @@ import pandas as pd
 
 from .logger import logger
 from .catalog import get_catalog, TableMetadata
-from .ocr_detector import OCRDetector, OCRDecision
+from .ocr import OCRDetector, OCRDecision
 
 # Check for pdfplumber
 try:

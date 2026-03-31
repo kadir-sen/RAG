@@ -10,7 +10,6 @@ from .logger import logger, log_separator
 from .catalog import get_catalog, TableMetadata
 from .excel_table_extractor import extract_excel_tables
 from .pdf_table_extractor import extract_pdf_tables
-from .ocr_detector import analyze_pdf
 from .jargon_manager import get_jargon_manager
 
 
@@ -143,6 +142,8 @@ class TableIngestionPipeline:
 
     def _ingest_pdf(self, file_path: str) -> IngestionResult:
         """Ingest PDF file with table extraction."""
+        from .ocr import analyze_pdf
+
         # First analyze for OCR needs
         analysis = analyze_pdf(file_path)
         ocr_decision = analysis.decision.value

@@ -2,7 +2,7 @@
 llama-index>=0.10.0
 llama-index-llms-gemini>=0.1.0
 llama-index-llms-openai>=0.1.0
-llama-index-llms-anthropic>=0.1.0
+# anthropic SDK used directly (no llama_index wrapper needed)
 llama-index-embeddings-google-genai>=0.1.0
 llama-index-vector-stores-pinecone>=0.1.0
 
@@ -32,8 +32,13 @@ pinecone-client>=3.0.0
 duckdb>=0.9.0
 pandas>=2.0.0
 
-# UI
-streamlit>=1.30.0
+# UI (legacy)
+streamlit>=1.44.0
+
+# API Server
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
 
 # Caching
 diskcache>=5.6.0

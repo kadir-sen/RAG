@@ -64,24 +64,32 @@ class QueryPlanner:
     """
 
     PLAN_PROMPT = (
-        "You are a query planner for a hybrid RAG system that handles "
-        "construction/contract documents and tabular data.\n\n"
-        "Given a user query, determine if it needs multiple steps and if so, "
-        "break it into ordered sub-steps.\n\n"
+        "You are a query planner for a construction project intelligence system.\n"
+        "The system has tabular data (Excel-based daily logs, progress certificates) "
+        "and document data (contracts, letters, reports in PDF).\n\n"
+        "Given a user query, determine if it needs one or multiple steps.\n\n"
         "AVAILABLE STEP TYPES:\n"
-        "- sql: Query tabular data. Use for calculations, aggregations, filtering.\n"
-        "- document: Search PDF/contract documents. Use for clause lookups, definitions.\n"
-        "- timeline: Query the document graph. Use for chronology, who sent what.\n"
-        "- combine: Synthesize results from previous steps.\n\n"
+        "- sql: Query tabular data (equipment hours, manpower counts, production output, "
+        "IPC progress, BOQ quantities). Use for ANY numerical, analytical, or listing question.\n"
+        "- document: Search PDF/contract documents. Use ONLY for reading contract clauses, "
+        "terms, specifications, or document prose that is NOT in any table.\n"
+        "- timeline: Query document relationships. Use for correspondence flow, notice sequences.\n"
+        "- combine: Synthesize results from previous steps into a final answer.\n\n"
         "AVAILABLE TABLES:\n{table_context}\n\n"
         "AVAILABLE DOCUMENTS:\n{doc_context}\n\n"
+        "CONSTRUCTION QUERY PATTERNS:\n"
+        "- 'Compare equipment and manpower for Block A' → sql(equipment) + sql(manpower) + combine\n"
+        "- 'Does actual progress match the contract?' → sql(IPC progress) + document(contract terms) + combine\n"
+        "- 'Which trade has best productivity?' → sql(manpower: output/workers) — single step\n"
+        "- 'Total hours by equipment type' → sql(equipment) — single step\n"
+        "- 'What does the contract say about delays?' → document — single step\n\n"
         "RULES:\n"
-        "1. If the query needs only ONE step, return is_simple=true with one step.\n"
-        "2. If the query needs MULTIPLE steps, return is_simple=false.\n"
-        "3. Each step should have a clear, specific instruction.\n"
-        "4. Steps can reference previous step results using {{step_N}} placeholder.\n"
-        "5. Always end multi-step plans with a 'combine' step.\n"
-        "6. Maximum {max_steps} steps allowed.\n\n"
+        "1. If one step suffices, return is_simple=true with one step.\n"
+        "2. Multi-step plans must end with a 'combine' step.\n"
+        "3. Steps can reference previous results via {{step_N}} placeholder.\n"
+        "4. Maximum {max_steps} steps allowed.\n"
+        "5. ALWAYS prefer 'sql' when tables contain relevant data.\n"
+        "6. Each step instruction must be specific enough to execute independently.\n\n"
         "{user_query}\n\n"
         "Respond with ONLY valid JSON (no markdown):\n"
         '{{\"is_simple\": true/false, \"rationale\": \"brief\", '
@@ -187,44 +195,93 @@ class QueryPlanner:
             return self._simple_fallback(query)
 
     def _is_obviously_simple(self, query: str) -> bool:
-        """Check if query is obviously single-step."""
+        """Check if query is obviously single-step.
+        Only truly sequential multi-step patterns return False.
+        Cross-source keyword detection is left to the LLM planner.
+        """
         q = query.lower()
 
         multi_indicators = [
             ' then ', ' and then ', ' after that ', ' next ',
-            ' sonra ', ' ardından ',
-            'group by', 'grupla',
-            'compare', 'kıyasla', 'karşılaştır',
-            'outlier', 'aykırı',
-            'month-over-month', 'aydan aya',
-            'contract clause', 'kontrat maddesi',
-            'agreement says', 'sözleşmeye göre',
+            'month-over-month', 'year-over-year',
         ]
 
         for indicator in multi_indicators:
             if indicator in q:
                 return False
 
-        has_doc = any(kw in q for kw in ['clause', 'contract', 'agreement', 'madde', 'sözleşme'])
-        has_data = any(kw in q for kw in ['calculate', 'total', 'average', 'count', 'hesapla', 'toplam'])
-        if has_doc and has_data:
-            return False
-
         return True
 
     def _detect_simple_type(self, query: str) -> str:
-        """Detect the type for a simple query."""
+        """Detect the type for a simple query.
+        Schema-aware: checks if query relates to loaded table columns before defaulting.
+        """
         q = query.lower()
 
-        timeline_kw = ['timeline', 'chronology', 'who sent', 'who received',
-                        'kronoloji', 'kim gönderdi', 'kimden kime', 'correspondence']
+        timeline_kw = ['timeline', 'chronology', 'who sent', 'who received', 'correspondence']
         if any(kw in q for kw in timeline_kw):
             return StepType.TIMELINE.value
 
         data_kw = ['calculate', 'sum', 'average', 'count', 'total', 'max', 'min',
-                    'filter', 'group', 'sort', 'hesapla', 'toplam', 'ortalama']
+                    'filter', 'group', 'sort', 'list', 'how many', 'which',
+                    'highest', 'lowest', 'top', 'bottom', 'compare']
         if any(kw in q for kw in data_kw):
             return StepType.SQL.value
+
+        # Schema-aware: check if query terms match column names OR column values
+        try:
+            from .data_analyzer_sql import get_data_analyzer
+            analyzer = get_data_analyzer()
+            tables = analyzer.list_tables()
+            if tables:
+                query_words = set(q.split())
+                for tname in tables:
+                    info = analyzer.get_table_summary(tname)
+                    if not info:
+                        continue
+
+                    # Check column names
+                    cols = info.get('columns', [])
+                    for col in cols:
+                        col_words = set(col.lower().replace('_', ' ').split())
+                        if col_words & query_words:
+                            return StepType.SQL.value
+
+                    # Check categorical column values (e.g. "steel fixer" in trade column)
+                    dtypes = info.get('dtypes', {})
+                    for col in cols:
+                        dtype = str(dtypes.get(col, "VARCHAR")).upper()
+                        is_text = not any(t in dtype for t in [
+                            "INT", "FLOAT", "DOUBLE", "DECIMAL", "BIGINT",
+                            "NUMBER", "DATE", "TIMESTAMP", "TIME", "BOOL",
+                        ])
+                        if not is_text:
+                            continue
+                        try:
+                            uniques = analyzer.conn.execute(
+                                f'SELECT DISTINCT LOWER("{col}") FROM {tname} '
+                                f'WHERE "{col}" IS NOT NULL LIMIT 50'
+                            ).fetchall()
+                            col_values = {str(r[0]) for r in uniques}
+                            # Check if any query n-gram matches a column value
+                            q_words = q.split()
+                            for n in range(1, min(4, len(q_words) + 1)):
+                                for i in range(len(q_words) - n + 1):
+                                    ngram = ' '.join(q_words[i:i+n])
+                                    if any(ngram in v for v in col_values):
+                                        return StepType.SQL.value
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # Default to SQL if tables are loaded, DOCUMENT otherwise
+        try:
+            from .data_analyzer_sql import get_data_analyzer
+            if get_data_analyzer().list_tables():
+                return StepType.SQL.value
+        except Exception:
+            pass
 
         return StepType.DOCUMENT.value
 
@@ -567,21 +624,26 @@ class PlanExecutor:
         combined_input = "\n\n".join(parts)
 
         prompt = safe_render_prompt(
-            "Synthesize these analysis results into a clear, comprehensive answer.\n\n"
+            "You are a construction project analyst synthesizing data from multiple sources.\n\n"
             "ORIGINAL QUESTION: {original_query}\n\n"
             "ANALYSIS RESULTS:\n{results}\n\n"
             "INSTRUCTIONS: {instruction}\n\n"
-            "Provide a well-structured answer that:\n"
-            "1. Directly answers the original question\n"
-            "2. References specific data from the analysis results\n"
-            "3. Does NOT invent information not present in the results\n"
-            "4. Is concise and professional",
+            "Synthesize into a clear, professional answer:\n"
+            "1. Directly answer the question with specific numbers and facts\n"
+            "2. Cross-reference data between steps — highlight correlations or discrepancies\n"
+            "3. For equipment + manpower data: note if high equipment hours align with high headcount\n"
+            "4. For data + document: compare actual values against contractual requirements\n"
+            "5. Do NOT invent information not present in the results\n"
+            "6. Conclude with an actionable insight when the data supports it",
             user_query=original_query,
             original_query=original_query,
             results=combined_input[:3000],
             instruction=instruction,
         )
-        system = build_system_prompt("You synthesize multiple analysis results into a single answer.")
+        system = build_system_prompt(
+            "You are a senior construction project analyst. "
+            "Synthesize findings with domain expertise."
+        )
 
         try:
             resp = llm_client.generate_text(prompt, system=system, max_tokens=1024, provider=provider)

@@ -4,6 +4,7 @@ Manages metadata for extracted tables stored as Parquet files.
 """
 import json
 import hashlib
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -48,6 +49,12 @@ class TableMetadata:
     description: str = ""  # Human-readable summary (auto-generated)
     semantic_tags: List[str] = field(default_factory=list)  # Keywords for matching
     header_metadata: Dict[str, str] = field(default_factory=dict)  # label -> value from source
+
+    # Auto-extracted insight (from table_insight_extractor)
+    insight: Dict[str, Any] = field(default_factory=dict)
+
+    # Human-readable summary (auto-generated)
+    summary: str = ""
 
     # Template tracking
     template_id: Optional[str] = None  # ID of template used for extraction
@@ -153,7 +160,7 @@ class TableCatalog:
 
             logger.info(f"[Catalog] Saved {len(data)} entries")
 
-            # Sync to GCS
+            # Sync to GCS synchronously (Cloud Run is stateless!)
             try:
                 from . import gcs_storage
                 gcs_storage.sync_catalog_to_gcs()
@@ -175,11 +182,28 @@ class TableCatalog:
             return ""
 
     def generate_table_id(self, source_file: str, sheet_name: Optional[str] = None,
-                          page_number: Optional[int] = None, table_index: int = 0) -> str:
-        """Generate unique table ID."""
-        parts = [Path(source_file).stem]
-        if sheet_name:
-            parts.append(sheet_name)
+                          page_number: Optional[int] = None, table_index: int = 0,
+                          target_schema: Optional[str] = None) -> str:
+        """Generate unique table ID. Uses target_schema prefix when available."""
+        file_stem = Path(source_file).stem
+
+        if target_schema:
+            # Schema-aware naming: schema_filestem_sheet
+            parts = [target_schema]
+            # Extract company hint from filename (remove schema-like suffixes)
+            hint = file_stem.lower()
+            for suffix in ["equipment_log", "equipment log", "manpower_production",
+                           "manpower production log", "ipc_sample", "ipc sample"]:
+                hint = hint.replace(suffix, "").strip(" _-")
+            if hint:
+                parts.append(hint)
+            if sheet_name:
+                parts.append(sheet_name)
+        else:
+            parts = [file_stem]
+            if sheet_name:
+                parts.append(sheet_name)
+
         if page_number is not None:
             parts.append(f"p{page_number}")
         if table_index > 0:
@@ -187,11 +211,11 @@ class TableCatalog:
 
         # Create hash for uniqueness
         raw = "_".join(parts)
-        hash_suffix = hashlib.md5(raw.encode()).hexdigest()[:8]
+        hash_suffix = hashlib.md5(raw.encode()).hexdigest()[:6]
 
         # Clean name for DuckDB
         clean = "".join(c if c.isalnum() else "_" for c in raw)
-        clean = clean.lower()[:40]
+        clean = re.sub(r'_+', '_', clean).strip('_').lower()[:50]
 
         return f"{clean}_{hash_suffix}"
 
@@ -224,7 +248,11 @@ class TableCatalog:
         return entry
 
     def add_table(self, entry: CatalogEntry, table_meta: TableMetadata):
-        """Add a table to an entry."""
+        """Add a table to an entry. Skips if table_id already exists."""
+        existing_ids = {t.table_id for t in entry.tables}
+        if table_meta.table_id in existing_ids:
+            logger.info(f"[Catalog] Skipping duplicate table: {table_meta.table_id}")
+            return
         entry.tables.append(table_meta)
         self._save_catalog()
 
@@ -257,6 +285,75 @@ class TableCatalog:
         """Get all tables for a specific source file."""
         entry = self.get_entry(source_file)
         return entry.tables if entry else []
+
+    def search_by_keyword(self, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Search catalog entries by keyword across tags, descriptions, columns, filenames."""
+        from .document_rag import generate_doc_id
+        kw = keyword.lower()
+        scored: List[tuple] = []  # (score, result_dict)
+
+        seen_sources: set = set()
+        for _key, entry in self.entries.items():
+            source_name = Path(entry.source_file).name
+            if source_name in seen_sources:
+                continue
+            seen_sources.add(source_name)
+
+            score = 0
+            matched_tags: List[str] = []
+            matched_desc = ""
+
+            for table in entry.tables:
+                # Tag match (highest weight)
+                for tag in table.semantic_tags:
+                    if kw in tag.lower():
+                        score += 3
+                        if tag not in matched_tags:
+                            matched_tags.append(tag)
+                # Description / summary match
+                if kw in table.description.lower():
+                    score += 2
+                    if not matched_desc:
+                        matched_desc = table.description
+                if kw in table.summary.lower():
+                    score += 2
+                    if not matched_desc:
+                        matched_desc = table.summary
+                # Column name match
+                for col in table.columns:
+                    if kw in col.lower():
+                        score += 1
+
+            # Filename match
+            if kw in source_name.lower():
+                score += 1
+
+            if score == 0:
+                continue
+
+            # Best date: notice date > ingested_at
+            date = ""
+            if entry.notice_summary and entry.notice_summary.get("date"):
+                date = entry.notice_summary["date"]
+            else:
+                date = entry.ingested_at[:10] if entry.ingested_at else ""
+
+            scored.append((score, {
+                "doc_id": generate_doc_id(entry.source_file),
+                "file_name": source_name,
+                "file_path": entry.source_file,
+                "file_type": "data",
+                "extension": Path(source_name).suffix.lower(),
+                "date": date,
+                "description": matched_desc,
+                "semantic_tags": matched_tags,
+                "table_count": len(entry.tables),
+                "score": score,
+            }))
+
+        # Sort by score DESC, then date DESC
+        scored.sort(key=lambda x: (x[0], x[1].get("date", "")), reverse=True)
+        return [item[1] for item in scored[:limit]]
 
     def remove_entry(self, source_file: str):
         """Remove an entry and its parquet files."""

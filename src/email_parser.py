@@ -133,35 +133,119 @@ class EmailParser:
 
         msg = extract_msg.Message(file_path)
         try:
+            sender_email = self._extract_msg_sender_email(msg)
+
             result = ParsedEmail(
                 subject=msg.subject or "",
                 body_text=msg.body or "",
                 sender=msg.sender or "",
-                sender_email=msg.senderEmail or "",
+                sender_email=sender_email,
                 date=str(msg.date) if msg.date else None,
             )
 
-            # Recipients
-            if msg.to:
-                result.recipients = [addr.strip() for addr in msg.to.split(";")]
-            if msg.cc:
-                result.cc = [addr.strip() for addr in msg.cc.split(";")]
+            # Recipients - use structured list for reliability
+            for recip in msg.recipients:
+                try:
+                    formatted = recip.formatted or recip.email or recip.name or ""
+                    # type 1=TO, 2=CC, 3=BCC
+                    if recip.type and recip.type.value == 2:
+                        result.cc.append(formatted)
+                    else:
+                        result.recipients.append(formatted)
+                except Exception:
+                    pass
+
+            # Fallback: if structured recipients empty, parse string fields
+            if not result.recipients and msg.to:
+                result.recipients = [a.strip() for a in msg.to.replace(";", ",").split(",") if a.strip()]
+            if not result.cc and msg.cc:
+                result.cc = [a.strip() for a in msg.cc.replace(";", ",").split(",") if a.strip()]
 
             # Attachments
             for att in msg.attachments:
-                if hasattr(att, "data") and att.data:
-                    result.attachments.append(EmailAttachment(
-                        filename=att.longFilename or att.shortFilename or "unnamed",
-                        content_type=att.mimetype or "application/octet-stream",
-                        data=att.data,
-                        size=len(att.data),
-                    ))
+                try:
+                    if hasattr(att, "data") and att.data:
+                        filename = getattr(att, "longFilename", None) or getattr(att, "shortFilename", None) or "unnamed"
+                        content_type = getattr(att, "mimetype", None) or "application/octet-stream"
+                        result.attachments.append(EmailAttachment(
+                            filename=filename,
+                            content_type=content_type,
+                            data=att.data,
+                            size=len(att.data),
+                        ))
+                except Exception as e:
+                    logger.warning(f"[EmailParser] Skipping attachment: {e}")
 
             logger.info(f"[EmailParser] Parsed MSG: subject='{result.subject[:50]}', "
                          f"attachments={len(result.attachments)}")
             return result
         finally:
             msg.close()
+
+    @staticmethod
+    def _extract_msg_sender_email(msg) -> str:
+        """Extract sender email from MSG with multi-strategy fallback.
+
+        extract-msg v0.50+ removed the senderEmail attribute.
+        We try multiple MAPI properties and header fields.
+        """
+        def _is_smtp(val: str) -> bool:
+            return bool(val and "@" in val and "/" not in val)
+
+        def _parse_angle_bracket(val: str) -> str:
+            """Extract email from 'Name <email>' format."""
+            if "<" in val and ">" in val:
+                return val.split("<")[1].split(">")[0].strip()
+            return ""
+
+        # Strategy 1: MAPI property PR_SENDER_EMAIL_ADDRESS (0x0C1F)
+        try:
+            val = msg.getStringStream("__substg1.0_0C1F")
+            if _is_smtp(val):
+                return val
+        except Exception:
+            pass
+
+        # Strategy 2: MAPI property PR_SENDER_SEARCH_KEY (0x5D01) - often has SMTP address
+        try:
+            val = msg.getStringStream("__substg1.0_5D01")
+            if _is_smtp(val):
+                return val
+        except Exception:
+            pass
+
+        # Strategy 3: Parse from sender display name (e.g. "Name <email@domain>")
+        try:
+            sender = msg.sender or ""
+            email = _parse_angle_bracket(sender)
+            if _is_smtp(email):
+                return email
+        except Exception:
+            pass
+
+        # Strategy 4: From transport headers
+        try:
+            header = msg.header
+            if header:
+                from_h = header.get("from", "")
+                if from_h:
+                    email = _parse_angle_bracket(str(from_h))
+                    if _is_smtp(email):
+                        return email
+                    if _is_smtp(str(from_h)):
+                        return str(from_h).strip()
+        except Exception:
+            pass
+
+        # Strategy 5: PR_SENT_REPRESENTING_EMAIL_ADDRESS (0x0065)
+        try:
+            val = msg.getStringStream("__substg1.0_0065")
+            if _is_smtp(val):
+                return val
+        except Exception:
+            pass
+
+        return ""
 
     def save_attachments(self, parsed_email: ParsedEmail, target_dir: Path) -> List[str]:
         """Save email attachments to disk. Returns list of saved file paths."""

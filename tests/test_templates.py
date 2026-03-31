@@ -20,7 +20,7 @@ class TestTemplateStore:
     """Tests for TemplateStore persistence and CRUD."""
 
     def _make_sheet_template(self, **overrides):
-        from src.template_store import SheetTemplate
+        from src.template_engine import SheetTemplate
         defaults = dict(
             sheet_name_pattern="Sheet1",
             header_rows=[0],
@@ -39,7 +39,7 @@ class TestTemplateStore:
         return SheetTemplate(**defaults)
 
     def _make_file_template(self, tmp_path, **overrides):
-        from src.template_store import FileTemplate, _generate_template_id
+        from src.template_engine import FileTemplate, _generate_template_id
         st = self._make_sheet_template()
         defaults = dict(
             template_id=_generate_template_id("test", "test.xlsx"),
@@ -55,13 +55,13 @@ class TestTemplateStore:
 
     def test_store_initialization(self, tmp_path):
         """Test store initializes with empty templates."""
-        from src.template_store import TemplateStore
+        from src.template_engine import TemplateStore
         store = TemplateStore(tmp_path / "templates.json")
         assert len(store.templates) == 0
 
     def test_add_and_retrieve_template(self, tmp_path):
         """Test adding and retrieving a template."""
-        from src.template_store import TemplateStore
+        from src.template_engine import TemplateStore
         store = TemplateStore(tmp_path / "templates.json")
         ft = self._make_file_template(tmp_path)
 
@@ -71,7 +71,7 @@ class TestTemplateStore:
 
     def test_persistence_roundtrip(self, tmp_path):
         """Test templates survive save/load cycle."""
-        from src.template_store import TemplateStore
+        from src.template_engine import TemplateStore
         path = tmp_path / "templates.json"
 
         # Save
@@ -96,7 +96,7 @@ class TestTemplateStore:
 
     def test_remove_template(self, tmp_path):
         """Test removing a template."""
-        from src.template_store import TemplateStore
+        from src.template_engine import TemplateStore
         store = TemplateStore(tmp_path / "templates.json")
         ft = self._make_file_template(tmp_path)
         store.add_template(ft)
@@ -107,13 +107,13 @@ class TestTemplateStore:
 
     def test_remove_nonexistent_returns_false(self, tmp_path):
         """Test removing nonexistent template returns False."""
-        from src.template_store import TemplateStore
+        from src.template_engine import TemplateStore
         store = TemplateStore(tmp_path / "templates.json")
         assert store.remove_template("tmpl_nonexistent") is False
 
     def test_update_template(self, tmp_path):
         """Test updating template fields increments version."""
-        from src.template_store import TemplateStore
+        from src.template_engine import TemplateStore
         store = TemplateStore(tmp_path / "templates.json")
         ft = self._make_file_template(tmp_path)
         store.add_template(ft)
@@ -125,7 +125,7 @@ class TestTemplateStore:
 
     def test_record_match(self, tmp_path):
         """Test match_count increments."""
-        from src.template_store import TemplateStore
+        from src.template_engine import TemplateStore
         store = TemplateStore(tmp_path / "templates.json")
         ft = self._make_file_template(tmp_path)
         store.add_template(ft)
@@ -136,7 +136,7 @@ class TestTemplateStore:
 
     def test_list_templates(self, tmp_path):
         """Test list_templates returns sorted summary."""
-        from src.template_store import TemplateStore, _generate_template_id
+        from src.template_engine import TemplateStore, _generate_template_id
         store = TemplateStore(tmp_path / "templates.json")
 
         ft1 = self._make_file_template(tmp_path, name="Template A",
@@ -156,7 +156,7 @@ class TestTemplateStore:
 
     def test_validation_rejects_empty_sheets(self, tmp_path):
         """Test validation rejects template with no sheet templates."""
-        from src.template_store import TemplateStore, FileTemplate
+        from src.template_engine import TemplateStore, FileTemplate
         store = TemplateStore(tmp_path / "templates.json")
 
         ft = FileTemplate(
@@ -174,7 +174,7 @@ class TestTemplateStore:
 
     def test_validation_rejects_few_columns(self, tmp_path):
         """Test validation rejects sheet with fewer than 2 columns."""
-        from src.template_store import TemplateStore, FileTemplate, SheetTemplate
+        from src.template_engine import TemplateStore, FileTemplate, SheetTemplate
         store = TemplateStore(tmp_path / "templates.json")
 
         st = SheetTemplate(
@@ -202,7 +202,7 @@ class TestTemplateStore:
 
     def test_singleton_reset(self):
         """Test singleton can be reset for testing."""
-        from src.template_store import get_template_store, reset_template_store
+        from src.template_engine import get_template_store, reset_template_store
         reset_template_store()
         store = get_template_store()
         assert store is not None
@@ -215,7 +215,7 @@ class TestTemplateMatcher:
     """Tests for template matching algorithm."""
 
     def _make_store_with_template(self, tmp_path, **template_overrides):
-        from src.template_store import (
+        from src.template_engine import (
             TemplateStore, FileTemplate, SheetTemplate, _generate_template_id,
         )
         store = TemplateStore(tmp_path / "templates.json")
@@ -254,7 +254,7 @@ class TestTemplateMatcher:
 
     def test_exact_filename_match_scores_high(self, tmp_path):
         """File matching the filename pattern scores in stage 1."""
-        from src.template_matcher import TemplateMatcher
+        from src.template_engine import TemplateMatcher
 
         store, ft = self._make_store_with_template(tmp_path)
         matcher = TemplateMatcher(store)
@@ -270,7 +270,7 @@ class TestTemplateMatcher:
 
     def test_no_match_for_unrelated_file(self, tmp_path):
         """Unrelated file should not match."""
-        from src.template_matcher import TemplateMatcher
+        from src.template_engine import TemplateMatcher
 
         store, _ = self._make_store_with_template(tmp_path)
         matcher = TemplateMatcher(store)
@@ -283,7 +283,7 @@ class TestTemplateMatcher:
 
     def test_column_fingerprint_scoring(self, tmp_path):
         """Column names matching should boost score significantly."""
-        from src.template_matcher import TemplateMatcher
+        from src.template_engine import TemplateMatcher
 
         store, ft = self._make_store_with_template(tmp_path)
         matcher = TemplateMatcher(store)
@@ -311,7 +311,7 @@ class TestTemplateMatcher:
 
     def test_is_auto_match(self, tmp_path):
         """Test auto-match threshold check."""
-        from src.template_matcher import TemplateMatcher
+        from src.template_engine import TemplateMatcher
 
         store, ft = self._make_store_with_template(tmp_path)
         matcher = TemplateMatcher(store)
@@ -322,7 +322,7 @@ class TestTemplateMatcher:
 
     def test_find_sheet_template(self, tmp_path):
         """Test finding the right sheet template by name."""
-        from src.template_matcher import TemplateMatcher
+        from src.template_engine import TemplateMatcher
 
         store, ft = self._make_store_with_template(tmp_path)
         matcher = TemplateMatcher(store)
@@ -336,7 +336,7 @@ class TestTemplateMatcher:
 
     def test_sheet_name_regex_match(self, tmp_path):
         """Test sheet name matching with regex patterns."""
-        from src.template_matcher import TemplateMatcher
+        from src.template_engine import TemplateMatcher
 
         store, ft = self._make_store_with_template(
             tmp_path, sheet_pattern=r"CWJV.*Man\s*Power",
@@ -357,7 +357,7 @@ class TestTemplateApplication:
     def test_apply_simple_template(self):
         """Test applying a simple single-header template."""
         from src.excel_table_extractor import ExcelTableExtractor
-        from src.template_store import SheetTemplate
+        from src.template_engine import SheetTemplate
 
         extractor = ExcelTableExtractor()
 
@@ -393,7 +393,7 @@ class TestTemplateApplication:
     def test_apply_multirow_header_template(self):
         """Test applying a multi-row header template (DPR style)."""
         from src.excel_table_extractor import ExcelTableExtractor
-        from src.template_store import SheetTemplate
+        from src.template_engine import SheetTemplate
 
         extractor = ExcelTableExtractor()
 
@@ -428,7 +428,7 @@ class TestTemplateApplication:
     def test_apply_template_with_metadata(self):
         """Test template with metadata header extraction."""
         from src.excel_table_extractor import ExcelTableExtractor
-        from src.template_store import SheetTemplate
+        from src.template_engine import SheetTemplate
 
         extractor = ExcelTableExtractor()
 
@@ -467,7 +467,7 @@ class TestTemplateApplication:
     def test_apply_template_empty_data_returns_none(self):
         """Test that empty data returns None."""
         from src.excel_table_extractor import ExcelTableExtractor
-        from src.template_store import SheetTemplate
+        from src.template_engine import SheetTemplate
 
         extractor = ExcelTableExtractor()
 
@@ -612,7 +612,7 @@ class TestTemplateExtraction:
 
     def test_extract_tables_without_templates(self):
         """Existing extraction works when no templates exist."""
-        from src.template_store import reset_template_store
+        from src.template_engine import reset_template_store
         reset_template_store()
 
         from src.excel_table_extractor import ExcelTableExtractor
@@ -625,7 +625,7 @@ class TestTemplateExtraction:
 
     def test_template_fallback_on_no_match(self, tmp_path):
         """When template doesn't match, extraction falls through to heuristics."""
-        from src.template_store import TemplateStore, FileTemplate, SheetTemplate, _generate_template_id, reset_template_store
+        from src.template_engine import TemplateStore, FileTemplate, SheetTemplate, _generate_template_id, reset_template_store
 
         reset_template_store()
 
@@ -652,7 +652,7 @@ class TestTemplateExtraction:
         store.add_template(ft)
 
         # When a different file comes in, template should not match
-        from src.template_matcher import TemplateMatcher
+        from src.template_engine import TemplateMatcher
         matcher = TemplateMatcher(store)
         result = matcher.find_best_template(
             "c:/data/DPR 180207.xlsx",

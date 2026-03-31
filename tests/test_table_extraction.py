@@ -161,16 +161,16 @@ class TestOCRDetector:
 
     def test_ocr_decision_enum(self):
         """Test OCR decision enum values."""
-        from src.ocr_detector import OCRDecision
+        from src.ocr import OCRDecision
 
         assert OCRDecision.NATIVE.value == "native"
         assert OCRDecision.OCR.value == "ocr"
         assert OCRDecision.HYBRID.value == "hybrid"
 
-    @patch('src.ocr_detector.fitz')
+    @patch('src.ocr.fitz')
     def test_analyze_page_with_text(self, mock_fitz):
         """Test page analysis with sufficient text."""
-        from src.ocr_detector import OCRDetector
+        from src.ocr import OCRDetector
 
         detector = OCRDetector(min_chars=30, min_alpha_ratio=0.2)
 
@@ -187,10 +187,10 @@ class TestOCRDetector:
         assert analysis.char_count > 30
         assert analysis.alpha_ratio > 0.2
 
-    @patch('src.ocr_detector.fitz')
+    @patch('src.ocr.fitz')
     def test_analyze_page_empty(self, mock_fitz):
         """Test page analysis with no text."""
-        from src.ocr_detector import OCRDetector
+        from src.ocr import OCRDetector
 
         detector = OCRDetector(min_chars=30)
 

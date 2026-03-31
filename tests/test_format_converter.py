@@ -4,11 +4,11 @@ import pytest
 import pandas as pd
 from pathlib import Path
 
-from src.code_sandbox import validate_converter_code, execute_converter_code
-from src.target_schemas import (
+from src.converter_runtime import validate_converter_code, execute_converter_code
+from src.schema_converter import (
     ColumnDef, TargetSchema, TargetSchemaRegistry, ValidationResult,
 )
-from src.converter_registry import ConverterRegistry, ConverterEntry
+from src.converter_runtime import ConverterRegistry, ConverterEntry
 
 
 # ── Code Sandbox Tests ────────────────────────────────────────

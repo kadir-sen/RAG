@@ -50,7 +50,7 @@ CHUNK_SIZE = 1024
 CHUNK_OVERLAP = 200
 
 # SQL settings
-MAX_SQL_RESULT_ROWS = 200
+MAX_UI_DISPLAY_ROWS = 5000  # Only for UI payload truncation, never for SQL LIMIT
 
 # OCR Settings
 OCR_MODE = os.getenv("OCR_MODE", "auto")  # "auto" | "force" | "off"
@@ -119,12 +119,8 @@ TEMPLATE_CONFIDENCE_THRESHOLD = float(os.getenv("TEMPLATE_THRESHOLD", "0.85"))
 TEMPLATE_REVIEW_THRESHOLD = float(os.getenv("TEMPLATE_REVIEW_THRESHOLD", "0.70"))
 
 # ── Chat Memory ───────────────────────────────────────────
-CHAT_MEMORY_MESSAGES = int(os.getenv("CHAT_MEMORY_MESSAGES", "6"))
-CHAT_MEMORY_MAX_CHARS = int(os.getenv("CHAT_MEMORY_MAX_CHARS", "8000"))
-
-# ── Session ───────────────────────────────────────────────
-SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me-in-production")
-SESSION_TTL = int(os.getenv("SESSION_TTL", "86400"))  # 24 hours
+CHAT_MEMORY_MESSAGES = int(os.getenv("CHAT_MEMORY_MESSAGES", "10"))
+CHAT_MEMORY_MAX_CHARS = int(os.getenv("CHAT_MEMORY_MAX_CHARS", "12000"))
 
 # ── Conversations ─────────────────────────────────────────
 CONVERSATIONS_DIR = STORAGE_DIR / "conversations"
@@ -145,6 +141,15 @@ CONVERTER_CODE_TIMEOUT = int(os.getenv("CONVERTER_TIMEOUT", "30"))
 
 # ── Notice Extraction ───────────────────────────────────────
 NOTICE_LLM_CONFIDENCE_THRESHOLD = float(os.getenv("NOTICE_LLM_THRESHOLD", "0.75"))
+
+# ── Document Review ────────────────────────────────────────
+ENABLE_REVIEW = os.getenv("ENABLE_REVIEW", "true").lower() == "true"
+REVIEW_HIGH_THRESHOLD = float(os.getenv("REVIEW_HIGH_THRESHOLD", "0.7"))
+REVIEW_LOW_THRESHOLD = float(os.getenv("REVIEW_LOW_THRESHOLD", "0.3"))
+REVIEW_SESSIONS_DIR = STORAGE_DIR / "review_sessions"
+REVIEW_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+REVIEW_ACCURACY_THRESHOLD = float(os.getenv("REVIEW_ACCURACY_THRESHOLD", "0.8"))
+REVIEW_SAMPLE_SIZE = int(os.getenv("REVIEW_SAMPLE_SIZE", "10"))
 
 # ── A/B Testing ─────────────────────────────────────────────
 AB_LOG_DIR = str(BASE_DIR / "logs" / "ab")

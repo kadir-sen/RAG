@@ -37,7 +37,7 @@ from .config import (
     OCR_LANG,
 )
 from .logger import logger, log_document_processing, log_pinecone, log_llm, log_separator, log_ocr_summary
-from .ocr_pipeline import get_ocr_pipeline, OCRPipeline
+from .ocr import get_ocr_pipeline, OCRPipeline
 
 
 def generate_doc_id(file_path: str) -> str:
@@ -435,8 +435,7 @@ class DocumentRAG:
             )
 
             log_pinecone("Index built successfully")
-            stats = self.pinecone_index.describe_index_stats()
-            logger.info(f"   Total vectors: {stats.get('total_vector_count', 0)}")
+            logger.info(f"   Indexed {len(self.documents)} documents")
             return True
         except Exception as e:
             logger.error(f"Error building index: {e}")
@@ -447,7 +446,7 @@ class DocumentRAG:
     def insert_documents(self, new_docs: List[Document]) -> bool:
         """
         Add new documents to existing Pinecone index incrementally.
-        Avoids full rebuild - only embeds and uploads the new documents.
+        Uses batch embedding + batch upsert for performance.
         """
         if not new_docs:
             return False
@@ -462,19 +461,89 @@ class DocumentRAG:
         logger.info(f"Inserting {len(new_docs)} new document(s) into existing index...")
 
         try:
-            for doc in new_docs:
-                self.index.insert(doc)
+            from llama_index.core.schema import TextNode
 
-            stats = self.pinecone_index.describe_index_stats()
-            logger.info(f"   Total vectors after insert: {stats.get('total_vector_count', 0)}")
-            return True
+            # 1. Parse documents into nodes using the configured node parser
+            node_parser = Settings.node_parser
+            nodes = []
+            for doc in new_docs:
+                parsed = node_parser.get_nodes_from_documents([doc])
+                nodes.extend(parsed)
+
+            if not nodes:
+                logger.warning("   No nodes generated from documents")
+                return False
+
+            logger.info(f"   Generated {len(nodes)} nodes from {len(new_docs)} documents")
+
+            # 2. Batch embed all nodes at once
+            embed_model = Settings.embed_model
+            texts = [node.get_content() for node in nodes]
+
+            EMBED_BATCH = 50
+            all_embeddings = []
+            total_batches = (len(texts) + EMBED_BATCH - 1) // EMBED_BATCH
+            for i in range(0, len(texts), EMBED_BATCH):
+                batch = texts[i:i + EMBED_BATCH]
+                batch_num = i // EMBED_BATCH + 1
+                # Retry embedding with backoff (handles rate limits and transient errors)
+                for attempt in range(3):
+                    try:
+                        batch_emb = embed_model.get_text_embedding_batch(batch)
+                        all_embeddings.extend(batch_emb)
+                        logger.info(f"   Embedded batch {batch_num}/{total_batches}")
+                        break
+                    except Exception as emb_err:
+                        if attempt < 2:
+                            import time
+                            wait = 2 ** (attempt + 1)
+                            logger.warning(f"   Embedding batch {batch_num} failed (attempt {attempt + 1}): {emb_err}. Retrying in {wait}s...")
+                            time.sleep(wait)
+                        else:
+                            raise
+
+            for node, emb in zip(nodes, all_embeddings):
+                node.embedding = emb
+
+            # 3. Batch upsert to Pinecone via vector store (with retry)
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    self.vector_store.add(nodes)
+                    logger.info(f"   Inserted {len(nodes)} vectors (batch mode)")
+                    return True
+                except Exception as upsert_err:
+                    logger.warning(f"   Batch upsert attempt {attempt + 1}/{max_retries} failed: {upsert_err}")
+                    if attempt < max_retries - 1:
+                        import time
+                        wait = 2 ** (attempt + 1)
+                        logger.info(f"   Retrying in {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        raise
+
         except Exception as e:
-            logger.error(f"Error inserting documents: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            # Fallback to full rebuild
-            logger.info("Falling back to full index rebuild...")
-            return self.build_index()
+            logger.error(f"Error in batch insert: {e}")
+            # Fallback to sequential insert with retry per document
+            logger.info("Falling back to sequential insert...")
+            inserted = 0
+            for doc in new_docs:
+                for attempt in range(3):
+                    try:
+                        self.index.insert(doc)
+                        inserted += 1
+                        break
+                    except Exception as e2:
+                        if attempt < 2:
+                            import time
+                            time.sleep(2 ** attempt)
+                        else:
+                            logger.error(f"Failed to insert doc after 3 attempts: {e2}")
+            if inserted > 0:
+                logger.info(f"   Sequential insert: {inserted}/{len(new_docs)} docs inserted")
+                return True
+            logger.error("All insert attempts failed")
+            return False
 
     def load_index(self) -> bool:
         """Load existing index from Pinecone."""
@@ -489,8 +558,10 @@ class DocumentRAG:
             logger.error(f"Could not load index: {e}")
             return False
 
-    def query(self, question: str, top_k: int = 5) -> dict:
-        """Query documents with proper page-level citations."""
+    def query(self, question: str, top_k: int = 5, doc_ids: Optional[List[str]] = None) -> dict:
+        """Query documents with proper page-level citations.
+        If doc_ids is provided, only search within those documents.
+        """
         log_separator("Document Query")
         logger.info(f"🔍 Question: {question[:100]}...")
 
@@ -502,7 +573,19 @@ class DocumentRAG:
                 }
 
         logger.info(f"   Retrieving top {top_k} matches...")
-        query_engine = self.index.as_query_engine(similarity_top_k=top_k)
+        if doc_ids:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, MetadataFilter, FilterOperator,
+            )
+            filters = MetadataFilters(filters=[
+                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
+            ])
+            query_engine = self.index.as_query_engine(
+                similarity_top_k=top_k, filters=filters,
+            )
+            logger.info(f"   Scoped to {len(doc_ids)} documents")
+        else:
+            query_engine = self.index.as_query_engine(similarity_top_k=top_k)
         response = query_engine.query(question)
 
         # Extract sources with proper metadata (no regex!)
@@ -545,6 +628,7 @@ class DocumentRAG:
                 highlight += '...'
 
             sources.append({
+                "doc_id": meta.get("doc_id", generate_doc_id(file_path)) if file_path else "",
                 "file_name": file_name,
                 "file_path": file_path,
                 "page_number": page_num,
@@ -590,6 +674,7 @@ class DocumentRAG:
                 highlight += '...'
 
             sources.append({
+                "doc_id": meta.get("doc_id", generate_doc_id(file_path)) if file_path else "",
                 "file_name": file_name,
                 "file_path": file_path,
                 "page_number": page_num,
@@ -601,7 +686,8 @@ class DocumentRAG:
 
         return sources
 
-    def query_with_provider(self, question: str, provider: str, top_k: int = 5) -> dict:
+    def query_with_provider(self, question: str, provider: str, top_k: int = 5,
+                            doc_ids: Optional[List[str]] = None) -> dict:
         """Query documents using a specific LLM provider for answer synthesis."""
         from .llm_client import create_llm
 
@@ -617,17 +703,23 @@ class DocumentRAG:
         llm, model_name = create_llm(provider)
         logger.info(f"   Using {provider}/{model_name} for synthesis...")
 
-        query_engine = self.index.as_query_engine(
-            similarity_top_k=top_k,
-            llm=llm,
-        )
+        kwargs = {"similarity_top_k": top_k, "llm": llm}
+        if doc_ids:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, MetadataFilter, FilterOperator,
+            )
+            kwargs["filters"] = MetadataFilters(filters=[
+                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
+            ])
+        query_engine = self.index.as_query_engine(**kwargs)
         response = query_engine.query(question)
         sources = self._extract_sources(response)
 
         logger.info(f"   [{provider}] Found {len(sources)} sources")
         return {"answer": str(response), "sources": sources}
 
-    def query_dual(self, question: str, top_k: int = 5) -> dict:
+    def query_dual(self, question: str, top_k: int = 5,
+                   doc_ids: Optional[List[str]] = None) -> dict:
         """Query with both OpenAI and Claude in parallel."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
@@ -635,7 +727,7 @@ class DocumentRAG:
         results = {}
 
         def _query_provider(prov):
-            return prov, self.query_with_provider(question, prov, top_k)
+            return prov, self.query_with_provider(question, prov, top_k, doc_ids=doc_ids)
 
         with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
             futures = {executor.submit(_query_provider, p): p for p in LLM_PROVIDERS}

@@ -76,17 +76,17 @@ class ExcelTableExtractor:
     MAX_EMPTY_ROWS_IN_BLOCK = 2
     MAX_EMPTY_COLS_IN_BLOCK = 1
 
-    # Summary row keywords to filter out (English + Turkish)
+    # Summary row keywords to filter out
     SUMMARY_KEYWORDS = {
-        'total', 'toplam', 'grand total', 'genel toplam',
-        'sum', 'subtotal', 'alt toplam', 'average', 'ortalama',
+        'total', 'grand total',
+        'sum', 'subtotal', 'average',
         'net amount', 'net total', 'remaining total',
     }
 
     # Broader partial-match tokens for summary detection in any column
     SUMMARY_TOKENS = [
-        'total', 'toplam', 'subtotal', 'sub total', 'net amount',
-        'grand total', 'genel toplam', 'amount due',
+        'total', 'subtotal', 'sub total', 'net amount',
+        'grand total', 'amount due',
     ]
 
     def __init__(self):
@@ -322,8 +322,7 @@ class ExcelTableExtractor:
         Attempt template-based extraction.
         Returns (tables, matched_sheet_names) if a template matches, else None.
         """
-        from .template_store import get_template_store
-        from .template_matcher import TemplateMatcher
+        from .template_engine import get_template_store, TemplateMatcher
 
         store = get_template_store()
         if not store.templates:
@@ -466,7 +465,7 @@ class ExcelTableExtractor:
         Generate a FileTemplate from confirmed extraction results.
         Call this after user confirms the extraction is correct.
         """
-        from .template_store import (
+        from .template_engine import (
             FileTemplate, SheetTemplate, _generate_template_id,
         )
 
@@ -1224,19 +1223,19 @@ class ExcelTableExtractor:
                 value = parts[1].strip()
                 if value and len(label) < 50:
                     # Normalize common labels
-                    if any(kw in label for kw in ['project', 'proje']):
+                    if any(kw in label for kw in ['project']):
                         metadata['project_name'] = value
-                    elif any(kw in label for kw in ['customer', 'client', 'müşteri']):
+                    elif any(kw in label for kw in ['customer', 'client']):
                         metadata['customer_name'] = value
-                    elif any(kw in label for kw in ['contractor', 'sub con', 'taşeron']):
+                    elif any(kw in label for kw in ['contractor', 'sub con']):
                         metadata['contractor_name'] = value
-                    elif any(kw in label for kw in ['contract value', 'sözleşme']):
+                    elif any(kw in label for kw in ['contract value']):
                         metadata['contract_value'] = value
-                    elif any(kw in label for kw in ['invoice no', 'fatura']):
+                    elif any(kw in label for kw in ['invoice no']):
                         metadata['invoice_number'] = value
                     elif any(kw in label for kw in ['order ref', 'reference', 'ref']):
                         metadata['reference'] = value
-                    elif any(kw in label for kw in ['date', 'tarih']):
+                    elif any(kw in label for kw in ['date']):
                         metadata['date'] = value
                     else:
                         # Store with cleaned label
@@ -1738,6 +1737,9 @@ class ExcelTableExtractor:
 
             # Sanitize mixed-type columns before saving to parquet
             df = self._sanitize_for_parquet(table.df)
+            # Preserve sheet name as a column for period filtering
+            if table.sheet_name and '_sheet_name' not in df.columns:
+                df['_sheet_name'] = table.sheet_name
             df.to_parquet(parquet_path, index=False)
 
             logger.info(f"[ExcelExtractor] Saved parquet: {parquet_path.name}")

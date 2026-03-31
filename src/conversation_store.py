@@ -46,6 +46,7 @@ class Conversation:
     created_at: str
     updated_at: str
     messages: List[Message] = field(default_factory=list)
+    document_ids: List[str] = field(default_factory=list)
 
 
 class ConversationStore:
@@ -106,6 +107,7 @@ class ConversationStore:
                 "created_at": conv.created_at,
                 "updated_at": conv.updated_at,
                 "messages": [asdict(m) for m in conv.messages],
+                "document_ids": conv.document_ids,
             }
             self._conv_path(conv.conversation_id).write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -128,6 +130,7 @@ class ConversationStore:
                 created_at=data["created_at"],
                 updated_at=data["updated_at"],
                 messages=messages,
+                document_ids=data.get("document_ids", []),
             )
         except Exception as e:
             logger.error(f"[ConvStore] Failed to load conversation {conv_id}: {e}")
@@ -190,6 +193,35 @@ class ConversationStore:
             path.unlink()
         logger.info(f"[ConvStore] Deleted conversation: {conv_id}")
 
+    # ── Document scoping ─────────────────────────────────
+
+    def add_document(self, conv_id: str, doc_id: str) -> None:
+        """Add a document to a conversation's scope."""
+        conv = self._load_conversation(conv_id)
+        if not conv:
+            return
+        if doc_id not in conv.document_ids:
+            conv.document_ids.append(doc_id)
+            conv.updated_at = datetime.now().isoformat()
+            self._save_conversation(conv)
+
+    def remove_document(self, conv_id: str, doc_id: str) -> None:
+        """Remove a document from a conversation's scope."""
+        conv = self._load_conversation(conv_id)
+        if not conv:
+            return
+        if doc_id in conv.document_ids:
+            conv.document_ids.remove(doc_id)
+            conv.updated_at = datetime.now().isoformat()
+            self._save_conversation(conv)
+
+    def get_document_ids(self, conv_id: str) -> List[str]:
+        """Get all document IDs scoped to a conversation."""
+        conv = self._load_conversation(conv_id)
+        if not conv:
+            return []
+        return list(conv.document_ids)
+
     # ── Messages ──────────────────────────────────────────
 
     def add_message(self, conv_id: str, message: Message) -> None:
@@ -238,12 +270,13 @@ class ConversationStore:
 
 def format_chat_context(
     messages: List[Message],
-    max_messages: int = 6,
-    max_chars: int = 8000,
+    max_messages: int = 10,
+    max_chars: int = 12000,
 ) -> str:
     """
     Format recent messages as conversation context for LLM.
     Returns a string with <CONVERSATION_HISTORY> tags.
+    Includes full assistant text, SQL table info, and query type.
     """
     if not messages:
         return ""
@@ -263,9 +296,23 @@ def format_chat_context(
                     content = provider_answer["answer"]
                     break
 
-        # Truncate long answers
-        if len(content) > 500:
-            content = content[:500] + "..."
+        # Rich context for assistant messages
+        if msg.role == "assistant":
+            parts = []
+
+            # Query type badge
+            if msg.query_type:
+                parts.append(f"[{msg.query_type.upper()}]")
+
+            # Full text (no truncation - max_chars guards total size)
+            parts.append(content)
+
+            # SQL table info
+            if msg.sql:
+                table_name = _extract_table_from_sql(msg.sql)
+                parts.append(f"(SQL query on table: {table_name})")
+
+            content = " ".join(parts)
 
         line = f"{role_label}: {content}"
         total_chars += len(line)
@@ -275,3 +322,10 @@ def format_chat_context(
 
     lines.append("</CONVERSATION_HISTORY>")
     return "\n".join(lines)
+
+
+def _extract_table_from_sql(sql: str) -> str:
+    """Extract table name from SQL query."""
+    import re
+    match = re.search(r'\bFROM\s+"?(\w+)"?', sql, re.IGNORECASE)
+    return match.group(1) if match else "unknown"
