@@ -53,6 +53,7 @@ export interface ChatResponse {
   related_docs: RelatedDoc[];
   sql_artifact: SQLArtifact | null;
   provider_answers: ProviderAnswer[];
+  routing_confidence: number | null;
 }
 
 export interface ConversationMeta {

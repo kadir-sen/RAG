@@ -1,5 +1,6 @@
-import { useRef, type ReactNode } from 'react';
+import { useRef, useEffect, useState, type ReactNode } from 'react';
 import type { AppMode } from '../../stores/chatStore';
+import apiClient from '../../api/client';
 
 interface Props {
   onModeSelect: (mode: AppMode) => void;
@@ -29,8 +30,29 @@ const FEATURE_CARDS: { icon: ReactNode; title: string; description: string; mode
   },
 ];
 
+interface LibrarySummary {
+  total_files: number;
+  by_file_type: Record<string, number>;
+  by_doc_type: Record<string, number>;
+  total_tables: number;
+}
+
+const DOC_TYPE_LABELS: Record<string, string> = {
+  letter: 'Letters', notice: 'Notices', email: 'Emails',
+  report: 'Reports', dpr: 'Daily Reports', contract: 'Contracts',
+  minutes: 'Minutes', transmittal: 'Transmittals', data_file: 'Data Files',
+  unclassified: 'Other',
+};
+
 export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [summary, setSummary] = useState<LibrarySummary | null>(null);
+
+  useEffect(() => {
+    apiClient.get<LibrarySummary>('/library/summary')
+      .then(({ data }) => setSummary(data))
+      .catch(() => {});
+  }, []);
 
   const handleSend = () => {
     const value = inputRef.current?.value.trim();
@@ -112,6 +134,29 @@ export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
           </button>
         ))}
       </div>
+
+      {/* Document classification summary */}
+      {summary && summary.total_files > 0 && (
+        <div
+          className="mt-8 w-full max-w-4xl animate-fade-in-up"
+          style={{ animationDelay: '0.15s' }}
+        >
+          <p className="text-xs text-[var(--text-muted)] mb-2 font-medium uppercase tracking-wider">
+            Project Library — {summary.total_files} files, {summary.total_tables} tables
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(summary.by_doc_type).map(([type, count]) => (
+              <span
+                key={type}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[rgba(255,255,255,0.06)] border border-[var(--border)] text-xs text-[var(--text-secondary)]"
+              >
+                <span className="font-semibold text-[var(--text-primary)]">{count}</span>
+                {DOC_TYPE_LABELS[type] || type}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Footer disclaimer */}
       <div className="absolute bottom-6 w-full text-center pointer-events-none">

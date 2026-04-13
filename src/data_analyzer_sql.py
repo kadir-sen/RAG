@@ -2123,6 +2123,7 @@ class DataAnalyzerSQL:
         context: str = "",
         table_name: Optional[str] = None,
         provider: str = "gemini",
+        allowed_tables: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Query data with additional context from previous steps.
@@ -2130,8 +2131,8 @@ class DataAnalyzerSQL:
         """
         if context:
             enriched = f"Context from previous analysis:\n{context[:500]}\n\nNew task: {question}"
-            return self.query_with_provider(enriched, provider, table_name) if provider != "gemini" else self.query(enriched, table_name)
-        return self.query_with_provider(question, provider, table_name) if provider != "gemini" else self.query(question, table_name)
+            return self.query_with_provider(enriched, provider, table_name, allowed_tables=allowed_tables) if provider != "gemini" else self.query(enriched, table_name, allowed_tables=allowed_tables)
+        return self.query_with_provider(question, provider, table_name, allowed_tables=allowed_tables) if provider != "gemini" else self.query(question, table_name, allowed_tables=allowed_tables)
 
     def get_tables_for_doc_ids(self, doc_ids: List[str]) -> List[str]:
         """Get DuckDB table names belonging to the given doc_ids."""

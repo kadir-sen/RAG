@@ -1,4 +1,5 @@
 """Tests for conversation store and session management."""
+import asyncio
 import json
 import shutil
 import time
@@ -6,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from backend.api.conversations import get_conversation as get_conversation_api
 from src.conversation_store import (
     ConversationStore,
     ConversationMeta,
@@ -231,6 +233,173 @@ class TestPersistence:
         # Can still create new conversations
         meta = store.create_conversation("Recovery")
         assert len(store.list_conversations()) == 1
+
+
+# ── API Response Rehydration Tests ─────────────────────────
+
+
+class TestConversationApiResponse:
+    def test_get_conversation_rehydrates_assistant_response(self, store):
+        meta = store.create_conversation("API Chat")
+        store.add_message(
+            meta.conversation_id,
+            Message(role="user", content="What does clause 5 say?", timestamp="t1"),
+        )
+        store.add_message(
+            meta.conversation_id,
+            Message(
+                role="assistant",
+                content="Clause 5 addresses delay penalties.",
+                timestamp="t2",
+                query_type="document",
+                sources=[{
+                    "doc_id": "doc_1",
+                    "file_name": "contract.pdf",
+                    "page_number": 5,
+                    "text_snippet": "Clause 5 addresses delay penalties.",
+                }],
+            ),
+        )
+
+        result = asyncio.run(get_conversation_api(meta.conversation_id, store=store))
+
+        assert len(result.messages) == 2
+        assistant = result.messages[1]
+        assert assistant.response is not None
+        assert assistant.response.ui_intent == "answer"
+        assert assistant.response.citations[0].doc_name == "contract.pdf"
+        assert assistant.response.citations[0].anchor == "page_5"
+
+    def test_get_conversation_rehydrates_doc_list_related_docs(self, store):
+        meta = store.create_conversation("Topic Search")
+        store.add_message(
+            meta.conversation_id,
+            Message(
+                role="assistant",
+                content="Found 1 file about delay.",
+                timestamp="t1",
+                query_type="file_list",
+                sources=[{
+                    "type": "search_result",
+                    "doc_id": "sr_001",
+                    "file_name": "delay_notice.pdf",
+                    "date": "2024-03-15",
+                    "subject": "Delay Notice",
+                    "doc_type": "document",
+                }],
+            ),
+        )
+
+        result = asyncio.run(get_conversation_api(meta.conversation_id, store=store))
+
+        assistant = result.messages[0]
+        assert assistant.response is not None
+        assert assistant.response.ui_intent == "doc_list"
+        assert len(assistant.response.related_docs) == 1
+        assert assistant.response.related_docs[0].doc_name == "delay_notice.pdf"
+
+
+class TestSerializeRoundTrip:
+    """Test the FULL round-trip: ChatResponse → _serialize → store → restore → ChatResponse.
+    This catches field-name mismatches between model_dump() and _extract_citations_and_related().
+    """
+
+    def test_citation_round_trip_preserves_all_fields(self, store):
+        """Citation doc_name, anchor, and snippet must survive save→restore."""
+        from backend.services.chat_orchestrator import ChatOrchestrator
+        from backend.models.responses import ChatResponse, Citation
+
+        # 1. Create a ChatResponse with citations (as process() would)
+        original_response = ChatResponse(
+            ui_intent="answer",
+            assistant_text="Clause 5 addresses delay penalties.",
+            citations=[
+                Citation(
+                    doc_id="doc_1",
+                    doc_name="contract.pdf",
+                    anchor="page_5",
+                    snippet="Clause 5 addresses delay penalties.",
+                    score=0.92,
+                ),
+            ],
+        )
+
+        # 2. Serialize via _serialize_response_sources (the save path)
+        serialized = ChatOrchestrator._serialize_response_sources(
+            original_response, "document"
+        )
+
+        # 3. Store and restore via conversations API
+        meta = store.create_conversation("Round-trip Citation")
+        store.add_message(
+            meta.conversation_id,
+            Message(
+                role="assistant",
+                content="Clause 5 addresses delay penalties.",
+                timestamp="t1",
+                query_type="document",
+                sources=serialized,
+            ),
+        )
+
+        result = asyncio.run(get_conversation_api(meta.conversation_id, store=store))
+        restored = result.messages[0].response
+
+        assert restored is not None
+        assert len(restored.citations) == 1
+        c = restored.citations[0]
+        assert c.doc_name == "contract.pdf", f"doc_name lost: got '{c.doc_name}'"
+        assert c.anchor == "page_5", f"anchor lost: got '{c.anchor}'"
+        assert c.snippet == "Clause 5 addresses delay penalties.", f"snippet lost: got '{c.snippet}'"
+        assert c.score == 0.92
+
+    def test_related_doc_round_trip_preserves_all_fields(self, store):
+        """RelatedDoc doc_name and reason must survive save→restore."""
+        from backend.services.chat_orchestrator import ChatOrchestrator
+        from backend.models.responses import ChatResponse, RelatedDoc
+
+        original_response = ChatResponse(
+            ui_intent="doc_list",
+            assistant_text="Found 1 file about delay.",
+            related_docs=[
+                RelatedDoc(
+                    doc_id="sr_001",
+                    doc_name="delay_notice.pdf",
+                    date="2024-03-15",
+                    doc_type="document",
+                    reason="Delay Notice",
+                    sender="contractor@co.com",
+                    recipient="pm@co.com",
+                ),
+            ],
+        )
+
+        serialized = ChatOrchestrator._serialize_response_sources(
+            original_response, "file_list"
+        )
+
+        meta = store.create_conversation("Round-trip RelatedDoc")
+        store.add_message(
+            meta.conversation_id,
+            Message(
+                role="assistant",
+                content="Found 1 file about delay.",
+                timestamp="t1",
+                query_type="file_list",
+                sources=serialized,
+            ),
+        )
+
+        result = asyncio.run(get_conversation_api(meta.conversation_id, store=store))
+        restored = result.messages[0].response
+
+        assert restored is not None
+        assert len(restored.related_docs) == 1
+        r = restored.related_docs[0]
+        assert r.doc_name == "delay_notice.pdf", f"doc_name lost: got '{r.doc_name}'"
+        assert r.reason == "Delay Notice", f"reason lost: got '{r.reason}'"
+        assert r.date == "2024-03-15"
+        assert r.sender == "contractor@co.com"
 
 
 # ── format_chat_context Tests ─────────────────────────────

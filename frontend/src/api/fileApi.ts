@@ -31,11 +31,19 @@ export async function getDocContent(
   docId: string,
   anchor = '',
 ): Promise<DocContent> {
-  const { data } = await apiClient.get<DocContent>(
-    `/docs/${encodeURIComponent(docId)}/content`,
-    { params: { anchor } },
-  );
-  return data;
+  if (!docId || !docId.trim()) {
+    return { type: 'text', error: 'No document ID provided' } as DocContent;
+  }
+  try {
+    const { data } = await apiClient.get<DocContent>(
+      `/docs/${encodeURIComponent(docId)}/content`,
+      { params: { anchor } },
+    );
+    return data;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to load document';
+    return { type: 'text', error: message } as DocContent;
+  }
 }
 
 export async function getIndexingStatus(): Promise<IndexingStatus[]> {

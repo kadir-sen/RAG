@@ -13,12 +13,20 @@ class DocumentService:
         return await asyncio.to_thread(self._get_content_sync, doc_id, anchor)
 
     def _get_content_sync(self, doc_id: str, anchor: str) -> DocContent:
-        # Try RAG file registry
+        # Guard: empty or whitespace-only doc_id
+        if not doc_id or not doc_id.strip():
+            return DocContent(type="text", error="No document ID provided")
+
+        # Try RAG file registry (match by doc_id hash OR by file_name)
         try:
-            from src.document_rag import get_document_rag
+            from src.document_rag import get_document_rag, generate_doc_id
             rag = get_document_rag()
             for fname, info in rag.file_registry.items():
-                if doc_id in (fname, info.get("doc_id", "")):
+                stored_doc_id = info.get("doc_id", "")
+                # Match by: exact doc_id, file_name, or MD5 hash of file_name
+                import hashlib
+                fname_hash = hashlib.md5(fname.encode()).hexdigest()[:16]
+                if doc_id in (fname, stored_doc_id, fname_hash):
                     file_path = info.get("file_path", "")
                     page = self._parse_anchor_page(anchor)
                     if file_path.lower().endswith(".pdf"):
@@ -36,6 +44,28 @@ class DocumentService:
             for table_name, file_path in analyzer.file_paths.items():
                 if generate_doc_id(file_path) == doc_id:
                     return self._serve_table_preview(table_name, analyzer)
+        except Exception:
+            pass
+
+        # Fallback: DocumentRegistry (JSON-backed, survives restarts)
+        try:
+            from src.document_registry import get_document_registry
+            registry = get_document_registry()
+            rec = registry.get(doc_id)
+            # Also try matching by file_name hash if direct lookup fails
+            if not rec:
+                import hashlib
+                for r in registry.get_all():
+                    fname_hash = hashlib.md5(r.file_name.encode()).hexdigest()[:16]
+                    if doc_id in (r.file_name, fname_hash):
+                        rec = r
+                        break
+            if rec and rec.file_path:
+                page = self._parse_anchor_page(anchor)
+                if rec.file_path.lower().endswith(".pdf"):
+                    return self._serve_pdf_page(rec.file_path, page)
+                else:
+                    return self._serve_text_content(rec.file_path)
         except Exception:
             pass
 

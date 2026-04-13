@@ -55,15 +55,24 @@ TIMELINE_KEYWORDS = {
     "timeline", "chronology", "sequence", "history", "chain", "trace",
     "what happened", "when did", "order of events", "between dates",
     "who replied", "who responded", "who sent", "who received",
-    "notices", "all notices", "list notices", "show notices", "notice",
-    "correspondence", "letters sent", "letters received",
+    "all notices", "list notices", "show notices", "list of notices",
+    "notice timeline", "notice history",
+    "all correspondence", "correspondence history", "correspondence flow",
+    "letters sent", "letters received",
     "delay notices", "extension notices", "claim notices",
     "delay notice", "extension notice", "claim notice",
-    "before", "after", "during", "period",
     "communication flow", "parties involved", "document trail",
     # Clustering keywords
-    "cluster", "group", "categorize", "document group",
+    "cluster", "categorize", "document group",
 }
+
+# Patterns that strongly indicate DOCUMENT intent even when timeline keywords match
+# (user wants to READ content, not trace chronology)
+_DOCUMENT_INTENT_PATTERNS = [
+    "what does", "what did", "explain", "describe", "content of",
+    "according to", "mentioned in", "stated in", "says about",
+    "terms of", "clause", "section", "article",
+]
 
 
 # ── Embedding-similarity anchor texts ────────────────────────
@@ -510,7 +519,7 @@ class QueryRouter:
         return None
 
     def _classify_heuristic(self, query_lower: str) -> Optional[RouterDecision]:
-        """Tier 1: keyword-based scoring with schema-aware data boost."""
+        """Tier 1: keyword-based scoring with schema-aware data boost and negative signals."""
         data_score = sum(1 for kw in DATA_KEYWORDS if kw in query_lower)
         doc_score = sum(1 for kw in DOCUMENT_KEYWORDS if kw in query_lower)
         timeline_score = sum(1 for kw in TIMELINE_KEYWORDS if kw in query_lower)
@@ -519,6 +528,13 @@ class QueryRouter:
         schema_boost = self._schema_data_boost(query_lower)
         data_score += schema_boost
 
+        # Negative signal: content-seeking patterns suppress TIMELINE
+        # (user wants to READ content, not trace chronology)
+        doc_intent_boost = sum(1 for p in _DOCUMENT_INTENT_PATTERNS if p in query_lower)
+        if doc_intent_boost > 0:
+            doc_score += doc_intent_boost
+            timeline_score = max(0, timeline_score - doc_intent_boost)
+
         scores = {
             QueryType.DATA: data_score,
             QueryType.DOCUMENT: doc_score,
@@ -526,10 +542,11 @@ class QueryRouter:
         }
 
         logger.info(f"   Heuristic scores - Doc:{doc_score} Data:{data_score} "
-                     f"(schema_boost:{schema_boost}) Timeline:{timeline_score}")
+                     f"(schema_boost:{schema_boost}) Timeline:{timeline_score}"
+                     f" (doc_intent_boost:{doc_intent_boost})")
 
-        # Timeline priority (important for domain)
-        if timeline_score >= 2 and ENABLE_TIMELINE:
+        # Timeline priority — only when clearly timeline AND not document-intent
+        if timeline_score >= 2 and timeline_score > doc_score and ENABLE_TIMELINE:
             return RouterDecision(
                 query_type=QueryType.TIMELINE,
                 confidence=min(0.95, 0.5 + timeline_score * 0.1),
@@ -954,21 +971,26 @@ class QueryRouter:
 
         # 3. Merge sources — metadata first, then RAG (deduplicated)
         rag_sources = result.get("sources", [])
-        seen_files = {s.get("file_name") for s in metadata_sources}
+        seen_keys = {
+            (s.get("file_name"), s.get("page_number"))
+            for s in metadata_sources
+        }
         for rs in rag_sources:
-            if rs.get("file_name") not in seen_files:
+            key = (rs.get("file_name"), rs.get("page_number"))
+            if key not in seen_keys:
                 metadata_sources.append(rs)
-                seen_files.add(rs.get("file_name"))
+                seen_keys.add(key)
 
         final_sources = metadata_sources if metadata_sources else rag_sources
 
-        # 3b. Find related Excel/data tables for this topic
+        # 3b. Find related Excel/data tables for this topic (scoped)
         try:
-            related_tables = self.data_analyzer.select_tables(query, max_tables=3)
+            _allowed = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+            related_tables = self.data_analyzer.select_tables(query, max_tables=3, allowed_tables=_allowed)
             for tname in related_tables:
                 tinfo = self.data_analyzer.tables.get(tname, {})
                 fname = tinfo.get("file_name", tname)
-                if fname not in seen_files:
+                if not any(fname == k[0] for k in seen_keys):
                     from .document_rag import generate_doc_id
                     fpath = self.data_analyzer.file_paths.get(tname, "")
                     final_sources.append({
@@ -981,7 +1003,7 @@ class QueryRouter:
                         "row_count": tinfo.get("row_count", 0),
                         "columns": tinfo.get("columns", [])[:5],
                     })
-                    seen_files.add(fname)
+                    seen_keys.add((fname, None))
         except Exception as e:
             logger.warning(f"Excel enrichment for doc query failed: {e}")
 
@@ -1015,7 +1037,7 @@ class QueryRouter:
         relevant = self.data_analyzer.select_tables(query, max_tables=3, allowed_tables=allowed_tables)
         if len(relevant) > 1:
             logger.info(f"   Multi-table query detected ({len(relevant)} tables)")
-            result = self.hybrid_executor.execute_multi_table(query)
+            result = self.hybrid_executor.execute_multi_table(query, allowed_tables=allowed_tables)
         else:
             result = self.data_analyzer.query(query, allowed_tables=allowed_tables)
 
@@ -1238,6 +1260,7 @@ class QueryRouter:
                         "sender": r.get("sender", ""),
                         "subject": r.get("subject", ""),
                         "description": r.get("description", ""),
+                        "doc_type": r.get("file_type", ""),
                         "type": "search_result",
                     }
                     for r in results
@@ -1524,6 +1547,32 @@ class QueryRouter:
                 })
         except Exception as e:
             logger.warning(f"[Search] Registry search failed: {e}")
+
+        # 4. RAG semantic fallback for non-notice documents (when few results found)
+        if len(results) < 5 and self.document_rag:
+            try:
+                rag_result = self.document_rag.query(topic, top_k=10)
+                for src in rag_result.get("sources", []):
+                    file_name = src.get("file_name", "")
+                    doc_id = src.get("doc_id", "")
+                    if not doc_id or doc_id in seen_doc_ids:
+                        continue
+                    seen_doc_ids.add(doc_id)
+                    results.append({
+                        "doc_id": doc_id,
+                        "file_name": file_name,
+                        "file_path": src.get("file_path", ""),
+                        "file_type": "document",
+                        "extension": Path(file_name).suffix.lower() if file_name else "",
+                        "date": "",
+                        "sender": "",
+                        "subject": src.get("text_snippet", "")[:100],
+                        "description": src.get("text_snippet", "")[:200],
+                        "semantic_tags": [],
+                        "source": "rag_semantic",
+                    })
+            except Exception as e:
+                logger.warning(f"[Search] RAG semantic fallback failed: {e}")
 
         # Sort by date DESC (notice date first, then catalog date, then created_at)
         results.sort(key=lambda x: x.get("date", ""), reverse=True)
@@ -1922,15 +1971,19 @@ class QueryRouter:
                     answer_prefix = f"Communication flow{' for ' + party if party else ''}:\n\n"
                     answer_lines = [answer_prefix]
                     for i, record in enumerate(flow[:25], 1):
-                        direction_arrow = "\u2192" if record['direction'] != 'incoming' else "\u2190"
-                        cc_str = f" (CC: {', '.join(record['cc_list'][:2])})" if record.get('cc_list') else ""
-                        actions_str = f" [{', '.join(record['actions'][:3])}]" if record.get('actions') else ""
+                        if not record:
+                            continue
+                        direction_arrow = "\u2192" if record.get('direction') != 'incoming' else "\u2190"
+                        cc_list = record.get('cc_list') or []
+                        actions = record.get('actions') or []
+                        cc_str = f" (CC: {', '.join(cc_list[:2])})" if cc_list else ""
+                        actions_str = f" [{', '.join(actions[:3])}]" if actions else ""
 
                         answer_lines.append(
-                            f"{i}. **{record['date']}** | {record['sender']} {direction_arrow} {record['recipient']}{cc_str}\n"
-                            f"   {record.get('subject', '')[:80]}{actions_str}\n"
+                            f"{i}. **{record.get('date', 'Unknown')}** | {record.get('sender', 'Unknown')} {direction_arrow} {record.get('recipient', 'Unknown')}{cc_str}\n"
+                            f"   {(record.get('subject') or '')[:80]}{actions_str}\n"
                         )
-                        sources.append(self._build_source(record['doc_id'], record, NOTICES_DIR))
+                        sources.append(self._build_source(record.get('doc_id', ''), record, NOTICES_DIR))
 
                     answer = "\n".join(answer_lines)
                     parties = graph.get_all_parties()
@@ -1951,11 +2004,15 @@ class QueryRouter:
                     if corr:
                         answer_lines = [f"Correspondence between **{parties[0]}** and **{parties[1]}**:\n\n"]
                         for i, record in enumerate(corr[:25], 1):
+                            if not record:
+                                continue
+                            node = record.get('node') or {}
                             answer_lines.append(
-                                f"{i}. **{record['date']}** | {record['from']} \u2192 {record['to']}\n"
-                                f"   {record.get('subject', '')[:80]}\n"
+                                f"{i}. **{record.get('date', 'Unknown')}** | {record.get('from', 'Unknown')} \u2192 {record.get('to', 'Unknown')}\n"
+                                f"   {(record.get('subject') or '')[:80]}\n"
                             )
-                            sources.append(self._build_source(record['node']['doc_id'], record['node'], NOTICES_DIR))
+                            if node.get('doc_id'):
+                                sources.append(self._build_source(node['doc_id'], node, NOTICES_DIR))
                         answer = "\n".join(answer_lines)
                     else:
                         answer = f"No correspondence found between {parties[0]} and {parties[1]}."
@@ -1978,22 +2035,22 @@ class QueryRouter:
             # 4. Action-based queries
             elif any(kw in query_lower for kw in ['delay']):
                 delay_docs = graph.search_by_action('delay')
-                results = [d['node'] for d in delay_docs]
+                results = [d['node'] for d in delay_docs if d.get('node')]
                 answer_prefix = "Documents mentioning delays:\n\n"
 
             elif any(kw in query_lower for kw in ['claim']):
                 claim_docs = graph.search_by_action('claim')
-                results = [d['node'] for d in claim_docs]
+                results = [d['node'] for d in claim_docs if d.get('node')]
                 answer_prefix = "Documents mentioning claims:\n\n"
 
             elif any(kw in query_lower for kw in ['approval', 'approve']):
                 approve_docs = graph.search_by_action('approve')
-                results = [d['node'] for d in approve_docs]
+                results = [d['node'] for d in approve_docs if d.get('node')]
                 answer_prefix = "Documents related to approvals:\n\n"
 
             elif any(kw in query_lower for kw in ['termination', 'terminate']):
                 term_docs = graph.search_by_action('terminate')
-                results = [d['node'] for d in term_docs]
+                results = [d['node'] for d in term_docs if d.get('node')]
                 answer_prefix = "Documents related to termination:\n\n"
 
             # 5. Project analysis queries (via DocumentAgent)
@@ -2024,8 +2081,8 @@ class QueryRouter:
                 nodes = list(graph.graph.nodes.keys())
                 if nodes:
                     chain = graph.trace_chain(nodes[0], depth=5)
-                    results = [chain['start']] if chain['start'] else []
-                    results.extend([item['node'] for item in chain['downstream']])
+                    results = [chain['start']] if chain.get('start') else []
+                    results.extend([item['node'] for item in chain.get('downstream', []) if item.get('node')])
                     answer_prefix = f"Document chain starting from {nodes[0]}:\n\n"
                 else:
                     answer_prefix = "No documents in graph.\n\n"
@@ -2039,14 +2096,16 @@ class QueryRouter:
             if results:
                 answer_lines = [answer_prefix]
                 for i, node in enumerate(results[:25], 1):
-                    date = node.get('date', 'No date')
+                    if not node:
+                        continue
+                    date = node.get('date') or 'No date'
                     sender = (node.get('sender') or 'Unknown')[:40]
                     recipient = (node.get('recipient') or 'Unknown')[:40]
                     subject = (node.get('subject') or '')[:80]
-                    file_name = node.get('file_name', node.get('doc_id', 'Unknown'))
-                    doc_type = node.get('doc_type', '')
-                    actions = node.get('actions', [])
-                    direction = node.get('direction', '')
+                    file_name = node.get('file_name') or node.get('doc_id') or 'Unknown'
+                    doc_type = node.get('doc_type') or ''
+                    actions = node.get('actions') or []
+                    direction = node.get('direction') or ''
 
                     type_badge = f" [{doc_type}]" if doc_type else ""
                     action_str = f" | Actions: {', '.join(actions[:3])}" if actions else ""
@@ -2187,6 +2246,94 @@ class QueryRouter:
                     return term
         return None
 
+    # ── Dispatch helpers ────────────────────────────────────────
+
+    def _dispatch_query(
+        self, query_type: 'QueryType', query: str, expanded: str,
+        doc_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Dispatch query to appropriate handler by type."""
+        if query_type == QueryType.FILE_LIST:
+            return self._handle_file_list_query(query, doc_ids)
+        elif query_type == QueryType.THREAD:
+            return self._handle_thread_query(query)
+        elif query_type == QueryType.DRAFT:
+            return self._handle_draft_query(query)
+        elif query_type == QueryType.DATA:
+            return self._handle_data_query(expanded, doc_ids=doc_ids)
+        elif query_type == QueryType.DOCUMENT:
+            return self._handle_document_query(expanded, doc_ids=doc_ids)
+        elif query_type == QueryType.TIMELINE:
+            return self._handle_timeline_query(query)
+        else:  # HYBRID
+            return self._handle_hybrid_query(expanded, doc_ids=doc_ids)
+
+    def _dispatch_query_dual(
+        self, query_type: 'QueryType', query: str, expanded: str,
+        doc_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Dispatch query to dual-provider handlers by type."""
+        from .config import LLM_PROVIDERS
+
+        allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+
+        if query_type == QueryType.FILE_LIST:
+            single = self._handle_file_list_query(query, doc_ids)
+            return {p: single for p in LLM_PROVIDERS}
+        elif query_type == QueryType.THREAD:
+            single = self._handle_thread_query(query)
+            return {p: single for p in LLM_PROVIDERS}
+        elif query_type == QueryType.DRAFT:
+            single = self._handle_draft_query(query)
+            return {p: single for p in LLM_PROVIDERS}
+        elif query_type == QueryType.DATA:
+            return self.data_analyzer.query_dual(expanded, allowed_tables=allowed_tables)
+        elif query_type == QueryType.DOCUMENT:
+            return self.document_rag.query_dual(expanded, doc_ids=doc_ids)
+        elif query_type == QueryType.TIMELINE:
+            single = self._handle_timeline_query(query)
+            return {p: single for p in LLM_PROVIDERS}
+        else:  # HYBRID
+            return self._handle_hybrid_query_dual(expanded)
+
+    _FALLBACK_MAP = {
+        QueryType.DOCUMENT: QueryType.DATA,
+        QueryType.DATA: QueryType.DOCUMENT,
+        QueryType.TIMELINE: QueryType.DOCUMENT,
+        QueryType.HYBRID: QueryType.DATA,
+    }
+
+    def _get_fallback_type(self, primary: 'QueryType') -> Optional['QueryType']:
+        """Get secondary query type for fallback routing."""
+        secondary = self._FALLBACK_MAP.get(primary)
+        if secondary == QueryType.DATA and not self.data_analyzer.list_tables():
+            return QueryType.DOCUMENT if primary != QueryType.DOCUMENT else None
+        return secondary
+
+    @staticmethod
+    def _answer_is_empty_or_error(answer: str, has_sources: bool) -> bool:
+        answer = answer or ""
+        is_empty = not has_sources and (
+            not answer or "not found" in answer.lower() or "no " in answer.lower()[:20]
+        )
+        is_error = answer.startswith("Error") or "failed" in answer.lower()
+        return is_empty or is_error
+
+    def _dual_answers_empty_or_error(self, answers: Dict[str, Dict[str, Any]]) -> bool:
+        """Return True when every provider answer is empty/error-like."""
+        if not answers:
+            return True
+        valid_answers = [a for a in answers.values() if isinstance(a, dict)]
+        if not valid_answers:
+            return True
+        return all(
+            self._answer_is_empty_or_error(
+                a.get("answer", ""),
+                bool(a.get("sources")),
+            )
+            for a in valid_answers
+        )
+
     # ── Main entry point ──────────────────────────────────────
 
     def route_and_execute(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -2216,7 +2363,8 @@ class QueryRouter:
             if self._is_complex_query(query):
                 logger.info("   Detected complex query -> Hybrid Executor")
                 trace.route = "HYBRID_COMPLEX"
-                result = self.hybrid_executor.execute(expanded)
+                allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+                result = self.hybrid_executor.execute(expanded, doc_ids=doc_ids, allowed_tables=allowed_tables)
                 logger.info(f"Query complete (hybrid) - {len(result.get('sources', []))} sources")
                 return result
 
@@ -2234,20 +2382,34 @@ class QueryRouter:
                         f"(conf={decision.confidence:.2f}, llm={decision.used_llm})")
 
             # Route to handler
-            if decision.query_type == QueryType.FILE_LIST:
-                result = self._handle_file_list_query(query, doc_ids)
-            elif decision.query_type == QueryType.THREAD:
-                result = self._handle_thread_query(query)
-            elif decision.query_type == QueryType.DRAFT:
-                result = self._handle_draft_query(query)
-            elif decision.query_type == QueryType.DATA:
-                result = self._handle_data_query(expanded, doc_ids=doc_ids)
-            elif decision.query_type == QueryType.DOCUMENT:
-                result = self._handle_document_query(expanded, doc_ids=doc_ids)
-            elif decision.query_type == QueryType.TIMELINE:
-                result = self._handle_timeline_query(query)
-            else:  # HYBRID
-                result = self._handle_hybrid_query(expanded, doc_ids=doc_ids)
+            result = self._dispatch_query(decision.query_type, query, expanded, doc_ids)
+
+            # Confidence-based fallback: if low confidence AND primary returned empty/error
+            if decision.confidence < 0.7:
+                answer = result.get("answer", "")
+                is_empty = not result.get("sources") and (
+                    not answer or "not found" in answer.lower() or "no " in answer.lower()[:20]
+                )
+                is_error = answer.startswith("Error") or "failed" in answer.lower()
+                if is_empty or is_error:
+                    # Try secondary route
+                    secondary = self._get_fallback_type(decision.query_type)
+                    if secondary:
+                        logger.info(f"   Low confidence ({decision.confidence:.2f}) + "
+                                    f"empty/error result → fallback to {secondary.value}")
+                        fallback_result = self._dispatch_query(secondary, query, expanded, doc_ids)
+                        if fallback_result.get("sources") or (
+                            fallback_result.get("answer", "") and
+                            "not found" not in fallback_result.get("answer", "").lower()
+                        ):
+                            result = fallback_result
+                            result["query_type"] = secondary.value
+                            decision = RouterDecision(
+                                query_type=secondary,
+                                confidence=decision.confidence,
+                                reasons=decision.reasons + [f"fallback: {decision.query_type.value} → {secondary.value}"],
+                            )
+                            trace.route = f"{secondary.value.upper()}_FALLBACK"
 
             # Fallback: if DOCUMENT returned empty and tables exist, retry as DATA
             if (decision.query_type == QueryType.DOCUMENT
@@ -2324,7 +2486,8 @@ class QueryRouter:
             if self._is_complex_query(query):
                 logger.info("   Detected complex query -> Hybrid Executor (Dual)")
                 trace.route = "HYBRID_COMPLEX_DUAL"
-                answers = self.hybrid_executor.execute_dual(query)
+                allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+                answers = self.hybrid_executor.execute_dual(query, doc_ids=doc_ids, allowed_tables=allowed_tables)
                 return {
                     "query": query,
                     "query_type": "hybrid",
@@ -2347,38 +2510,37 @@ class QueryRouter:
                         f"(conf={decision.confidence:.2f})")
 
             # Route to dual handlers
-            allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
-            if decision.query_type == QueryType.FILE_LIST:
-                single = self._handle_file_list_query(query)
-                answers = {p: single for p in LLM_PROVIDERS}
-            elif decision.query_type == QueryType.THREAD:
-                single = self._handle_thread_query(query)
-                answers = {p: single for p in LLM_PROVIDERS}
-            elif decision.query_type == QueryType.DRAFT:
-                single = self._handle_draft_query(query)
-                answers = {p: single for p in LLM_PROVIDERS}
-            elif decision.query_type == QueryType.DATA:
-                answers = self.data_analyzer.query_dual(expanded, allowed_tables=allowed_tables)
-            elif decision.query_type == QueryType.DOCUMENT:
-                answers = self.document_rag.query_dual(expanded, doc_ids=doc_ids)
-                # Fallback: if document returned empty and tables exist, retry as DATA
-                has_empty = all(
-                    not (a.get("sources") if isinstance(a, dict) else False)
-                    for a in answers.values()
+            answers = self._dispatch_query_dual(decision.query_type, query, expanded, doc_ids)
+
+            # Confidence-based fallback: mirror single-route behavior for dual mode
+            if decision.confidence < 0.7 and self._dual_answers_empty_or_error(answers):
+                secondary = self._get_fallback_type(decision.query_type)
+                if secondary:
+                    logger.info(f"   Low confidence ({decision.confidence:.2f}) + "
+                                f"empty/error dual result -> fallback to {secondary.value}")
+                    fallback_answers = self._dispatch_query_dual(secondary, query, expanded, doc_ids)
+                    if not self._dual_answers_empty_or_error(fallback_answers):
+                        answers = fallback_answers
+                        decision = RouterDecision(
+                            query_type=secondary,
+                            confidence=decision.confidence,
+                            reasons=decision.reasons + [
+                                f"fallback: {decision.query_type.value} -> {secondary.value}"
+                            ],
+                        )
+                        trace.route = f"{secondary.value.upper()}_DUAL_FALLBACK"
+
+            # Fallback: if document returned empty and tables exist, retry as DATA
+            if (decision.query_type == QueryType.DOCUMENT
+                    and self._dual_answers_empty_or_error(answers)
+                    and self.data_analyzer.list_tables()):
+                logger.info("   Document query (dual) returned empty, retrying as DATA")
+                answers = self._dispatch_query_dual(QueryType.DATA, query, expanded, doc_ids)
+                decision = RouterDecision(
+                    query_type=QueryType.DATA,
+                    confidence=decision.confidence,
+                    reasons=decision.reasons + ["fallback: doc empty, tables available"],
                 )
-                if has_empty and self.data_analyzer.list_tables():
-                    logger.info("   Document query (dual) returned empty, retrying as DATA")
-                    answers = self.data_analyzer.query_dual(expanded, allowed_tables=allowed_tables)
-                    decision = RouterDecision(
-                        query_type=QueryType.DATA,
-                        confidence=decision.confidence,
-                        reasons=decision.reasons + ["fallback: doc empty, tables available"],
-                    )
-            elif decision.query_type == QueryType.TIMELINE:
-                single = self._handle_timeline_query(query)
-                answers = {p: single for p in LLM_PROVIDERS}
-            else:  # HYBRID
-                answers = self._handle_hybrid_query_dual(expanded)
 
             result = {
                 "query": query,

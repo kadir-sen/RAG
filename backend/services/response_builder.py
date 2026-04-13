@@ -1,7 +1,26 @@
 """Maps raw router Dict[str, Any] → ChatResponse contract."""
 
+import hashlib
+import re
 from typing import Dict, Any, List
 from backend.models.responses import ChatResponse, Citation, RelatedDoc, SQLArtifact, ProviderAnswer
+
+
+# Regex: only safe URL chars (hex hash, alphanumeric, dash, underscore, dot)
+_SAFE_DOC_ID_RE = re.compile(r'^[a-zA-Z0-9_.\-]+$')
+
+
+def _safe_doc_id(src: Dict[str, Any]) -> str:
+    """Return a URL-safe doc_id. Falls back to hashing file_name if raw ID
+    contains special/unicode characters that would break frontend URL encoding."""
+    doc_id = src.get("doc_id") or ""
+    if doc_id and _SAFE_DOC_ID_RE.match(doc_id):
+        return doc_id
+    # Fallback: generate stable hash from file_name
+    file_name = src.get("file_name") or ""
+    if file_name:
+        return hashlib.md5(file_name.encode()).hexdigest()[:16]
+    return doc_id  # return whatever we have, even if empty
 
 # Old QueryType → new ui_intent
 INTENT_MAP = {
@@ -33,11 +52,16 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     citations, related_docs = _extract_citations_and_related(sources, query_type)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
 
+    # Extract routing confidence for frontend display
+    routing = raw.get("routing", {})
+    routing_confidence = routing.get("confidence") if routing else None
+
     return ChatResponse(
         ui_intent=ui_intent,
         assistant_text=answer_text,
         citations=citations,
         related_docs=related_docs,
+        routing_confidence=routing_confidence,
         sql_artifact=sql_artifact,
     )
 
@@ -51,9 +75,16 @@ def _build_from_dual(raw: Dict[str, Any]) -> ChatResponse:
         "claude": ANTHROPIC_MODEL,
     }
 
+    # Be tolerant of single-result fallback payloads reaching dual mode.
+    # This can happen when the orchestrator degrades gracefully after a router failure.
+    if "answers" not in raw:
+        return _build_from_single(raw)
+
     query_type = raw.get("query_type", "document")
     answers = raw.get("answers", {})
     ui_intent = INTENT_MAP.get(query_type, "answer")
+    routing = raw.get("routing", {})
+    routing_confidence = routing.get("confidence") if routing else None
 
     # Build per-provider answers
     provider_answers: list[ProviderAnswer] = []
@@ -93,6 +124,7 @@ def _build_from_dual(raw: Dict[str, Any]) -> ChatResponse:
         related_docs=related_docs,
         sql_artifact=sql_artifact,
         provider_answers=provider_answers,
+        routing_confidence=routing_confidence,
     )
 
 
@@ -108,23 +140,25 @@ def _extract_citations_and_related(
         if src_type == "structured_data":
             # Data sources handled by sql_artifact, skip
             continue
-        elif src_type in ("notice", "thread_message"):
+        elif src_type in ("notice", "thread_message", "search_result"):
+            safe_id = _safe_doc_id(src)
             related_docs.append(RelatedDoc(
-                doc_id=src.get("doc_id", src.get("file_name", "")),
-                doc_name=src.get("file_name", ""),
-                date=src.get("date", ""),
-                doc_type=src.get("doc_type", ""),
-                reason=src.get("subject", ""),
+                doc_id=safe_id,
+                doc_name=src.get("file_name") or "",
+                date=src.get("date") or "",
+                doc_type=src.get("doc_type") or "",
+                reason=src.get("subject") or "",
                 score=src.get("score"),
-                sender=src.get("sender", ""),
-                recipient=src.get("recipient", ""),
+                sender=src.get("sender") or "",
+                recipient=src.get("recipient") or "",
             ))
         else:
             # Document source → citation
+            safe_id = _safe_doc_id(src)
             page = src.get("page_number", 1)
             citations.append(Citation(
-                doc_id=src.get("doc_id", src.get("file_name", "")),
-                doc_name=src.get("file_name", ""),
+                doc_id=safe_id,
+                doc_name=src.get("file_name") or "",
                 anchor=f"page_{page}",
                 snippet=(
                     src.get("highlight_text", "")

@@ -56,8 +56,13 @@ export default function RelatedDocsList({ docs, onDocClick }: Props) {
                 </td>
                 <td className="px-3 py-2">
                   <button
-                    onClick={() => onDocClick({ docId: d.doc_id, fileName: d.doc_name })}
-                    className="px-2.5 py-1 rounded text-[10px] font-medium bg-[var(--accent)] text-[var(--bg-primary)] hover:bg-[var(--accent-hover)] transition-colors"
+                    onClick={() => d.doc_id && onDocClick({ docId: d.doc_id, fileName: d.doc_name })}
+                    disabled={!d.doc_id}
+                    className={`px-2.5 py-1 rounded text-[10px] font-medium transition-colors ${
+                      d.doc_id
+                        ? 'bg-[var(--accent)] text-[var(--bg-primary)] hover:bg-[var(--accent-hover)] cursor-pointer'
+                        : 'bg-[var(--bg-surface)] text-[var(--text-muted)] cursor-not-allowed opacity-50'
+                    }`}
                   >
                     View
                   </button>

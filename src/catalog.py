@@ -287,9 +287,13 @@ class TableCatalog:
         return entry.tables if entry else []
 
     def search_by_keyword(self, keyword: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Search catalog entries by keyword across tags, descriptions, columns, filenames."""
+        """Search catalog entries by keyword across tags, descriptions, columns, filenames.
+        Tokenizes query into words and scores results by cumulative token matches.
+        """
         from .document_rag import generate_doc_id
-        kw = keyword.lower()
+        words = [w.lower() for w in keyword.split() if len(w) >= 3]
+        if not words:
+            words = [keyword.lower()]
         scored: List[tuple] = []  # (score, result_dict)
 
         seen_sources: set = set()
@@ -306,27 +310,36 @@ class TableCatalog:
             for table in entry.tables:
                 # Tag match (highest weight)
                 for tag in table.semantic_tags:
-                    if kw in tag.lower():
-                        score += 3
-                        if tag not in matched_tags:
-                            matched_tags.append(tag)
+                    tag_lower = tag.lower()
+                    for w in words:
+                        if w in tag_lower:
+                            score += 3
+                            if tag not in matched_tags:
+                                matched_tags.append(tag)
                 # Description / summary match
-                if kw in table.description.lower():
-                    score += 2
-                    if not matched_desc:
-                        matched_desc = table.description
-                if kw in table.summary.lower():
-                    score += 2
-                    if not matched_desc:
-                        matched_desc = table.summary
+                desc_lower = table.description.lower()
+                summ_lower = table.summary.lower()
+                for w in words:
+                    if w in desc_lower:
+                        score += 2
+                        if not matched_desc:
+                            matched_desc = table.description
+                    if w in summ_lower:
+                        score += 2
+                        if not matched_desc:
+                            matched_desc = table.summary
                 # Column name match
                 for col in table.columns:
-                    if kw in col.lower():
-                        score += 1
+                    col_lower = col.lower()
+                    for w in words:
+                        if w in col_lower:
+                            score += 1
 
             # Filename match
-            if kw in source_name.lower():
-                score += 1
+            name_lower = source_name.lower()
+            for w in words:
+                if w in name_lower:
+                    score += 1
 
             if score == 0:
                 continue

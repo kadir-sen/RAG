@@ -1,5 +1,6 @@
-import { memo } from 'react';
+import { memo, useState, useCallback, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
 import type { ChatResponse } from '../../types/api';
 import type { ViewerDoc } from '../../stores/uiStore';
 import Badge from '../shared/Badge';
@@ -10,6 +11,36 @@ import SqlArtifact from './SqlArtifact';
 import EmailTraceResponse from './EmailTraceResponse';
 import ProviderTabs from './ProviderTabs';
 
+// Custom markdown components for better presentation
+const markdownComponents: Components = {
+  table: ({ children, ...props }) => (
+    <div className="overflow-x-auto my-3 rounded-lg border border-[var(--border)]">
+      <table className="w-full text-xs" {...props}>{children}</table>
+    </div>
+  ),
+  thead: ({ children, ...props }) => (
+    <thead className="bg-[var(--bg-primary)]" {...props}>{children}</thead>
+  ),
+  th: ({ children, ...props }) => (
+    <th className="px-3 py-2 text-left text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider border-b border-[var(--border)]" {...props}>
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }) => (
+    <td className="px-3 py-2 text-[var(--text-primary)] border-b border-[var(--border)]/50" {...props}>
+      {children}
+    </td>
+  ),
+  tr: ({ children, ...props }) => (
+    <tr className="even:bg-[var(--bg-primary)]/30 hover:bg-[var(--bg-hover)] transition-colors" {...props}>
+      {children}
+    </tr>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong className="text-[var(--accent)] font-semibold" {...props}>{children}</strong>
+  ),
+};
+
 interface Props {
   response?: ChatResponse;
   text: string;
@@ -19,9 +50,17 @@ interface Props {
 function AssistantMessage({ response, text, onDocClick }: Props) {
   const intent = response?.ui_intent ?? 'answer';
   const hasProviders = response?.provider_answers && response.provider_answers.length > 1;
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [text]);
 
   return (
-    <div className="flex justify-start mb-5 gap-4 px-4 animate-fade-in-up">
+    <div className="flex justify-start mb-5 gap-4 px-4 animate-fade-in-up group">
       {/* AI Avatar */}
       <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[var(--accent)] flex items-center justify-center mt-1">
         <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -30,9 +69,22 @@ function AssistantMessage({ response, text, onDocClick }: Props) {
       </div>
 
       <div className="max-w-4xl min-w-0">
-        {/* Intent badge */}
-        <div className="mb-1.5">
+        {/* Intent badge + low confidence indicator */}
+        <div className="mb-1.5 flex items-center gap-2">
           <Badge label={intent} />
+          {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
+            <span className="text-[10px] text-[var(--text-muted)] italic">
+              Low confidence routing — try rephrasing for better results
+            </span>
+          )}
+          {/* Copy button — visible on hover */}
+          <button
+            onClick={handleCopy}
+            className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity px-2 py-0.5 rounded text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+            title="Copy response"
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
         </div>
 
         {/* Main content card */}
@@ -45,7 +97,7 @@ function AssistantMessage({ response, text, onDocClick }: Props) {
             />
           ) : (
             <div className="prose prose-invert prose-sm max-w-none text-[var(--text-primary)]">
-              <ReactMarkdown>{text}</ReactMarkdown>
+              <ReactMarkdown components={markdownComponents}>{text}</ReactMarkdown>
             </div>
           )}
 

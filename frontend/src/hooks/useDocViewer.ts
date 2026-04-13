@@ -6,11 +6,13 @@ export function useDocViewer() {
   const { rightPanelOpen, rightPanelDoc, openDocument, closeViewer } =
     useUIStore();
 
+  const hasValidDocId = !!rightPanelDoc?.docId && rightPanelDoc.docId.trim().length > 0;
+
   const contentQuery = useQuery({
     queryKey: ['docContent', rightPanelDoc?.docId, rightPanelDoc?.anchor],
     queryFn: () =>
       getDocContent(rightPanelDoc!.docId, rightPanelDoc?.anchor ?? ''),
-    enabled: rightPanelOpen && !!rightPanelDoc,
+    enabled: rightPanelOpen && hasValidDocId,
     staleTime: Infinity,
   });
 

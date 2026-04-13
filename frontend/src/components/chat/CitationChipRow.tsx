@@ -9,9 +9,12 @@ interface Props {
 
 export default function CitationChipRow({ citations, onChipClick }: Props) {
   if (!citations.length) return null;
+  // Filter out citations with empty doc_id
+  const validCitations = citations.filter(c => c.doc_id && c.doc_id.trim());
+  if (!validCitations.length) return null;
   return (
     <div className="flex flex-wrap gap-1.5 mt-2">
-      {citations.map((c, i) => (
+      {validCitations.map((c, i) => (
         <CitationChip
           key={`${c.doc_id}_${i}`}
           citation={c}

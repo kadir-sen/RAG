@@ -4,11 +4,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
 from backend.models.requests import ConversationCreate, ConversationRename, AddDocumentsRequest
-from backend.models.responses import ConversationMeta, ConversationOut, MessageOut, ChatResponse, LibraryDocument
+from backend.models.responses import ConversationMeta, ConversationOut, MessageOut, LibraryDocument
 from backend.core.dependencies import get_conversation_store
 from backend.services.response_builder import build_chat_response
 
 router = APIRouter()
+
+
+_LEGACY_QUERY_TYPE_MAP = {
+    "answer": "document",
+    "sql_result": "data",
+    "doc_list": "timeline",
+    "email_trace": "thread",
+}
 
 
 @router.get("/conversations", response_model=List[ConversationMeta])
@@ -48,11 +56,27 @@ async def get_conversation(conv_id: str, store=Depends(get_conversation_store)):
         raise HTTPException(404, "Conversation not found")
     messages = []
     for m in conv.messages:
+        response = None
+        if m.role == "assistant":
+            raw_query_type = _LEGACY_QUERY_TYPE_MAP.get(
+                m.query_type or "",
+                m.query_type or "document",
+            )
+            raw = {
+                "query_type": raw_query_type,
+                "answer": m.content,
+                "sources": m.sources or [],
+                "sql": m.sql,
+                "result_data": m.result_data,
+            }
+            response = build_chat_response(raw)
+
         messages.append(MessageOut(
             role=m.role,
             content=m.content,
             timestamp=m.timestamp,
             query_type=m.query_type,
+            response=response,
         ))
     return ConversationOut(
         conversation_id=conv.conversation_id,

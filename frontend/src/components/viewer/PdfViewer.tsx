@@ -6,15 +6,22 @@ interface Props {
 }
 
 export default function PdfViewer({ content, highlightText }: Props) {
+  // Validate base64 string to prevent InvalidCharacterError
+  const hasValidImage = content.image_base64 && /^[A-Za-z0-9+/=\s]+$/.test(content.image_base64);
+
   return (
     <div className="flex-1 overflow-auto p-2">
-      {content.image_base64 && (
+      {hasValidImage ? (
         <img
           src={`data:image/png;base64,${content.image_base64}`}
           alt={`Page ${content.page}`}
           className="w-full rounded"
         />
-      )}
+      ) : content.image_base64 ? (
+        <div className="p-4 text-sm text-[var(--text-muted)]">
+          Unable to render page image.
+        </div>
+      ) : null}
       {content.text && (
         <div className="mt-3 p-3 rounded bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] whitespace-pre-wrap leading-relaxed">
           {highlightText

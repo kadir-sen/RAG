@@ -145,6 +145,39 @@ class TestCitationExtraction:
         assert resp.citations == []
         assert resp.related_docs == []
 
+    def test_search_result_sources_become_related_docs(self):
+        """BUG 1 fix: search_result type should map to related_docs, not citations."""
+        raw = {
+            "query_type": "file_list",
+            "answer": "Found 2 files about delay",
+            "sources": [
+                {
+                    "type": "search_result",
+                    "doc_id": "sr_001",
+                    "file_name": "delay_report.pdf",
+                    "date": "2024-03-15",
+                    "sender": "contractor@co.com",
+                    "subject": "Delay Report March",
+                    "doc_type": "document",
+                },
+                {
+                    "type": "search_result",
+                    "doc_id": "sr_002",
+                    "file_name": "eot_request.pdf",
+                    "date": "2024-04-01",
+                    "sender": "pm@co.com",
+                    "subject": "Extension of Time Request",
+                    "doc_type": "document",
+                },
+            ],
+        }
+        resp = build_chat_response(raw)
+        assert len(resp.related_docs) == 2
+        assert len(resp.citations) == 0
+        assert resp.related_docs[0].doc_name == "delay_report.pdf"
+        assert resp.related_docs[0].reason == "Delay Report March"
+        assert resp.related_docs[1].doc_name == "eot_request.pdf"
+
     def test_snippet_truncated_to_300_chars(self):
         long_text = "x" * 500
         raw = {
@@ -229,6 +262,31 @@ class TestDualLLMMode:
         resp = build_chat_response(raw, is_dual=True)
         assert resp.assistant_text == ""
         assert resp.citations == []
+
+    def test_dual_mode_preserves_routing_confidence(self):
+        raw = {
+            "query_type": "document",
+            "answers": {
+                "gemini": {
+                    "answer": "Gemini says...",
+                    "sources": [{"file_name": "doc.pdf", "page_number": 1}],
+                },
+            },
+            "routing": {"confidence": 0.42},
+        }
+        resp = build_chat_response(raw, is_dual=True)
+        assert resp.routing_confidence == 0.42
+
+    def test_dual_mode_accepts_single_result_fallback_shape(self):
+        raw = {
+            "query_type": "document",
+            "answer": "Temporary failure fallback",
+            "sources": [],
+            "routing": {"confidence": 0.0},
+        }
+        resp = build_chat_response(raw, is_dual=True)
+        assert resp.assistant_text == "Temporary failure fallback"
+        assert resp.routing_confidence == 0.0
 
 
 # ── Response Contract Shape ────────────────────────────────

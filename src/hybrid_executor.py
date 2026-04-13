@@ -119,12 +119,15 @@ class HybridExecutor:
 
         return '\n'.join(lines)
 
-    def execute(self, query: str) -> Dict[str, Any]:
+    def execute(self, query: str, doc_ids: Optional[List[str]] = None,
+                allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Execute a query using the planner for complex queries, or directly for simple ones.
 
         Args:
             query: User query
+            doc_ids: Optional list of document IDs to scope document searches
+            allowed_tables: Optional list of allowed table names to scope SQL queries
 
         Returns:
             Dict with answer, sources, plan details, and optional SQL/data
@@ -146,7 +149,7 @@ class HybridExecutor:
         logger.info(f"[HybridExecutor] Plan: {len(plan.steps)} steps, simple={plan.is_simple}")
 
         # Execute
-        result = self.executor.execute(plan)
+        result = self.executor.execute(plan, doc_ids=doc_ids, allowed_tables=allowed_tables)
 
         # Enrich result
         result['query'] = query
@@ -293,7 +296,8 @@ class HybridExecutor:
             plan_rationale="Heuristic SQL chain",
         )
 
-    def execute_multi_table(self, query: str, provider: str = "gemini") -> Dict[str, Any]:
+    def execute_multi_table(self, query: str, provider: str = "gemini",
+                            allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
         """Execute a query that requires data from multiple tables.
         Identifies relevant tables, queries each separately, then combines results via LLM.
         """
@@ -304,12 +308,12 @@ class HybridExecutor:
         logger.info(f"[HybridExecutor] Multi-table: {query[:100]}...")
 
         expanded = self.jargon.expand_query(query)
-        relevant_tables = self.data_analyzer.select_tables(expanded, max_tables=3)
+        relevant_tables = self.data_analyzer.select_tables(expanded, max_tables=3, allowed_tables=allowed_tables)
 
         if not relevant_tables:
             return {"answer": "No relevant tables found.", "sources": [], "sql": None, "result_data": None}
         if len(relevant_tables) == 1:
-            return self.data_analyzer.query(expanded)
+            return self.data_analyzer.query(expanded, allowed_tables=allowed_tables)
 
         logger.info(f"[HybridExecutor] Querying {len(relevant_tables)} tables: {relevant_tables}")
 
@@ -318,7 +322,7 @@ class HybridExecutor:
         all_sources = []
         for tname in relevant_tables:
             try:
-                result = self.data_analyzer.query(expanded, table_name=tname)
+                result = self.data_analyzer.query(expanded, table_name=tname, allowed_tables=allowed_tables)
                 table_results[tname] = result
                 all_sources.extend(result.get("sources", []))
             except Exception as e:
@@ -361,7 +365,8 @@ class HybridExecutor:
             "multi_table": True,
         }
 
-    def execute_dual(self, query: str) -> Dict[str, Any]:
+    def execute_dual(self, query: str, doc_ids: Optional[List[str]] = None,
+                     allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Execute a complex query with both OpenAI and Claude in parallel.
         Plans once, then executes the plan with each provider independently.
@@ -383,7 +388,7 @@ class HybridExecutor:
         results = {}
 
         def _execute_for_provider(provider: str):
-            result = self.executor.execute_with_provider(plan, provider)
+            result = self.executor.execute_with_provider(plan, provider, doc_ids=doc_ids, allowed_tables=allowed_tables)
             result['query'] = query
             result['query_type'] = self._determine_query_type(plan)
             return provider, result

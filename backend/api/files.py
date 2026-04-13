@@ -176,6 +176,39 @@ async def export_files_excel():
                 col_letter = ws.cell(row=1, column=col_idx).column_letter
                 ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
 
+        # Add Summary sheet with document type breakdown
+        summary_rows = []
+        for sheet_name, files in groups.items():
+            summary_rows.append({"Category": sheet_name, "Count": len(files)})
+        # Add doc_type breakdown from notice metadata
+        try:
+            from src.document_registry import get_document_registry
+            from src.notice_extractor import get_notice_extractor
+            registry = get_document_registry()
+            extractor = get_notice_extractor()
+            doc_type_counts: dict[str, int] = {}
+            for rec in registry.get_completed():
+                if rec.notice_extracted:
+                    notice = extractor.load_notice(rec.doc_id)
+                    dt = (notice.doc_type if notice and notice.doc_type else "unclassified").title()
+                else:
+                    dt = rec.file_type.title() if rec.file_type else "Other"
+                doc_type_counts[dt] = doc_type_counts.get(dt, 0) + 1
+            summary_rows.append({"Category": "", "Count": ""})
+            summary_rows.append({"Category": "Document Types", "Count": ""})
+            for dt, count in sorted(doc_type_counts.items(), key=lambda x: x[1], reverse=True):
+                summary_rows.append({"Category": f"  {dt}", "Count": count})
+        except Exception:
+            pass
+
+        summary_df = pd.DataFrame(summary_rows) if summary_rows else pd.DataFrame(columns=["Category", "Count"])
+        summary_df.to_excel(writer, index=False, sheet_name="Summary", startrow=2)
+        ws_summary = writer.sheets["Summary"]
+        ws_summary.cell(row=1, column=1, value="Project Document Summary").font = Font(bold=True, size=13)
+        ws_summary.cell(row=2, column=1, value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}").font = Font(italic=True, size=10, color="666666")
+        ws_summary.column_dimensions["A"].width = 30
+        ws_summary.column_dimensions["B"].width = 12
+
     buf.seek(0)
 
     filename = "AI_Construction_Project_Intelligence_Documents.xlsx"

@@ -57,6 +57,44 @@ async def list_library():
     return [_build_library_doc(r) for r in registry.get_completed()]
 
 
+@router.get("/library/summary")
+async def library_summary():
+    """Document classification summary — count by doc_type and file_type."""
+    from src.document_registry import get_document_registry
+    from collections import Counter
+
+    registry = get_document_registry()
+    completed = registry.get_completed()
+
+    # Count by file_type (document/email/data)
+    by_file_type = Counter(r.file_type for r in completed)
+
+    # Count by doc_type from notice metadata (letter/notice/email/report/dpr etc.)
+    by_doc_type: dict[str, int] = {}
+    for r in completed:
+        if r.notice_extracted:
+            notice = _load_notice_metadata(r.doc_id)
+            if notice and notice.doc_type:
+                dt = notice.doc_type.lower().strip()
+                by_doc_type[dt] = by_doc_type.get(dt, 0) + 1
+            else:
+                by_doc_type["unclassified"] = by_doc_type.get("unclassified", 0) + 1
+        elif r.file_type == "data":
+            by_doc_type["data_file"] = by_doc_type.get("data_file", 0) + 1
+        else:
+            by_doc_type["unclassified"] = by_doc_type.get("unclassified", 0) + 1
+
+    # Count tables
+    total_tables = sum(len(r.table_names) for r in completed)
+
+    return {
+        "total_files": len(completed),
+        "by_file_type": dict(by_file_type),
+        "by_doc_type": dict(sorted(by_doc_type.items(), key=lambda x: x[1], reverse=True)),
+        "total_tables": total_tables,
+    }
+
+
 @router.get("/library/{doc_id}", response_model=LibraryDocument)
 async def get_library_document(doc_id: str):
     """Get a single document's metadata from the library."""

@@ -3,6 +3,7 @@ import { useChat } from '../hooks/useChat';
 import { useConversations } from '../hooks/useConversations';
 import { useUIStore } from '../stores/uiStore';
 import { useChatStore, type AppMode } from '../stores/chatStore';
+import { getConversation } from '../api/conversationApi';
 import ConversationSidebar from '../components/sidebar/ConversationSidebar';
 import ChatStream from '../components/chat/ChatStream';
 import ChatInput from '../components/chat/ChatInput';
@@ -15,6 +16,34 @@ export default function ChatPage() {
   const { rightPanelOpen, openDocument } = useUIStore();
   const { activeConversationId, setConversation, activeMode, setMode } = useChatStore();
   const pendingMessageRef = useRef<string | null>(null);
+  const restoredRef = useRef(false);
+
+  // Restore persisted conversation on page load
+  useEffect(() => {
+    if (restoredRef.current) return;
+    if (activeConversationId && messages.length === 0 && !isLoading) {
+      restoredRef.current = true;
+      getConversation(activeConversationId)
+        .then((conv) => {
+          if (conv?.messages?.length) {
+            const restored = conv.messages.map((m: { role: string; content: string; timestamp: string; response?: unknown }, i: number) => ({
+              id: `r_${i}_${Date.now()}`,
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+              timestamp: new Date(m.timestamp).getTime(),
+              response: m.response ?? undefined,
+            }));
+            setConversation(activeConversationId, restored, conv.document_ids ?? []);
+          }
+        })
+        .catch(() => {
+          // Conversation may have been deleted — reset
+          setConversation('');
+        });
+    } else {
+      restoredRef.current = true;
+    }
+  }, [activeConversationId, messages.length, isLoading, setConversation]);
 
   useEffect(() => {
     if (!activeConversationId && conversations.length > 0) {

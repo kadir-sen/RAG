@@ -60,6 +60,7 @@ class ChatResponse(BaseModel):
     related_docs: List[RelatedDoc] = Field(default_factory=list)
     sql_artifact: Optional[SQLArtifact] = None
     provider_answers: List[ProviderAnswer] = Field(default_factory=list)
+    routing_confidence: Optional[float] = None  # 0.0-1.0, shown to user when low
 
 
 class ConversationMeta(BaseModel):

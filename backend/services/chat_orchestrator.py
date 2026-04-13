@@ -14,6 +14,46 @@ from backend.models.responses import ChatResponse
 
 class ChatOrchestrator:
 
+    @staticmethod
+    def _serialize_response_sources(response: ChatResponse, query_type: str) -> list | None:
+        """Persist enough source metadata to rebuild the UI response on reload.
+
+        IMPORTANT: The stored format must match what _extract_citations_and_related()
+        expects on reload: file_name (not doc_name), page_number (not anchor),
+        text_snippet (not snippet), subject (not reason).
+        """
+        import re
+        sources: list[dict] = []
+
+        if response.citations:
+            for c in response.citations:
+                item = c.model_dump()
+                # Map Citation model fields → raw source fields for round-trip
+                item["file_name"] = item.pop("doc_name", "")
+                anchor = item.pop("anchor", "")
+                match = re.search(r"page_(\d+)", anchor)
+                item["page_number"] = int(match.group(1)) if match else 1
+                item["text_snippet"] = item.pop("snippet", "")
+                sources.append(item)
+
+        if response.related_docs:
+            if query_type == "thread":
+                related_type = "thread_message"
+            elif query_type == "file_list":
+                related_type = "search_result"
+            else:
+                related_type = "notice"
+
+            for doc in response.related_docs:
+                item = doc.model_dump()
+                item["type"] = related_type
+                # Map RelatedDoc model fields → raw source fields for round-trip
+                item["file_name"] = item.pop("doc_name", "")
+                item["subject"] = item.pop("reason", "")
+                sources.append(item)
+
+        return sources or None
+
     async def process(
         self,
         query: str,
@@ -51,14 +91,51 @@ class ChatOrchestrator:
             doc_ids = store.get_document_ids(conversation_id) or None
 
         is_dual = len(LLM_PROVIDERS) >= 2
-        if is_dual:
-            raw_result = await asyncio.to_thread(
-                router.route_and_execute_dual, augmented, doc_ids
+        try:
+            if is_dual:
+                raw_result = await asyncio.to_thread(
+                    router.route_and_execute_dual, augmented, doc_ids
+                )
+            else:
+                raw_result = await asyncio.to_thread(
+                    router.route_and_execute, augmented, doc_ids
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger("app").error(f"[Orchestrator] Router execution failed: {e}")
+            fallback_answer = (
+                "I'm having trouble processing your query right now. "
+                "Please try rephrasing your question or try again in a moment."
             )
-        else:
-            raw_result = await asyncio.to_thread(
-                router.route_and_execute, augmented, doc_ids
-            )
+            if is_dual:
+                raw_result = {
+                    "query_type": "document",
+                    "answers": {
+                        provider: {
+                            "answer": fallback_answer,
+                            "sources": [],
+                        }
+                        for provider in LLM_PROVIDERS
+                    },
+                    "routing": {
+                        "decision": "document",
+                        "confidence": 0.0,
+                        "reasons": ["router execution failed"],
+                        "used_llm": False,
+                    },
+                }
+            else:
+                raw_result = {
+                    "query_type": "document",
+                    "answer": fallback_answer,
+                    "sources": [],
+                    "routing": {
+                        "decision": "document",
+                        "confidence": 0.0,
+                        "reasons": ["router execution failed"],
+                        "used_llm": False,
+                    },
+                }
 
         # 5. Map to response contract
         response = build_chat_response(raw_result, is_dual=is_dual)
@@ -68,8 +145,11 @@ class ChatOrchestrator:
             role="assistant",
             content=response.assistant_text,
             timestamp=datetime.now().isoformat(),
-            query_type=response.ui_intent,
-            sources=[c.model_dump() for c in response.citations] if response.citations else None,
+            query_type=raw_result.get("query_type", "document"),
+            sources=self._serialize_response_sources(
+                response,
+                raw_result.get("query_type", "document"),
+            ),
             sql=response.sql_artifact.generated_sql if response.sql_artifact else None,
             result_data=response.sql_artifact.preview_rows if response.sql_artifact else None,
         )

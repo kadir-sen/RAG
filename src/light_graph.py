@@ -225,8 +225,9 @@ class LightGraph:
                     continue
 
                 # Format as readable answer
-                if "count" in result.columns:
-                    count = int(result.iloc[0]["count"])
+                count_cols = [c for c in result.columns if "count" in c.lower()]
+                if count_cols:
+                    count = int(result.iloc[0][count_cols[0]])
                     return {
                         "answer": f"Found {count} document(s) matching your query.",
                         "sources": [],
@@ -845,15 +846,19 @@ class LightGraph:
         action_lower = action.lower()
 
         for doc_id in self.graph.nodes:
+            node = self.graph.nodes.get(doc_id)
+            if not node:
+                continue
             # Load full notice to check actions
             notice_path = NOTICES_DIR / f"{doc_id}.json"
             if notice_path.exists():
                 try:
                     with open(notice_path, 'r', encoding='utf-8') as f:
                         notice = json.load(f)
-                    if action_lower in [a.lower() for a in notice.get('actions', [])]:
+                    notice_actions = notice.get('actions') or []
+                    if action_lower in [a.lower() for a in notice_actions]:
                         results.append({
-                            'node': self.graph.nodes[doc_id],
+                            'node': node,
                             'notice': notice,
                         })
                 except Exception:
@@ -997,12 +1002,12 @@ class LightGraph:
                 'date': date or 'Unknown',
                 'sender': sender or 'Unknown',
                 'recipient': recipient or 'Unknown',
-                'subject': node.get('subject', ''),
-                'direction': node.get('direction', 'unknown'),
-                'doc_type': node.get('doc_type', ''),
-                'file_name': node.get('file_name', ''),
-                'cc_list': node.get('cc_list', []),
-                'actions': node.get('actions', []),
+                'subject': node.get('subject') or '',
+                'direction': node.get('direction') or 'unknown',
+                'doc_type': node.get('doc_type') or '',
+                'file_name': node.get('file_name') or '',
+                'cc_list': node.get('cc_list') or [],
+                'actions': node.get('actions') or [],
             })
 
         results.sort(key=lambda x: x.get('date') or '9999-99-99')
@@ -1403,26 +1408,52 @@ class LightGraph:
         return "\n".join(lines)
 
     def search_by_topic(self, topic: str, limit: int = 20) -> List[Dict]:
-        """Search documents by topic, subject, sender, recipient, or filename."""
+        """Search documents by topic, subject, sender, recipient, or filename.
+        Tokenizes query into words and scores results by number of matching tokens.
+        """
         if not self._notices_table_ready:
             return []
         try:
-            pattern = f"%{topic.lower()}%"
-            rows = self._db.execute(
-                """
-                SELECT doc_id, file_name, date, sender, recipient, subject, doc_type, topics
+            # Tokenize: split into meaningful words (3+ chars)
+            words = [w.lower() for w in topic.split() if len(w) >= 3]
+            if not words:
+                words = [topic.lower()]
+
+            fields = ["LOWER(subject)", "LOWER(topics)", "LOWER(sender)",
+                       "LOWER(recipient)", "LOWER(file_name)"]
+
+            # Build per-word match score expression and WHERE clause
+            score_parts = []
+            where_parts = []
+            params = []
+            for word in words:
+                pattern = f"%{word}%"
+                # Score: 1 point if this word matches any field
+                word_score = " OR ".join(f"{f} LIKE ?" for f in fields)
+                score_parts.append(f"CASE WHEN ({word_score}) THEN 1 ELSE 0 END")
+                params.extend([pattern] * len(fields))
+                # WHERE: at least one word must match
+                where_parts.append(f"({word_score})")
+
+            score_expr = " + ".join(score_parts) if score_parts else "0"
+            where_clause = " OR ".join(where_parts)
+
+            # Duplicate params for WHERE clause
+            where_params = []
+            for word in words:
+                where_params.extend([f"%{word}%"] * len(fields))
+
+            sql = f"""
+                SELECT doc_id, file_name, date, sender, recipient, subject, doc_type, topics,
+                       ({score_expr}) AS match_score
                 FROM notices
-                WHERE LOWER(subject) LIKE ?
-                   OR LOWER(topics) LIKE ?
-                   OR LOWER(sender) LIKE ?
-                   OR LOWER(recipient) LIKE ?
-                   OR LOWER(file_name) LIKE ?
-                ORDER BY date DESC
+                WHERE {where_clause}
+                ORDER BY match_score DESC, date DESC
                 LIMIT ?
-                """,
-                [pattern, pattern, pattern, pattern, pattern, limit],
-            ).fetchall()
-            cols = ["doc_id", "file_name", "date", "sender", "recipient", "subject", "doc_type", "topics"]
+            """
+            rows = self._db.execute(sql, params + where_params + [limit]).fetchall()
+            cols = ["doc_id", "file_name", "date", "sender", "recipient",
+                    "subject", "doc_type", "topics", "match_score"]
             return [dict(zip(cols, row)) for row in rows]
         except Exception as e:
             logger.warning(f"[LightGraph] search_by_topic error: {e}")

@@ -101,16 +101,23 @@ class _AnthropicWrapper:
         self.max_tokens = max_tokens
 
     def complete(self, prompt: str):
-        resp = self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = resp.content[0].text
-        return _AnthropicCompletionResponse(text)
+        import anthropic
+        try:
+            resp = self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = resp.content[0].text
+            return _AnthropicCompletionResponse(text)
+        except anthropic.BadRequestError:
+            raise  # content policy — do not retry
+        except anthropic.AuthenticationError:
+            raise  # auth error — do not retry
 
     def chat(self, messages):
+        import anthropic
         api_messages = []
         system_text = ""
         for m in messages:
@@ -129,9 +136,14 @@ class _AnthropicWrapper:
         )
         if system_text:
             kwargs["system"] = system_text
-        resp = self.client.messages.create(**kwargs)
-        text = resp.content[0].text
-        return _AnthropicChatResponse(text)
+        try:
+            resp = self.client.messages.create(**kwargs)
+            text = resp.content[0].text
+            return _AnthropicChatResponse(text)
+        except anthropic.BadRequestError:
+            raise  # content policy — do not retry
+        except anthropic.AuthenticationError:
+            raise  # auth error — do not retry
 
 
 # ── LLM Factory ─────────────────────────────────────────────
@@ -311,8 +323,34 @@ def generate_text(
 
         except Exception as e:
             last_error = e
+            # Check for non-retryable errors (content policy, auth)
+            _non_retryable = False
+            try:
+                import anthropic
+                if isinstance(e, (anthropic.BadRequestError, anthropic.AuthenticationError)):
+                    _non_retryable = True
+            except ImportError:
+                pass
+            try:
+                import openai as _openai
+                if isinstance(e, _openai.AuthenticationError):
+                    _non_retryable = True
+            except ImportError:
+                pass
+
+            if _non_retryable:
+                logger.error(f"[LLMClient] {provider} non-retryable error: {e}")
+                break
+
             if attempt < LLM_MAX_RETRIES:
-                wait = 2 ** attempt
+                # Longer backoff for rate limit errors
+                _is_rate_limit = False
+                try:
+                    import anthropic
+                    _is_rate_limit = isinstance(e, anthropic.RateLimitError)
+                except ImportError:
+                    pass
+                wait = (2 ** attempt * 5) if _is_rate_limit else (2 ** attempt)
                 logger.warning(f"[LLMClient] {provider} retry {attempt+1} after {wait}s: {e}")
                 time.sleep(wait)
             else:

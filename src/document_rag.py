@@ -811,10 +811,23 @@ class DocumentRAG:
                 except Exception as e:
                     prov = futures[future]
                     logger.error(f"   [{prov}] Query failed: {e}")
-                    results[prov] = {
-                        "answer": f"Error from {prov}: {e}",
-                        "sources": [],
-                    }
+                    # Attempt fallback to gemini for failed providers
+                    if prov != "gemini" and "gemini" in LLM_PROVIDERS:
+                        try:
+                            _, fallback_result = _query_provider("gemini")
+                            fallback_result["_fallback_from"] = prov
+                            results[prov] = fallback_result
+                            logger.info(f"   [{prov}] Fallback to gemini succeeded")
+                        except Exception:
+                            results[prov] = {
+                                "answer": "This model is temporarily unavailable. Please try again.",
+                                "sources": [],
+                            }
+                    else:
+                        results[prov] = {
+                            "answer": "This model is temporarily unavailable. Please try again.",
+                            "sources": [],
+                        }
 
         return results
 

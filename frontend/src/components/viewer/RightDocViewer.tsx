@@ -66,7 +66,11 @@ export default function RightDocViewer() {
         } : undefined}
       />
 
-      {isLoadingContent ? (
+      {!doc.docId || !doc.docId.trim() ? (
+        <div className="p-4 text-sm text-[var(--text-muted)]">
+          This document cannot be previewed — no document ID available.
+        </div>
+      ) : isLoadingContent ? (
         <div className="p-4 space-y-3">
           <Skeleton className="h-6 w-3/4" />
           <Skeleton className="h-64 w-full" />

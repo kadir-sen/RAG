@@ -352,7 +352,8 @@ class PlanExecutor:
             self._light_graph = get_light_graph()
         return self._light_graph
 
-    def execute(self, plan: QueryPlan) -> Dict[str, Any]:
+    def execute(self, plan: QueryPlan, doc_ids: Optional[List[str]] = None,
+                allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Execute all steps in a plan. Fail-fast on step error.
 
@@ -386,9 +387,9 @@ class PlanExecutor:
 
             try:
                 if step.step_type == StepType.SQL.value:
-                    result = self._execute_sql_step(instruction, step_results)
+                    result = self._execute_sql_step(instruction, step_results, allowed_tables=allowed_tables)
                 elif step.step_type == StepType.DOCUMENT.value:
-                    result = self._execute_document_step(instruction)
+                    result = self._execute_document_step(instruction, doc_ids=doc_ids)
                 elif step.step_type == StepType.TIMELINE.value:
                     result = self._execute_timeline_step(instruction)
                 elif step.step_type == StepType.COMBINE.value:
@@ -485,7 +486,9 @@ class PlanExecutor:
             ],
         }
 
-    def execute_with_provider(self, plan: QueryPlan, provider: str) -> Dict[str, Any]:
+    def execute_with_provider(self, plan: QueryPlan, provider: str,
+                              doc_ids: Optional[List[str]] = None,
+                              allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
         """Execute plan with a specific LLM provider."""
         logger.info(f"[Executor] Executing plan with provider={provider}: {len(plan.steps)} steps")
 
@@ -508,9 +511,9 @@ class PlanExecutor:
 
             try:
                 if step.step_type == StepType.SQL.value:
-                    result = self._execute_sql_step(instruction, step_results, provider=provider)
+                    result = self._execute_sql_step(instruction, step_results, provider=provider, allowed_tables=allowed_tables)
                 elif step.step_type == StepType.DOCUMENT.value:
-                    result = self._execute_document_step(instruction, provider=provider)
+                    result = self._execute_document_step(instruction, provider=provider, doc_ids=doc_ids)
                 elif step.step_type == StepType.TIMELINE.value:
                     result = self._execute_timeline_step(instruction)
                 elif step.step_type == StepType.COMBINE.value:
@@ -549,7 +552,8 @@ class PlanExecutor:
         }
 
     def _execute_sql_step(self, instruction: str, prev_results: Dict,
-                          provider: str = "gemini") -> Dict[str, Any]:
+                          provider: str = "gemini",
+                          allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
         """Execute a SQL analysis step, passing context from prior steps."""
         context = ""
         for step_id, res in prev_results.items():
@@ -557,12 +561,12 @@ class PlanExecutor:
                 context += f"Step {step_id} result: {res['answer'][:300]}\n"
 
         if context:
-            result = self.data_analyzer.query_with_context(instruction, context, provider=provider)
+            result = self.data_analyzer.query_with_context(instruction, context, provider=provider, allowed_tables=allowed_tables)
         else:
             if provider != "gemini":
-                result = self.data_analyzer.query_with_provider(instruction, provider)
+                result = self.data_analyzer.query_with_provider(instruction, provider, allowed_tables=allowed_tables)
             else:
-                result = self.data_analyzer.query(instruction)
+                result = self.data_analyzer.query(instruction, allowed_tables=allowed_tables)
 
         return {
             "answer": result.get("answer", ""),
@@ -573,12 +577,13 @@ class PlanExecutor:
             "result_columns": result.get("result_columns"),
         }
 
-    def _execute_document_step(self, instruction: str, provider: str = "gemini") -> Dict[str, Any]:
+    def _execute_document_step(self, instruction: str, provider: str = "gemini",
+                               doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         """Execute a document search step."""
         if provider != "gemini":
-            result = self.document_rag.query_with_provider(instruction, provider)
+            result = self.document_rag.query_with_provider(instruction, provider, doc_ids=doc_ids)
         else:
-            result = self.document_rag.query(instruction)
+            result = self.document_rag.query(instruction, doc_ids=doc_ids)
         return {
             "answer": result.get("answer", ""),
             "summary": result.get("answer", "")[:300],
