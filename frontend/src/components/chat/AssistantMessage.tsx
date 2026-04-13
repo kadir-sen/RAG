@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, type ReactNode } from 'react';
+import { memo, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import type { ChatResponse } from '../../types/api';
