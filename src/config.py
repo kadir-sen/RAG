@@ -17,7 +17,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Model settings
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")  # claude-sonnet-4-20250514 or claude-3-5-sonnet-20241022
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSION = 768  # MRL-reduced from 3072 default
 
@@ -158,6 +158,47 @@ Path(AB_LOG_DIR).mkdir(parents=True, exist_ok=True)
 # ── Telemetry ───────────────────────────────────────────────
 TELEMETRY_LOG_DIR = str(BASE_DIR / "logs" / "telemetry")
 Path(TELEMETRY_LOG_DIR).mkdir(parents=True, exist_ok=True)
+
+
+def normalize_stored_paths():
+    """Auto-fix Windows paths in JSON registry files at startup.
+    Ensures the app works in Docker/Linux regardless of where files were originally indexed."""
+    import re as _re
+    import logging
+    _log = logging.getLogger("app")
+    app_root = str(BASE_DIR)  # e.g. /app
+    # Known Windows prefixes that should map to app_root
+    _WIN_PREFIXES = [
+        r"C:\\projects\\ML_project\\",
+        r"C:/projects/ML_project/",
+        r"C:\\\\projects\\\\ML_project\\\\",
+    ]
+    count = 0
+    for search_dir in [STORAGE_DIR, DATA_DIR]:
+        if not search_dir.exists():
+            continue
+        for json_file in search_dir.rglob("*.json"):
+            try:
+                raw = json_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            original = raw
+            for prefix in _WIN_PREFIXES:
+                raw = raw.replace(prefix, app_root + "/")
+            # Fix remaining backslashes in paths
+            raw = raw.replace("\\\\", "/")
+            raw = raw.replace("\\", "/")
+            # Collapse double slashes (but not in http://)
+            raw = _re.sub(r'(?<!:)//', '/', raw)
+            if raw != original:
+                json_file.write_text(raw, encoding="utf-8")
+                count += 1
+    if count:
+        _log.info(f"[PathNorm] Fixed Windows paths in {count} JSON files")
+
+
+# Run path normalization at import time (startup)
+normalize_stored_paths()
 
 
 def validate_config() -> tuple[bool, list[str]]:

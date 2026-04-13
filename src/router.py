@@ -32,6 +32,14 @@ DATA_KEYWORDS = {
     "daily", "monthly", "weekly", "distinct", "unique",
     "how much", "what types", "what kind", "what are the",
     "trades", "craft", "crane", "excavator",
+    # Construction trades / workforce (common in manpower tables)
+    "steel fixer", "steel fixers", "carpenter", "carpenters", "mason", "masons",
+    "electrician", "electricians", "plumber", "plumbers", "welder", "welders",
+    "painter", "painters", "labourer", "labourers", "laborer", "laborers",
+    "foreman", "foremen", "engineer", "engineers", "supervisor", "supervisors",
+    "scaffolder", "scaffolders", "rigger", "riggers", "fitter", "fitters",
+    "technician", "technicians", "operator", "operators", "driver", "drivers",
+    "on site", "deployed", "total number",
 }
 
 DOCUMENT_KEYWORDS = {
@@ -47,9 +55,10 @@ TIMELINE_KEYWORDS = {
     "timeline", "chronology", "sequence", "history", "chain", "trace",
     "what happened", "when did", "order of events", "between dates",
     "who replied", "who responded", "who sent", "who received",
-    "notices", "all notices", "list notices", "show notices",
+    "notices", "all notices", "list notices", "show notices", "notice",
     "correspondence", "letters sent", "letters received",
     "delay notices", "extension notices", "claim notices",
+    "delay notice", "extension notice", "claim notice",
     "before", "after", "during", "period",
     "communication flow", "parties involved", "document trail",
     # Clustering keywords
@@ -175,9 +184,16 @@ class QueryRouter:
         "2. 'How is Block A progressing?' = DATA (check IPC/production tables), NOT DOCUMENT.\n"
         "3. 'What equipment is being used?' = DATA (check equipment table), NOT DOCUMENT.\n"
         "4. 'What trades are on site?' = DATA (check manpower table), NOT DOCUMENT.\n"
-        "5. Only use DOCUMENT when the answer is literally TEXT from a contract/report.\n"
-        "6. Only use HYBRID when the user explicitly needs both document text AND table numbers.\n"
-        "7. When in doubt: DATA > DOCUMENT > HYBRID.\n\n"
+        "5. 'How many steel fixers on site?' = DATA (check manpower table), NOT DOCUMENT.\n"
+        "6. ANY question asking 'total number of [trade/workers]' = DATA, NOT DOCUMENT.\n"
+        "7. Only use DOCUMENT when the answer is literally TEXT from a contract/report.\n"
+        "8. Only use HYBRID when the user explicitly needs both document text AND table numbers.\n"
+        "9. When in doubt: DATA > DOCUMENT > HYBRID.\n"
+        "10. NEVER classify as FILE_LIST if the query asks about CONTENT (delay notices, claims, "
+        "correspondence, payment issues, scope changes). FILE_LIST is ONLY for 'what files exist' "
+        "or 'how many files uploaded' — NOT for searching within documents.\n"
+        "11. Words like 'memory', 'system', 'database', 'records' mean the user wants to SEARCH "
+        "stored documents — route to DOCUMENT or TIMELINE, NOT FILE_LIST.\n\n"
         "User query: {user_query}\n\n"
         "Respond with exactly ONE word: FILE_LIST, DATA, DOCUMENT, TIMELINE, or HYBRID."
     )

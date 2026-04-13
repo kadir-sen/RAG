@@ -97,37 +97,90 @@ async def get_stats():
 
 @router.get("/files/export")
 async def export_files_excel():
-    """Export file list as Excel (.xlsx) download."""
+    """Export file list as multi-sheet Excel (.xlsx) grouped by file type."""
     import io
     from datetime import datetime
     try:
         import pandas as pd
+        from openpyxl.styles import Font, Alignment
     except ImportError:
         from fastapi import HTTPException
-        raise HTTPException(500, "pandas not available")
+        raise HTTPException(500, "pandas/openpyxl not available")
 
     raw = _file_service.list_files()
-    rows = []
-    for f in raw:
-        rows.append({
-            "File Name": f.get("name", ""),
-            "Type": f.get("file_type", ""),
-            "Pages": f.get("pages") or "",
-            "OCR Pages": f.get("ocr_pages", 0),
-            "Tables": f.get("tables", 0),
-            "Rows": f.get("rows", 0),
-        })
 
-    df = pd.DataFrame(rows) if rows else pd.DataFrame(
-        columns=["File Name", "Type", "Pages", "OCR Pages", "Tables", "Rows"]
-    )
+    # Group files by type
+    groups = {
+        "Documents": [f for f in raw if f.get("file_type") == "document"],
+        "Emails": [f for f in raw if f.get("file_type") == "email"],
+        "Data Files": [f for f in raw if f.get("file_type") == "data"],
+    }
+
+    def _fmt_date(iso_str):
+        if not iso_str:
+            return ""
+        try:
+            return datetime.fromisoformat(iso_str).strftime("%Y-%m-%d")
+        except Exception:
+            return iso_str[:10] if len(iso_str) >= 10 else iso_str
+
+    # Column definitions per sheet type
+    COLS = {
+        "Documents": ["File Name", "Upload Date", "Document Date", "Pages", "Tables", "Rows"],
+        "Emails": ["File Name", "Upload Date", "Document Date", "Sender", "Receiver", "Pages", "Tables", "Rows"],
+        "Data Files": ["File Name", "Upload Date", "Document Date", "Sheets", "Tables", "Rows"],
+    }
+
     buf = io.BytesIO()
-    df.to_excel(buf, index=False, sheet_name="Uploaded Files")
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for sheet_name, files in groups.items():
+            rows = []
+            for f in files:
+                row = {
+                    "File Name": f.get("name", ""),
+                    "Upload Date": _fmt_date(f.get("created_at", "")),
+                    "Document Date": f.get("document_date", ""),
+                }
+                if sheet_name == "Emails":
+                    row["Sender"] = f.get("sender", "")
+                    row["Receiver"] = f.get("recipient", "")
+                    row["Pages"] = f.get("pages") or ""
+                elif sheet_name == "Data Files":
+                    row["Sheets"] = f.get("tables", 0)
+                else:
+                    row["Pages"] = f.get("pages") or ""
+                row["Tables"] = f.get("tables", 0)
+                row["Rows"] = f.get("rows", 0)
+                rows.append(row)
+
+            cols = COLS[sheet_name]
+            df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+
+            # Write data starting at row 3 (leave 2 rows for header)
+            header_rows = 2
+            df.to_excel(writer, index=False, sheet_name=sheet_name, startrow=header_rows)
+
+            # Add notice/title header using openpyxl
+            ws = writer.sheets[sheet_name]
+            title_cell = ws.cell(row=1, column=1, value=f"AI Construction Project Intelligence - {sheet_name}")
+            title_cell.font = Font(bold=True, size=13)
+            date_cell = ws.cell(row=2, column=1, value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            date_cell.font = Font(italic=True, size=10, color="666666")
+
+            # Auto-adjust column widths
+            for col_idx, col_name in enumerate(cols, 1):
+                max_len = len(col_name)
+                for row_data in rows:
+                    val = str(row_data.get(col_name, ""))
+                    max_len = max(max_len, len(val))
+                col_letter = ws.cell(row=1, column=col_idx).column_letter
+                ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
+
     buf.seek(0)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = "AI_Construction_Project_Intelligence_Documents.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="uploaded_files_{ts}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

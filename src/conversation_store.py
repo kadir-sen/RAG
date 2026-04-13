@@ -157,6 +157,7 @@ class ConversationStore:
         )
         self._save_conversation(conv)
         self._save_index()
+        self.sync_to_gcs()
         logger.info(f"[ConvStore] Created conversation: {conv_id}")
         return meta
 
@@ -191,6 +192,7 @@ class ConversationStore:
         path = self._conv_path(conv_id)
         if path.exists():
             path.unlink()
+        self.sync_to_gcs()
         logger.info(f"[ConvStore] Deleted conversation: {conv_id}")
 
     # ── Document scoping ─────────────────────────────────
@@ -241,6 +243,9 @@ class ConversationStore:
                 meta.updated_at = conv.updated_at
                 break
         self._save_index()
+
+        # Persist to GCS for Cloud Run durability
+        self.sync_to_gcs()
 
     def get_recent_messages(self, conv_id: str, n: int = 6) -> List[Message]:
         """Get the last N messages from a conversation."""

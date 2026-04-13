@@ -226,6 +226,7 @@ def init_session():
         "expanded_pdf_sources": set(),  # {"msgIdx_srcIdx"} - inline PDF viewer (legacy)
         "expanded_excel_sources": set(),  # {"msgIdx_srcIdx"} - inline Excel viewer (legacy)
         "selected_pdf_source": None,  # {file_path, page_number, highlight_text, file_name, is_ocr}
+        "selected_text_source": None,  # {file_name, file_path, highlight_text, subject, sender, ...}
         "selected_excel_source": None,  # {table_name, source_file, total_rows, result_columns}
         "notice_cache": {},  # {doc_id: NoticeMetadata or None}
         # Platform view mode
@@ -233,6 +234,8 @@ def init_session():
         # Contextual document drawer
         "drawer_documents": [],  # Sources for bottom drawer
         "drawer_title": "",  # Drawer header text
+        "drawer_collapsed": False,  # Toggle drawer visibility
+        "fullpage_document": None,  # Full-page document viewer
         # Active mode: "chat" | "mail" | "doc_analysis"
         "active_mode": "chat",
     }
@@ -721,29 +724,94 @@ def _render_uploaded_files():
                     st.session_state["_pending_delete_name"] = f["name"]
                     st.rerun()
 
-    # Single-click Excel download (always ready)
-    rows = []
+    # Single-click Excel download — multi-sheet, with classification
+    def _classify_file(name: str, ftype: str) -> str:
+        """Classify file into presentation-ready category."""
+        nl = name.lower()
+        if ftype == "email":
+            return "Email / Correspondence"
+        if ftype == "data":
+            if "manpower" in nl or "production" in nl:
+                return "Production Log"
+            if "equipment" in nl:
+                return "Equipment Log"
+            if "ipc" in nl or "progress" in nl:
+                return "IPC / Progress"
+            return "Data File"
+        # document type
+        if "notice" in nl or "notification" in nl or "delay" in nl:
+            return "Notice"
+        if "letter" in nl or "response" in nl:
+            return "Letter"
+        if "report" in nl or "daily" in nl:
+            return "Report"
+        if "rfi" in nl:
+            return "RFI"
+        return "Document"
+
+    all_rows = []
     for f in files_log:
-        rows.append({
-            "File Name": f["name"],
-            "Type": f.get("type", ""),
-            "Upload Time": f.get("time", ""),
-            "Size (KB)": f.get("size_kb", ""),
-            "Tables": f.get("tables", ""),
-            "Rows": f.get("rows", ""),
-            "OCR Pages": f.get("ocr", ""),
-            "Notice": "Yes" if f.get("notice") else "",
-            "Attachments": f.get("attachments", ""),
-            "Summary": f.get("summary", ""),
-        })
-    df_export = pd.DataFrame(rows)
+        fname = f["name"]
+        ftype = f.get("type", "")
+        category = _classify_file(fname, ftype)
+        row = {
+            "File Name": fname,
+            "Category": category,
+            "Type": ftype.title() if ftype else "",
+            "Date": f.get("date", f.get("time", "")),
+        }
+        if ftype == "data":
+            row["Tables"] = f.get("tables", "")
+            row["Rows"] = f.get("rows", "")
+            row["Description"] = f.get("summary", "")
+        elif ftype == "email":
+            row["Sender"] = f.get("sender", "")
+            row["Recipient"] = f.get("recipient", "")
+            row["Subject"] = f.get("subject", "")
+        else:
+            row["Pages"] = f.get("pages", "")
+            row["Notice"] = "Yes" if f.get("notice") else ""
+        all_rows.append(row)
+
     buf = io.BytesIO()
-    df_export.to_excel(buf, index=False, sheet_name="Uploaded Files")
+    try:
+        from openpyxl.styles import Font, PatternFill
+    except ImportError:
+        pass
+
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # Sheet 1: All files with classification
+        df_all = pd.DataFrame(all_rows)
+        df_all.to_excel(writer, index=False, sheet_name="All Files", startrow=1)
+        ws = writer.sheets["All Files"]
+        ws.cell(row=1, column=1, value="Document Intelligence Report").font = Font(bold=True, size=13)
+
+        # Sheet 2: Summary by category
+        category_counts = {}
+        for r in all_rows:
+            cat = r["Category"]
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+        summary_rows = [{"Category": k, "Count": v} for k, v in
+                        sorted(category_counts.items(), key=lambda x: -x[1])]
+        summary_rows.append({"Category": "TOTAL", "Count": len(all_rows)})
+        df_summary = pd.DataFrame(summary_rows)
+        df_summary.to_excel(writer, index=False, sheet_name="Summary", startrow=1)
+        ws2 = writer.sheets["Summary"]
+        ws2.cell(row=1, column=1, value="Document Summary by Category").font = Font(bold=True, size=13)
+
+        # Auto-adjust column widths
+        for ws_name in writer.sheets:
+            ws_obj = writer.sheets[ws_name]
+            for col in ws_obj.columns:
+                max_len = max(len(str(c.value or "")) for c in col)
+                col_letter = col[0].column_letter
+                ws_obj.column_dimensions[col_letter].width = min(max_len + 3, 50)
+
     buf.seek(0)
     st.download_button(
-        label=f"Download File List ({len(files_log)})",
+        label=f"📥 Export File List ({len(files_log)})",
         data=buf,
-        file_name=f"uploaded_files_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        file_name=f"Document_Intelligence_{datetime.now().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_files_excel",
         use_container_width=True,
@@ -1308,14 +1376,80 @@ def render_sidebar():
 
         st.markdown("---")
 
-        # Stats - use local counts (no Pinecone API call on every render)
-        vec_count = st.session_state.docs_count
+        # Document Intelligence Summary — broken down by type
+        files_log = st.session_state.get("uploaded_files_log", [])
+        if not files_log:
+            existing = _gather_uploaded_files()
+            if existing:
+                st.session_state.uploaded_files_log = existing
+                files_log = existing
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Vectors", vec_count)
-        with col2:
-            st.metric("Tables", st.session_state.tables_count)
+        if files_log:
+            # Count by document type categories
+            type_counts = {}
+            for f in files_log:
+                fname = f.get("name", "").lower()
+                ftype = f.get("type", "")
+
+                # Categorize by content type
+                if ftype == "email":
+                    cat = "Emails & Letters"
+                elif ftype == "data":
+                    # Sub-categorize data files
+                    if "manpower" in fname or "production" in fname:
+                        cat = "Production Logs"
+                    elif "equipment" in fname:
+                        cat = "Equipment Logs"
+                    elif "ipc" in fname or "progress" in fname:
+                        cat = "IPC / Progress"
+                    else:
+                        cat = "Data Files"
+                elif ftype == "document":
+                    if "notice" in fname or "notification" in fname or "delay" in fname:
+                        cat = "Notices"
+                    elif "letter" in fname or "response" in fname:
+                        cat = "Letters"
+                    elif "report" in fname or "daily" in fname:
+                        cat = "Reports"
+                    else:
+                        cat = "Documents"
+                else:
+                    cat = "Other"
+                type_counts[cat] = type_counts.get(cat, 0) + 1
+
+            st.markdown(f"### Document Summary ({len(files_log)})")
+
+            # Category icons
+            cat_icons = {
+                "Emails & Letters": "📧", "Production Logs": "👷", "Equipment Logs": "🏗️",
+                "IPC / Progress": "📈", "Data Files": "📊", "Notices": "⚠️",
+                "Letters": "✉️", "Reports": "📋", "Documents": "📄", "Other": "📁",
+            }
+
+            # Render as compact list
+            for cat, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+                icon = cat_icons.get(cat, "📁")
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;padding:2px 0;">'
+                    f'<span style="color:#ccc;font-size:0.85rem;">{icon} {cat}</span>'
+                    f'<span style="color:#10a37f;font-weight:600;font-size:0.85rem;">{count}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # Compact stats row
+            st.markdown("")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Vectors", st.session_state.docs_count)
+            with col2:
+                st.metric("Tables", st.session_state.tables_count)
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Vectors", st.session_state.docs_count)
+            with col2:
+                st.metric("Tables", st.session_state.tables_count)
 
         # Uploaded files list (all users can see)
         _render_uploaded_files()
@@ -1481,8 +1615,8 @@ def _render_pdf_page(file_path: str, page_num: int, highlight: str = "", show_do
 
         if show_download:
             with open(file_path, "rb") as f:
-                st.download_button("Download PDF", f, Path(file_path).name, "application/pdf",
-                                   key=f"dl_pdf_{page_num}")
+                st.download_button("Download PDF", f, _safe_download_name(Path(file_path).name),
+                                   "application/pdf", key=f"dl_pdf_{page_num}")
 
     except Exception as e:
         st.error(f"Error rendering PDF: {e}")
@@ -1609,6 +1743,34 @@ _ISSUE_COLORS = {
 }
 
 
+def _safe_html(text: str) -> str:
+    """Escape text for safe insertion into HTML rendered via unsafe_allow_html.
+    Also strips control characters that can cause JS InvalidCharacterError."""
+    import html as _html
+    # Strip control chars (keep newlines/tabs) and null bytes
+    cleaned = "".join(
+        ch for ch in str(text or "")
+        if ch in ('\n', '\t', '\r') or (ord(ch) >= 32)
+    )
+    return _html.escape(cleaned)
+
+
+def _safe_download_name(file_name: str) -> str:
+    """Sanitize filename for st.download_button to avoid JS btoa() errors.
+    Replaces non-Latin1 chars (code point > 255) which cause InvalidCharacterError."""
+    import unicodedata
+    # Normalize unicode (e.g. İ -> I, ş -> s, ğ -> g)
+    nfkd = unicodedata.normalize('NFKD', file_name)
+    # Keep only ASCII-safe characters, replace others with underscore
+    safe = ""
+    for ch in nfkd:
+        if ord(ch) < 256 and not unicodedata.combining(ch):
+            safe += ch
+        elif not unicodedata.combining(ch):
+            safe += "_"
+    return safe or "download"
+
+
 def _render_download_button(file_path: str, file_name: str, key: str):
     """Render a download button for non-PDF files."""
     _MIME_MAP = {
@@ -1624,11 +1786,12 @@ def _render_download_button(file_path: str, file_name: str, key: str):
     ext = Path(file_path).suffix.lower()
     mime = _MIME_MAP.get(ext, "application/octet-stream")
     label = f"Download {ext.upper().lstrip('.')}"
+    safe_name = _safe_download_name(file_name)
     try:
         with open(file_path, "rb") as f:
-            st.download_button(label, f, file_name, mime, key=key)
+            st.download_button(label, f, safe_name, mime, key=key)
     except Exception:
-        st.caption(f"File not available: {file_name}")
+        st.caption(f"File not available: {_safe_html(file_name)}")
 
 
 def render_sources(sources: list, msg_idx: int):
@@ -1671,6 +1834,7 @@ def render_sources(sources: list, msg_idx: int):
             )
 
         for i, src in enumerate(sources):
+          try:
             src_type = src.get("type", "")
 
             if src_type == "structured_data":
@@ -1698,16 +1862,16 @@ def render_sources(sources: list, msg_idx: int):
                         f'<div style="background:rgba(34,197,94,0.1);border-left:3px solid #10a37f;'
                         f'padding:6px 10px;border-radius:4px;margin-bottom:4px;">'
                         f'<span style="color:#10a37f;font-weight:600;">Excel</span> '
-                        f'<span style="color:#e0e0e0;font-weight:500;">{display_file}</span>'
+                        f'<span style="color:#e0e0e0;font-weight:500;">{_safe_html(display_file)}</span>'
                         f'<br/><span style="color:#888;font-size:0.8rem;">'
-                        f'{table_name} | {rows}/{total} rows</span></div>',
+                        f'{_safe_html(table_name)} | {rows}/{total} rows</span></div>',
                         unsafe_allow_html=True,
                     )
                 else:
-                    st.markdown(f"**{table_name}** - Rows: {rows}/{total}")
+                    st.markdown(f"**{_safe_html(table_name)}** - Rows: {rows}/{total}")
 
                 if narrative:
-                    st.markdown(f"> {narrative}")
+                    st.markdown(f"> {_safe_html(narrative)}")
 
                 # Metadata chips
                 meta_parts = []
@@ -1775,10 +1939,10 @@ def render_sources(sources: list, msg_idx: int):
                         st.code(sql, language="sql")
             elif src_type in ("thread_message", "notice"):
                 # Chronological document source — clickable
-                date = src.get("date", "")
-                sender = src.get("sender", "")
-                recipient = src.get("recipient", "")
-                subject = src.get("subject", "")
+                date = _safe_html(src.get("date", ""))
+                sender = _safe_html(src.get("sender", ""))
+                recipient = _safe_html(src.get("recipient", ""))
+                subject = _safe_html(src.get("subject", ""))
                 highlight = src.get("highlight_text", "")
                 file_name = src.get("file_name", "")
                 file_path = src.get("file_path", "")
@@ -1792,7 +1956,7 @@ def render_sources(sources: list, msg_idx: int):
                     f'<span style="color:#e0e0e0;">{sender} → {recipient}</span>'
                     f'<br/><span style="color:#93c5fd;font-size:0.85rem;">'
                     f'{subject}</span>'
-                    f'<br/><span style="color:#888;font-size:0.75rem;">{file_name}</span></div>',
+                    f'<br/><span style="color:#888;font-size:0.75rem;">{_safe_html(file_name)}</span></div>',
                     unsafe_allow_html=True,
                 )
 
@@ -1801,7 +1965,7 @@ def render_sources(sources: list, msg_idx: int):
                     st.markdown(
                         f'<div style="background:rgba(255,213,79,0.1);border-left:3px solid #ffd54f;'
                         f'padding:6px 10px;margin:4px 0;border-radius:4px;font-size:0.82rem;'
-                        f'color:#bbb;font-style:italic;">{highlight[:300]}</div>',
+                        f'color:#bbb;font-style:italic;">{_safe_html(highlight[:300])}</div>',
                         unsafe_allow_html=True,
                     )
                 elif evidence:
@@ -1810,7 +1974,7 @@ def render_sources(sources: list, msg_idx: int):
                     st.markdown(
                         f'<div style="background:rgba(255,213,79,0.1);border-left:3px solid #ffd54f;'
                         f'padding:6px 10px;margin:4px 0;border-radius:4px;font-size:0.82rem;'
-                        f'color:#bbb;font-style:italic;">{ev_text[:300]}</div>',
+                        f'color:#bbb;font-style:italic;">{_safe_html(ev_text[:300])}</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -1847,10 +2011,10 @@ def render_sources(sources: list, msg_idx: int):
                 file_path = src.get("file_path", "")
                 file_type = src.get("file_type", "")
                 ext = src.get("extension", "")
-                date = src.get("date", "")
-                sender = src.get("sender", "")
-                subject = src.get("subject", "")
-                description = src.get("description", "")
+                date = _safe_html(src.get("date", ""))
+                sender = _safe_html(src.get("sender", ""))
+                subject = _safe_html(src.get("subject", ""))
+                description = _safe_html(src.get("description", ""))
 
                 ext_icons = {
                     ".pdf": "📄", ".xlsx": "📊", ".xls": "📊",
@@ -1876,7 +2040,7 @@ def render_sources(sources: list, msg_idx: int):
                 st.markdown(
                     f'<div style="background:rgba(16,163,127,0.1);border-left:3px solid #10a37f;'
                     f'padding:6px 10px;border-radius:4px;margin-bottom:4px;">'
-                    f'{icon} <span style="color:#e0e0e0;font-weight:600;">{file_name}</span>'
+                    f'{icon} <span style="color:#e0e0e0;font-weight:600;">{_safe_html(file_name)}</span>'
                     f'{"<br/>" + meta_html if meta_html else ""}'
                     f'{desc_html}</div>',
                     unsafe_allow_html=True,
@@ -1931,7 +2095,7 @@ def render_sources(sources: list, msg_idx: int):
 
                 # Header with relevance badge
                 st.markdown(
-                    f'**{file_name}** - p.{page}/{total_pages} '
+                    f'**{_safe_html(file_name)}** - p.{page}/{total_pages} '
                     f'<span style="background:{badge_color};color:white;padding:1px 7px;'
                     f'border-radius:10px;font-size:0.65rem;font-weight:600;">'
                     f'{rel_display}{score_str}</span>{v_badge}',
@@ -1944,7 +2108,7 @@ def render_sources(sources: list, msg_idx: int):
                     chips = " ".join(
                         f'<span style="background:{_ISSUE_COLORS.get(t, "#555")};color:white;'
                         f'padding:1px 6px;border-radius:10px;font-size:0.6rem;">'
-                        f'{t.replace("_", " ")}</span>'
+                        f'{_safe_html(t.replace("_", " "))}</span>'
                         for t in issue_tags
                     )
                     st.markdown(chips, unsafe_allow_html=True)
@@ -1957,34 +2121,41 @@ def render_sources(sources: list, msg_idx: int):
                     st.markdown(
                         f'<div style="background:rgba(255,213,79,0.15);border-left:3px solid #ffd54f;'
                         f'padding:8px 12px;margin:4px 0;border-radius:4px;font-size:0.85rem;'
-                        f'color:#e0e0e0;font-style:italic;">{hl_text}</div>',
+                        f'color:#e0e0e0;font-style:italic;">{_safe_html(hl_text)}</div>',
                         unsafe_allow_html=True,
                     )
 
                 # PDF viewer — open in right citation panel
-                if file_path and os.path.exists(file_path) and file_path.lower().endswith('.pdf'):
-                    # Detect OCR document
-                    is_ocr = False
-                    try:
-                        from src.document_rag import get_document_rag
-                        rag = get_document_rag()
-                        reg = rag.file_registry.get(file_name, {})
-                        is_ocr = (reg.get("ocr_pages", 0) or 0) > 0
-                    except Exception:
-                        pass
+                if file_path and os.path.exists(file_path):
+                    if file_path.lower().endswith('.pdf'):
+                        # Detect OCR document
+                        is_ocr = False
+                        try:
+                            from src.document_rag import get_document_rag
+                            rag = get_document_rag()
+                            reg = rag.file_registry.get(file_name, {})
+                            is_ocr = (reg.get("ocr_pages", 0) or 0) > 0
+                        except Exception:
+                            pass
 
-                    if st.button(f"View Page {page}", key=f"view_{msg_idx}_{i}"):
-                        st.session_state["selected_pdf_source"] = {
-                            "file_path": file_path,
-                            "page_number": page,
-                            "highlight_text": highlight if not is_ocr else "",
-                            "file_name": file_name,
-                            "is_ocr": is_ocr,
-                            "total_pages": src.get("total_pages") or reg.get("page_count", 1),
-                        }
-                        st.rerun()
+                        if st.button(f"View Page {page}", key=f"view_{msg_idx}_{i}"):
+                            st.session_state["selected_pdf_source"] = {
+                                "file_path": file_path,
+                                "page_number": page,
+                                "highlight_text": highlight if not is_ocr else "",
+                                "file_name": file_name,
+                                "is_ocr": is_ocr,
+                                "total_pages": src.get("total_pages") or reg.get("page_count", 1),
+                            }
+                            st.rerun()
+                    else:
+                        # Download button for non-PDF document sources (.msg, .docx, etc.)
+                        _render_download_button(file_path, file_name, f"doc_dl_{msg_idx}_{i}")
 
-            st.markdown("---")
+          except Exception as _src_err:
+            st.caption(f"⚠ Source render error: {_safe_html(str(_src_err)[:100])}")
+
+          st.markdown("---")
 
 
 def render_provider_answer(answer: dict, provider: str, msg_idx: int, tab_idx: int):
@@ -2021,12 +2192,36 @@ def render_provider_answer(answer: dict, provider: str, msg_idx: int, tab_idx: i
         with st.expander("🔍 SQL Query"):
             st.code(sql, language="sql")
 
-    # Result data
+    # Result data — show table prominently (not hidden in expander)
     result_data = answer.get("result_data")
     if result_data:
-        with st.expander("📊 Data Results"):
-            df = pd.DataFrame(result_data)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+        df = pd.DataFrame(result_data)
+        # Format dates
+        for col in df.columns:
+            if "date" in col.lower() or "tarih" in col.lower():
+                try:
+                    df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+        # Format numeric columns
+        for col in df.select_dtypes(include=["float64", "float32"]).columns:
+            df[col] = df[col].round(2)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        # Export button
+        try:
+            import io
+            buf = io.BytesIO()
+            df.to_excel(buf, index=False, sheet_name="Query Result")
+            buf.seek(0)
+            st.download_button(
+                "📥 Export to Excel",
+                buf,
+                file_name="query_result.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"export_{msg_idx}_{tab_idx}",
+            )
+        except Exception:
+            pass
 
     # Error
     error = answer.get("error")
@@ -2195,12 +2390,33 @@ def render_message(msg: dict, idx: int):
             with st.expander("SQL Query"):
                 st.code(sql, language="sql")
 
-        # Result data
+        # Result data — show table prominently
         result_data = msg.get("result_data")
         if result_data:
-            with st.expander("Data Results"):
-                df = pd.DataFrame(result_data)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+            df = pd.DataFrame(result_data)
+            for col in df.columns:
+                if "date" in col.lower() or "tarih" in col.lower():
+                    try:
+                        df[col] = pd.to_datetime(df[col], errors="coerce").dt.strftime("%Y-%m-%d")
+                    except Exception:
+                        pass
+            for col in df.select_dtypes(include=["float64", "float32"]).columns:
+                df[col] = df[col].round(2)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            try:
+                import io
+                buf = io.BytesIO()
+                df.to_excel(buf, index=False, sheet_name="Query Result")
+                buf.seek(0)
+                st.download_button(
+                    "📥 Export to Excel",
+                    buf,
+                    file_name="query_result.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"export_single_{idx}",
+                )
+            except Exception:
+                pass
 
 
 def render_citation_panel():
@@ -2294,6 +2510,63 @@ def render_citation_panel():
         )
         if pdf_src.get("is_ocr"):
             st.info("OCR document — text highlighting not available")
+
+    # Text/email document viewer in citation panel (non-PDF files)
+    text_src = st.session_state.get("selected_text_source")
+    if text_src:
+        st.markdown("---")
+        col_h, col_close = st.columns([0.85, 0.15])
+        with col_h:
+            st.markdown(f"**{_safe_html(text_src.get('file_name', 'Document'))}**")
+        with col_close:
+            if st.button("✕", key="close_text_panel"):
+                st.session_state["selected_text_source"] = None
+                st.rerun()
+
+        # Show metadata
+        date = text_src.get("date", "")
+        sender = text_src.get("sender", "")
+        recipient = text_src.get("recipient", "")
+        subject = text_src.get("subject", "")
+        if date or sender or recipient:
+            meta_lines = []
+            if date:
+                meta_lines.append(f"**Date:** {_safe_html(date)}")
+            if sender:
+                meta_lines.append(f"**From:** {_safe_html(sender)}")
+            if recipient:
+                meta_lines.append(f"**To:** {_safe_html(recipient)}")
+            if subject:
+                meta_lines.append(f"**Subject:** {_safe_html(subject)}")
+            st.markdown("  \n".join(meta_lines))
+
+        # Show highlight/content
+        highlight = text_src.get("highlight_text", "")
+        if highlight:
+            st.markdown(
+                f'<div style="background:rgba(255,213,79,0.1);border-left:3px solid #ffd54f;'
+                f'padding:8px 12px;margin:8px 0;border-radius:4px;font-size:0.85rem;'
+                f'color:#e0e0e0;font-style:italic;">{_safe_html(highlight)}</div>',
+                unsafe_allow_html=True,
+            )
+
+        # Try to show full indexed text from RAG
+        file_name = text_src.get("file_name", "")
+        try:
+            from src.document_rag import get_document_rag
+            rag = get_document_rag()
+            reg = rag.file_registry.get(file_name, {})
+            page_texts = reg.get("page_texts", {})
+            if page_texts:
+                full_text = "\n\n".join(page_texts[p] for p in sorted(page_texts.keys()))
+                st.text_area("Document Content", full_text, height=300, disabled=True)
+        except Exception:
+            pass
+
+        # Download button for files that exist on disk
+        fp = text_src.get("file_path", "")
+        if fp and os.path.exists(fp):
+            _render_download_button(fp, file_name, "text_panel_dl")
 
     # Excel viewer in citation panel
     excel_src = st.session_state.get("selected_excel_source")
@@ -2651,37 +2924,160 @@ def _render_parties(parties: list):
 
 
 def _open_drawer_document(node):
-    """Open a document from the Related Documents drawer."""
+    """Open a document from the Related Documents drawer in full-page view."""
     fname = node.get("file_name", "")
     file_path = node.get("file_path", "")
 
-    if not file_path:
+    # Always try to resolve file_path from registry + known directories
+    if not file_path or not os.path.exists(file_path):
         try:
             from src.document_rag import get_document_rag
             reg = get_document_rag().file_registry.get(fname, {})
             file_path = reg.get("file_path", "")
         except Exception:
             pass
-
-    if file_path and os.path.exists(file_path) and file_path.lower().endswith(".pdf"):
-        is_ocr = False
+    if not file_path or not os.path.exists(file_path):
         try:
-            from src.document_rag import get_document_rag
-            reg = get_document_rag().file_registry.get(fname, {})
-            is_ocr = (reg.get("ocr_pages", 0) or 0) > 0
+            from src.document_registry import get_document_registry
+            registry = get_document_registry()
+            for rec in registry.get_all():
+                if rec.file_name == fname:
+                    file_path = rec.file_path
+                    break
         except Exception:
             pass
+    if not file_path or not os.path.exists(file_path):
+        # Search known directories
+        from src.config import DOCUMENTS_DIR, EMAILS_DIR, TABLES_DIR
+        for d in [DOCUMENTS_DIR, EMAILS_DIR, TABLES_DIR]:
+            candidate = d / fname
+            if candidate.exists():
+                file_path = str(candidate)
+                break
 
-        _total_pages = reg.get("page_count", 1) if reg else 1
-        st.session_state["selected_pdf_source"] = {
-            "file_path": file_path,
-            "page_number": node.get("page_number", 1),
-            "highlight_text": node.get("highlight_text", ""),
-            "file_name": fname,
-            "is_ocr": is_ocr,
-            "total_pages": _total_pages,
-        }
+    # Store document info for full-page viewer
+    st.session_state["fullpage_document"] = {
+        "file_name": fname,
+        "file_path": file_path,
+        "page_number": node.get("page_number", 1),
+        "highlight_text": node.get("highlight_text", ""),
+        "subject": node.get("subject", ""),
+        "sender": node.get("sender", ""),
+        "recipient": node.get("recipient", ""),
+        "date": node.get("date", ""),
+    }
+    st.rerun()
+
+
+def render_fullpage_document():
+    """Render a document in full-page mode (replaces chat view)."""
+    doc = st.session_state.get("fullpage_document")
+    if not doc:
+        return False
+
+    fname = doc.get("file_name", "")
+    file_path = doc.get("file_path", "")
+
+    # Back button
+    if st.button("← Back to Chat", key="back_from_doc"):
+        st.session_state["fullpage_document"] = None
         st.rerun()
+
+    st.markdown(f"### {_safe_html(fname)}")
+
+    # Show metadata
+    meta_parts = []
+    if doc.get("date"):
+        meta_parts.append(f"**Date:** {_safe_html(doc['date'])}")
+    if doc.get("sender"):
+        meta_parts.append(f"**From:** {_safe_html(doc['sender'])}")
+    if doc.get("recipient"):
+        meta_parts.append(f"**To:** {_safe_html(doc['recipient'])}")
+    if doc.get("subject"):
+        meta_parts.append(f"**Subject:** {_safe_html(doc['subject'])}")
+    if meta_parts:
+        st.markdown(" | ".join(meta_parts))
+        st.markdown("---")
+
+    if not file_path or not os.path.exists(file_path):
+        # Show indexed text from RAG
+        highlight = doc.get("highlight_text", "")
+        if highlight:
+            st.markdown(highlight)
+        else:
+            st.info("File not available on disk. Only metadata is shown.")
+
+        # Try to show text from RAG index
+        try:
+            from src.document_rag import get_document_rag
+            rag = get_document_rag()
+            reg = rag.file_registry.get(fname, {})
+            page_texts = reg.get("page_texts", {})
+            if page_texts:
+                for p in sorted(page_texts.keys()):
+                    st.markdown(f"**Page {p}**")
+                    st.text(page_texts[p])
+        except Exception:
+            pass
+        return True
+
+    # PDF — render all pages full width
+    if file_path.lower().endswith(".pdf"):
+        try:
+            import fitz
+            pdf_doc = fitz.open(file_path)
+            total_pages = len(pdf_doc)
+            st.caption(f"{total_pages} pages")
+
+            # Page navigation
+            page = doc.get("page_number", 1)
+            col1, col2, col3 = st.columns([0.3, 0.4, 0.3])
+            with col1:
+                if page > 1 and st.button("← Previous", key="fp_prev"):
+                    doc["page_number"] = page - 1
+                    st.rerun()
+            with col2:
+                new_page = st.number_input("Page", min_value=1, max_value=total_pages,
+                                           value=page, key="fp_page_input")
+                if new_page != page:
+                    doc["page_number"] = new_page
+                    st.rerun()
+            with col3:
+                if page < total_pages and st.button("Next →", key="fp_next"):
+                    doc["page_number"] = page + 1
+                    st.rerun()
+
+            # Render current page at high resolution
+            p = pdf_doc[page - 1]
+            mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for clarity
+            pix = p.get_pixmap(matrix=mat)
+            img_bytes = pix.tobytes("png")
+            pdf_doc.close()
+
+            st.image(img_bytes, use_container_width=True)
+
+            # Download
+            with open(file_path, "rb") as f:
+                st.download_button("📥 Download PDF", f,
+                                   _safe_download_name(fname),
+                                   "application/pdf", key="fp_dl_pdf")
+        except Exception as e:
+            st.error(f"Error rendering PDF: {e}")
+    else:
+        # Non-PDF: show download
+        _render_download_button(file_path, fname, "fp_dl_file")
+
+        # Try to show text content
+        highlight = doc.get("highlight_text", "")
+        if highlight:
+            st.markdown(
+                f'<div style="background:rgba(255,213,79,0.1);border-left:3px solid #ffd54f;'
+                f'padding:8px 12px;margin:8px 0;border-radius:4px;font-size:0.9rem;'
+                f'color:#e0e0e0;">{_safe_html(highlight)}</div>',
+                unsafe_allow_html=True,
+            )
+
+    return True
 
 
 def render_document_drawer():
@@ -2703,14 +3099,20 @@ def render_document_drawer():
 
     st.markdown("---")
 
-    # Header bar with close button
-    h1, h2 = st.columns([0.88, 0.12])
+    collapsed = st.session_state.get("drawer_collapsed", False)
+
+    # Header bar with toggle button
+    h1, h2 = st.columns([0.85, 0.15])
     with h1:
         st.markdown(f"**{title}** ({len(doc_nodes)} documents)")
     with h2:
-        if st.button("Close", key="drawer_close"):
-            st.session_state["drawer_documents"] = []
+        btn_label = "Show" if collapsed else "Hide"
+        if st.button(btn_label, key="drawer_toggle"):
+            st.session_state["drawer_collapsed"] = not collapsed
             st.rerun()
+
+    if collapsed:
+        return
 
     # Sort documents based on query context
     sort_mode = st.session_state.get("drawer_sort", "relevance")
@@ -3308,8 +3710,16 @@ def main():
 
     render_sidebar()
 
+    # Full-page document viewer (takes over entire main area)
+    if st.session_state.get("fullpage_document"):
+        if render_fullpage_document():
+            # Document drawer still visible below
+            render_document_drawer()
+            return
+
     # Chat view (always)
     has_viewer = (st.session_state.get("selected_pdf_source") is not None
+                  or st.session_state.get("selected_text_source") is not None
                   or st.session_state.get("selected_excel_source") is not None)
 
     if st.session_state.messages:

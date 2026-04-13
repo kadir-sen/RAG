@@ -63,12 +63,17 @@ def canonical_dataset_key(source_file: str) -> str:
 def validate_sql(sql: str) -> Tuple[bool, str]:
     """
     Validate SQL query for safety.
-    Only SELECT queries are allowed.
+    Only SELECT queries (including WITH/CTE) are allowed.
     Returns (is_valid, error_message).
     """
     sql_upper = sql.upper().strip()
 
-    if not sql_upper.startswith('SELECT'):
+    # Allow SELECT and WITH...SELECT (CTEs)
+    if not (sql_upper.startswith('SELECT') or sql_upper.startswith('WITH')):
+        return False, "Only SELECT queries are allowed"
+
+    # WITH must contain a SELECT
+    if sql_upper.startswith('WITH') and 'SELECT' not in sql_upper:
         return False, "Only SELECT queries are allowed"
 
     for pattern in DANGEROUS_PATTERNS:
@@ -79,6 +84,24 @@ def validate_sql(sql: str) -> Tuple[bool, str]:
         return False, "Multiple SQL statements not allowed"
 
     return True, ""
+
+
+def _fix_unterminated_quotes(sql: str) -> str:
+    """Fix unterminated double-quoted identifiers in SQL.
+    Counts double quotes and adds a closing one if odd."""
+    if sql.count('"') % 2 != 0:
+        # Find the last double quote and close it
+        last_quote = sql.rfind('"')
+        # Check if the text after last quote looks like it needs closing
+        after = sql[last_quote + 1:]
+        # Add closing quote before the next SQL keyword or end
+        for i, ch in enumerate(after):
+            if ch in (' ', ',', ')', '\n', ';'):
+                sql = sql[:last_quote + 1 + i] + '"' + sql[last_quote + 1 + i:]
+                break
+        else:
+            sql = sql + '"'
+    return sql
 
 
 def _simple_stem(word: str) -> str:
@@ -1466,6 +1489,9 @@ class DataAnalyzerSQL:
         # Remove markdown code fences if LLM wrapped SQL in them
         sql = re.sub(r'^```(?:sql)?\s*', '', sql, flags=re.MULTILINE)
         sql = re.sub(r'\s*```\s*$', '', sql, flags=re.MULTILINE)
+
+        # Fix unterminated double-quoted identifiers (column names)
+        sql = _fix_unterminated_quotes(sql)
 
         return sql.strip()
 

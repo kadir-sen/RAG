@@ -703,6 +703,11 @@ class DocumentRAG:
         llm, model_name = create_llm(provider)
         logger.info(f"   Using {provider}/{model_name} for synthesis...")
 
+        # For Claude: LlamaIndex query_engine doesn't support custom wrappers,
+        # so we retrieve chunks via default engine and synthesize with Claude directly.
+        if provider == "claude":
+            return self._query_with_direct_synthesis(question, llm, top_k, doc_ids)
+
         kwargs = {"similarity_top_k": top_k, "llm": llm}
         if doc_ids:
             from llama_index.core.vector_stores.types import (
@@ -717,6 +722,74 @@ class DocumentRAG:
 
         logger.info(f"   [{provider}] Found {len(sources)} sources")
         return {"answer": str(response), "sources": sources}
+
+    def _query_with_direct_synthesis(self, question: str, llm, top_k: int = 5,
+                                     doc_ids: Optional[List[str]] = None) -> dict:
+        """Retrieve chunks via Pinecone, then synthesize answer with a non-LlamaIndex LLM."""
+        from llama_index.core import VectorStoreIndex
+
+        # Step 1: Retrieve relevant chunks
+        retriever_kwargs = {"similarity_top_k": top_k}
+        if doc_ids:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, MetadataFilter, FilterOperator,
+            )
+            retriever_kwargs["filters"] = MetadataFilters(filters=[
+                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
+            ])
+        retriever = self.index.as_retriever(**retriever_kwargs)
+        nodes = retriever.retrieve(question)
+
+        # Step 2: Build context from retrieved chunks
+        context_parts = []
+        for i, node in enumerate(nodes, 1):
+            meta = node.metadata
+            fname = meta.get("file_name", "Unknown")
+            page = meta.get("page_number", "?")
+            context_parts.append(f"[Source {i}: {fname}, p.{page}]\n{node.text}")
+        context = "\n\n---\n\n".join(context_parts)
+
+        # Step 3: Synthesize with LLM
+        prompt = (
+            "Based on the following document excerpts, answer the user's question.\n"
+            "Only use information from the provided sources. Cite sources when possible.\n"
+            "If the information is not available, say so.\n\n"
+            f"SOURCES:\n{context}\n\n"
+            f"QUESTION: {question}\n\n"
+            "ANSWER:"
+        )
+        response = llm.complete(prompt)
+        answer = response.text
+
+        # Step 4: Extract sources metadata
+        sources = []
+        seen = set()
+        for node in nodes:
+            meta = node.metadata
+            file_name = meta.get("file_name", "Unknown")
+            page_num = int(meta.get("page_number", 1))
+            key = f"{file_name}_{page_num}"
+            if key in seen:
+                continue
+            seen.add(key)
+            text = node.text.strip()
+            sentences = text.replace('\n', ' ').split('. ')
+            highlight = '. '.join(sentences[:3])
+            if len(sentences) > 3:
+                highlight += '...'
+            sources.append({
+                "doc_id": meta.get("doc_id", ""),
+                "file_name": file_name,
+                "file_path": meta.get("file_path", ""),
+                "page_number": page_num,
+                "total_pages": int(meta.get("total_pages", 1)),
+                "score": round(node.score, 3) if node.score else None,
+                "text_snippet": text[:500],
+                "highlight_text": highlight[:300],
+            })
+
+        logger.info(f"   [direct] Found {len(sources)} sources, answer len={len(answer)}")
+        return {"answer": answer, "sources": sources}
 
     def query_dual(self, question: str, top_k: int = 5,
                    doc_ids: Optional[List[str]] = None) -> dict:

@@ -1,4 +1,4 @@
-import { useRef, type ReactNode, type KeyboardEvent } from 'react';
+import { useRef, type ReactNode } from 'react';
 import type { AppMode } from '../../stores/chatStore';
 
 interface Props {
@@ -39,7 +39,7 @@ export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
     if (inputRef.current) inputRef.current.value = '';
   };
 
-  const handleKeyDown = (e: KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       handleSend();

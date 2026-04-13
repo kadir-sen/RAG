@@ -97,11 +97,18 @@ class FileService:
                     "id": rec.doc_id,
                     "name": rec.file_name,
                     "file_type": rec.file_type or "document",
+                    "extension": getattr(rec, 'extension', "") or "",
+                    "created_at": getattr(rec, 'created_at', "") or "",
+                    "notice_extracted": getattr(rec, 'notice_extracted', False),
                     "pages": None,
                     "ocr_pages": 0,
                     "tables": len(rec.table_names) if hasattr(rec, 'table_names') and rec.table_names else 0,
                     "rows": 0,
                     "status": rec.status,
+                    "document_date": "",
+                    "sender": "",
+                    "recipient": "",
+                    "subject": "",
                 })
         except Exception:
             pass
@@ -133,6 +140,27 @@ class FileService:
                     f["file_type"] = "data" if entry.source_type in ("excel", "csv") else f["file_type"]
                     f["tables"] = len(entry.tables)
                     f["rows"] = sum(t.row_count for t in entry.tables)
+                    if entry.notice_summary:
+                        ns = entry.notice_summary
+                        f["document_date"] = ns.get("date", "") or ""
+                        f["sender"] = ns.get("sender", "") or ""
+                        f["recipient"] = ns.get("recipient", "") or ""
+                        f["subject"] = ns.get("subject", "") or ""
+        except Exception:
+            pass
+
+        # ── ENRICHMENT ONLY: Notice metadata for files not enriched by catalog ──
+        try:
+            from src.notice_extractor import get_notice_extractor
+            extractor = get_notice_extractor()
+            for f in files:
+                if f.get("notice_extracted") and not f.get("document_date"):
+                    notice = extractor.load_notice(f["id"])
+                    if notice:
+                        f["document_date"] = getattr(notice, 'date', "") or ""
+                        f["sender"] = getattr(notice, 'sender', "") or ""
+                        f["recipient"] = getattr(notice, 'recipient', "") or ""
+                        f["subject"] = getattr(notice, 'subject', "") or ""
         except Exception:
             pass
 
