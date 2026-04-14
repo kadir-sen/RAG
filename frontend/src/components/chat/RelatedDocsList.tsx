@@ -43,7 +43,7 @@ export default function RelatedDocsList({ docs, onDocClick }: Props) {
                 <td className="px-3 py-2 text-xs text-[var(--text-secondary)] whitespace-nowrap">
                   {d.date || '\u2014'}
                 </td>
-                <td className="px-3 py-2 text-xs text-[var(--text-primary)] truncate max-w-[200px]">
+                <td className="px-3 py-2 text-xs text-[var(--text-primary)] truncate max-w-[200px]" title={d.doc_name}>
                   {d.doc_name}
                   {d.sender && (
                     <span className="block text-[10px] text-[var(--text-muted)]">

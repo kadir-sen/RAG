@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getLibrary } from '../../api/libraryApi';
 import type { LibraryDocument } from '../../types/api';
@@ -13,6 +13,8 @@ interface Props {
 
 export default function LibraryPickerModal({ open, onClose, existingDocIds, onAdd }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   const { data: library = [], isLoading } = useQuery({
     queryKey: ['library'],
@@ -24,6 +26,46 @@ export default function LibraryPickerModal({ open, onClose, existingDocIds, onAd
   useEffect(() => {
     if (open) setSelected(new Set());
   }, [open]);
+
+  // Focus trap and Escape key handling
+  useEffect(() => {
+    if (!open) return;
+
+    previousFocusRef.current = document.activeElement as HTMLElement;
+
+    const timer = setTimeout(() => {
+      dialogRef.current?.querySelector<HTMLElement>('button, input')?.focus();
+    }, 50);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key === 'Tab' && dialogRef.current) {
+        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocusRef.current?.focus();
+    };
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -51,11 +93,15 @@ export default function LibraryPickerModal({ open, onClose, existingDocIds, onAd
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div
-        className="bg-[var(--bg-secondary)] rounded-lg border border-[var(--border)] w-full max-w-lg max-h-[70vh] flex flex-col"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="library-picker-title"
+        className="bg-[var(--bg-secondary)] rounded-lg border border-[var(--border)] w-full max-w-lg max-h-[85dvh] sm:max-h-[70vh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
-          <h3 className="text-[var(--text-primary)] font-medium">Add Documents</h3>
+          <h3 id="library-picker-title" className="text-[var(--text-primary)] font-medium">Add Documents</h3>
           <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
             &times;
           </button>

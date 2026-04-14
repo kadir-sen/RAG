@@ -7,9 +7,10 @@ import AssistantMessage from './AssistantMessage';
 interface Props {
   message: Message;
   onDocClick: (doc: ViewerDoc) => void;
+  onRetry?: (text: string) => void;
 }
 
-function MessageItem({ message, onDocClick }: Props) {
+function MessageItem({ message, onDocClick, onRetry }: Props) {
   if (message.role === 'user') {
     return <UserMessage text={message.content} />;
   }
@@ -18,6 +19,8 @@ function MessageItem({ message, onDocClick }: Props) {
       text={message.content}
       response={message.response}
       onDocClick={onDocClick}
+      failedText={message.failedText}
+      onRetry={onRetry}
     />
   );
 }

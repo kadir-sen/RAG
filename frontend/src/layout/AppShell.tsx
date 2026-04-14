@@ -3,7 +3,7 @@ import TopNav from './TopNav';
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="h-full w-full flex flex-col overflow-hidden bg-[var(--bg-primary)]">
+    <div className="h-full w-full flex flex-col overflow-clip bg-[var(--bg-primary)]">
       <a href="#main-content" className="skip-link">
         Skip to main content
       </a>

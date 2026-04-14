@@ -11,7 +11,7 @@ import WelcomeScreen from '../components/chat/WelcomeScreen';
 import RightDocViewer from '../components/viewer/RightDocViewer';
 
 export default function ChatPage() {
-  const { messages, isLoading, sendMessage } = useChat();
+  const { messages, isLoading, isPending, sendMessage } = useChat();
   const { conversations, createConversation } = useConversations();
   const { rightPanelOpen, openDocument } = useUIStore();
   const { activeConversationId, setConversation, activeMode, setMode } = useChatStore();
@@ -60,10 +60,23 @@ export default function ChatPage() {
   }, [activeConversationId, sendMessage]);
 
   const handleSend = useCallback(
-    (text: string) => {
+    async (text: string) => {
       if (!activeConversationId) {
         pendingMessageRef.current = text;
-        createConversation('New Chat');
+        try {
+          await createConversation('New Chat');
+        } catch {
+          const lostText = pendingMessageRef.current;
+          pendingMessageRef.current = null;
+          if (lostText) {
+            useChatStore.getState().addMessage({
+              id: `e_${Date.now()}`,
+              role: 'assistant',
+              content: 'Could not create a conversation. Please try again.',
+              timestamp: Date.now(),
+            });
+          }
+        }
         return;
       }
       sendMessage(text);
@@ -82,7 +95,7 @@ export default function ChatPage() {
       : '';
 
   return (
-    <div className="flex h-full w-full overflow-hidden">
+    <div className="flex h-full w-full overflow-clip">
       {/* Sidebar */}
       <ConversationSidebar onSend={handleSend} />
 
@@ -114,8 +127,9 @@ export default function ChatPage() {
               messages={messages}
               isLoading={isLoading}
               onDocClick={openDocument}
+              onRetry={sendMessage}
             />
-            <ChatInput onSend={handleSend} disabled={isLoading} />
+            <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
           </div>
         )}
       </div>

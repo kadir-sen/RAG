@@ -6,6 +6,7 @@ export interface Message {
   content: string;
   timestamp: number;
   response?: ChatResponse;
+  failedText?: string;
 }
 
 export interface Conversation {

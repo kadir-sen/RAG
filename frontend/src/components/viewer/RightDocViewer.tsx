@@ -54,7 +54,8 @@ export default function RightDocViewer() {
           const cols = content.columns?.length ? content.columns : Object.keys(rows[0]);
           const csv = [cols.join(','), ...rows.map((r: Record<string, unknown>) => cols.map(c => {
             const v = String(r[c] ?? '');
-            return v.includes(',') ? `"${v}"` : v;
+            const escaped = v.replace(/"/g, '""');
+            return v.includes(',') || v.includes('"') || v.includes('\n') ? `"${escaped}"` : v;
           }).join(','))].join('\n');
           const blob = new Blob([csv], { type: 'text/csv' });
           const url = URL.createObjectURL(blob);

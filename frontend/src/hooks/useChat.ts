@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { sendMessage } from '../api/chatApi';
 import { useChatStore } from '../stores/chatStore';
@@ -19,9 +20,15 @@ function friendlyError(error: Error): string {
 export function useChat() {
   const { messages, isLoading, addMessage, setLoading } = useChatStore();
   const queryClient = useQueryClient();
+  const inFlightRef = useRef(false);
+  const lastFailedTextRef = useRef<string | null>(null);
 
   const send = useMutation({
     mutationFn: async (text: string) => {
+      if (inFlightRef.current) throw new Error('DUPLICATE');
+      inFlightRef.current = true;
+      lastFailedTextRef.current = text;
+
       const userMsg: Message = {
         id: `u_${genId()}`,
         role: 'user',
@@ -46,6 +53,8 @@ export function useChat() {
       return response;
     },
     onSuccess: (response) => {
+      inFlightRef.current = false;
+      lastFailedTextRef.current = null;
       const assistantMsg: Message = {
         id: `a_${genId()}`,
         role: 'assistant',
@@ -58,16 +67,19 @@ export function useChat() {
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
     onError: (error: Error) => {
+      inFlightRef.current = false;
+      if (error.message === 'DUPLICATE') return;
       const errorMsg: Message = {
         id: `e_${genId()}`,
         role: 'assistant',
         content: friendlyError(error),
         timestamp: Date.now(),
+        failedText: lastFailedTextRef.current ?? undefined,
       };
       addMessage(errorMsg);
       setLoading(false);
     },
   });
 
-  return { messages, isLoading, sendMessage: send.mutate };
+  return { messages, isLoading, isPending: send.isPending, sendMessage: send.mutate };
 }

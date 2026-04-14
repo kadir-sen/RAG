@@ -43,7 +43,7 @@ export function useConversations() {
   return {
     conversations: query.data ?? [],
     isLoading: query.isLoading,
-    createConversation: create.mutate,
+    createConversation: create.mutateAsync,
     deleteConversation: remove.mutate,
     renameConversation: rename.mutate,
   };

@@ -23,7 +23,7 @@ interface UIState {
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  sidebarOpen: true,
+  sidebarOpen: typeof window !== 'undefined' ? window.innerWidth >= 768 : true,
   leftDrawerOpen: true,
   rightPanelOpen: false,
   rightPanelDoc: null,

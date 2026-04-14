@@ -38,7 +38,10 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [switchingId, setSwitchingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const toggleSidebar = useUIStore((s) => s.toggleSidebar);
 
   const libraryQuery = useQuery({ queryKey: ['library'], queryFn: getLibrary, staleTime: 60_000, enabled: activeMode === 'correspondence' });
 
@@ -46,21 +49,30 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
 
   const handleNewChat = () => createConversation('New Chat');
   const handleSelect = async (id: string) => {
-    if (editingId) return;
+    if (editingId || switchingId) return;
+    setSwitchingId(id);
     try {
       const conv = await getConversation(id);
       const msgs: Message[] = (conv.messages || []).map((m: { role: string; content: string; timestamp: string; response?: unknown }, i: number) => ({
         id: `h_${i}`, role: m.role as 'user' | 'assistant', content: m.content, timestamp: new Date(m.timestamp).getTime(), response: m.response,
       }));
       setConversation(id, msgs, conv.document_ids || []);
-    } catch { setConversation(id); }
+      if (typeof window !== 'undefined' && window.innerWidth < 768) toggleSidebar();
+    } catch { setConversation(id); } finally { setSwitchingId(null); }
   };
   const startRename = (c: ConversationMeta) => { setEditingId(c.conversation_id); setEditTitle(c.title); };
   const commitRename = () => { if (editingId && editTitle.trim()) renameConversation({ id: editingId, title: editTitle.trim() }); setEditingId(null); };
-  const handleDelete = (id: string) => {
-    deleteConversation(id);
-    if (activeConversationId === id && conversations.length > 1) { const other = conversations.find((c) => c.conversation_id !== id); if (other) setConversation(other.conversation_id); }
+  const handleDelete = (id: string) => setPendingDeleteId(id);
+  const confirmDelete = () => {
+    if (!pendingDeleteId) return;
+    deleteConversation(pendingDeleteId);
+    if (activeConversationId === pendingDeleteId && conversations.length > 1) {
+      const other = conversations.find((c) => c.conversation_id !== pendingDeleteId);
+      if (other) setConversation(other.conversation_id);
+    }
+    setPendingDeleteId(null);
   };
+  const cancelDelete = () => setPendingDeleteId(null);
   const handleFileUpload = () => fileInputRef.current?.click();
   const onFilesSelected = () => { const selected = Array.from(fileInputRef.current?.files ?? []); if (selected.length) uploadMultiple(selected); if (fileInputRef.current) fileInputRef.current.value = ''; };
 
@@ -84,10 +96,14 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   };
 
   return (
+    <>
+    {sidebarOpen && (
+      <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={toggleSidebar} />
+    )}
     <aside
       aria-label="Sidebar"
       aria-hidden={!sidebarOpen}
-      className={`h-full bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${sidebarOpen ? 'w-64' : 'w-0 border-r-0'}`}
+      className={`h-full md:h-full h-dvh bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out md:relative fixed md:z-auto z-40 top-0 left-0 ${sidebarOpen ? 'w-64' : 'w-0 border-r-0'}`}
     >
       {/* Header + New Chat */}
       <div className="p-4 shrink-0">
@@ -113,16 +129,27 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                 className={`flex items-center px-2.5 py-2 rounded-lg text-sm cursor-pointer transition-colors mb-0.5 ${isActive ? 'bg-[var(--bg-hover)] text-white' : 'text-[var(--text-secondary)] hover:text-white hover:bg-[rgba(255,255,255,0.04)]'}`}
                 onClick={() => handleSelect(c.conversation_id)}
                 onMouseEnter={() => setHoveredId(c.conversation_id)}
-                onMouseLeave={() => setHoveredId(null)}>
+                onMouseLeave={() => { setHoveredId(null); if (pendingDeleteId === c.conversation_id) cancelDelete(); }}>
                 {isEditing ? (
                   <input className="flex-1 bg-transparent text-xs text-white outline-none border-b border-[var(--accent)]"
                     value={editTitle} onChange={(e) => setEditTitle(e.target.value)} onBlur={commitRename}
                     onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingId(null); }}
                     autoFocus onClick={(e) => e.stopPropagation()} />
+                ) : pendingDeleteId === c.conversation_id ? (
+                  <div className="flex items-center gap-1 flex-1">
+                    <span className="text-xs text-[var(--danger)]">Delete?</span>
+                    <button onClick={(e) => { e.stopPropagation(); confirmDelete(); }} className="text-[10px] px-1.5 py-0.5 bg-[var(--danger)] text-white rounded">Yes</button>
+                    <button onClick={(e) => { e.stopPropagation(); cancelDelete(); }} className="text-[10px] px-1.5 py-0.5 text-[var(--text-muted)] hover:text-white">No</button>
+                  </div>
                 ) : (
-                  <span className="truncate flex-1">{c.title}</span>
+                  <>
+                    <span className="truncate flex-1">{c.title}</span>
+                    {switchingId === c.conversation_id && (
+                      <span className="ml-auto w-3 h-3 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
+                    )}
+                  </>
                 )}
-                {!isEditing && isHovered && (
+                {!isEditing && pendingDeleteId !== c.conversation_id && isHovered && !switchingId && (
                   <div className="flex items-center gap-0.5 ml-1">
                     <button onClick={(e) => { e.stopPropagation(); startRename(c); }} className="p-0.5 text-[var(--text-muted)] hover:text-white" title="Rename">
                       <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M7 2l3 3-6 6H1V8z" /></svg>
@@ -238,5 +265,6 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
         <input ref={fileInputRef} type="file" accept={ACCEPTED} multiple onChange={onFilesSelected} className="hidden" aria-label="Upload documents" />
       </div>
     </aside>
+    </>
   );
 }

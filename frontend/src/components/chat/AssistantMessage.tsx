@@ -45,9 +45,11 @@ interface Props {
   response?: ChatResponse;
   text: string;
   onDocClick: (doc: ViewerDoc) => void;
+  failedText?: string;
+  onRetry?: (text: string) => void;
 }
 
-function AssistantMessage({ response, text, onDocClick }: Props) {
+function AssistantMessage({ response, text, onDocClick, failedText, onRetry }: Props) {
   const intent = response?.ui_intent ?? 'answer';
   const hasProviders = response?.provider_answers && response.provider_answers.length > 1;
   const [copied, setCopied] = useState(false);
@@ -135,6 +137,15 @@ function AssistantMessage({ response, text, onDocClick }: Props) {
                 />
               )}
             </>
+          )}
+
+          {failedText && onRetry && (
+            <button
+              onClick={() => onRetry(failedText)}
+              className="mt-2 px-3 py-1.5 text-xs bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors"
+            >
+              Retry
+            </button>
           )}
         </div>
       </div>

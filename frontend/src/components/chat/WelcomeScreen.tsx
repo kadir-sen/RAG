@@ -56,11 +56,12 @@ const EXAMPLE_QUERIES: { icon: string; text: string; category: string }[] = [
 export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [summary, setSummary] = useState<LibrarySummary | null>(null);
+  const [summaryError, setSummaryError] = useState(false);
 
   useEffect(() => {
     apiClient.get<LibrarySummary>('/library/summary')
       .then(({ data }) => setSummary(data))
-      .catch(() => {});
+      .catch(() => setSummaryError(true));
   }, []);
 
   const handleSend = () => {
@@ -192,6 +193,10 @@ export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
             ))}
           </div>
         </div>
+      )}
+
+      {summaryError && !summary && (
+        <p className="text-xs text-[var(--text-muted)] mt-4">Could not load library summary.</p>
       )}
 
       {/* Footer disclaimer */}

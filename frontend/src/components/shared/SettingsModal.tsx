@@ -65,7 +65,7 @@ export default function SettingsModal() {
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
-        className="bg-[var(--bg-secondary)] rounded-xl border border-[var(--border)] w-full max-w-lg mx-4 max-h-[80vh] flex flex-col animate-fade-in"
+        className="bg-[var(--bg-secondary)] rounded-xl border border-[var(--border)] w-full max-w-lg mx-4 max-h-[90dvh] sm:max-h-[80vh] flex flex-col animate-fade-in"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
