@@ -75,6 +75,14 @@ class FileService:
 
         doc_id = generate_doc_id(str(dest))
         registry.register(file.filename, str(dest), file_size_kb, file_type, ext)
+
+        # Sync uploaded file to GCS for persistence across Cloud Run restarts
+        try:
+            from src.gcs_storage import sync_uploaded_file_to_gcs
+            sync_uploaded_file_to_gcs(str(dest))
+        except Exception:
+            pass
+
         return str(dest), doc_id, False
 
     def list_files(self) -> List[dict]:

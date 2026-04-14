@@ -106,14 +106,46 @@ class DocumentService:
 
     def _serve_text_content(self, file_path: str) -> DocContent:
         try:
-            text = Path(file_path).read_text(encoding="utf-8", errors="replace")[:5000]
+            fp = Path(file_path)
+            # Handle .msg (Outlook) files — binary format, need extract_msg
+            if fp.suffix.lower() == ".msg":
+                return self._serve_msg_content(file_path)
+            text = fp.read_text(encoding="utf-8", errors="replace")[:5000]
             return DocContent(
                 type="text",
-                file_name=Path(file_path).name,
+                file_name=fp.name,
                 text=text,
             )
         except Exception as e:
             return DocContent(type="text", error=str(e))
+
+    def _serve_msg_content(self, file_path: str) -> DocContent:
+        """Parse .msg (Outlook email) files and return readable text."""
+        try:
+            import extract_msg
+            msg = extract_msg.Message(file_path)
+            parts = []
+            if msg.subject:
+                parts.append(f"Subject: {msg.subject}")
+            if msg.sender:
+                parts.append(f"From: {msg.sender}")
+            if msg.to:
+                parts.append(f"To: {msg.to}")
+            if msg.date:
+                parts.append(f"Date: {msg.date}")
+            parts.append("")
+            parts.append(msg.body or "(No body)")
+            attachments = [att.longFilename or att.shortFilename for att in (msg.attachments or []) if att.longFilename or att.shortFilename]
+            if attachments:
+                parts.append(f"\nAttachments: {', '.join(attachments)}")
+            msg.close()
+            return DocContent(
+                type="text",
+                file_name=Path(file_path).name,
+                text="\n".join(parts)[:5000],
+            )
+        except Exception as e:
+            return DocContent(type="text", error=f"Cannot parse email: {e}")
 
     def _serve_table_preview(self, table_name: str, analyzer) -> DocContent:
         try:
