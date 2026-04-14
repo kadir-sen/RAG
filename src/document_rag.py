@@ -62,10 +62,32 @@ class DocumentRAG:
         self.file_registry: Dict[str, Dict[str, Any]] = {}  # Track indexed files
         logger.info("✅ Document RAG initialized successfully")
 
+    DOCUMENT_SYSTEM_PROMPT = (
+        "You are a construction project document analyst for a project management intelligence system. "
+        "Answer questions based ONLY on the provided document excerpts.\n\n"
+        "RULES:\n"
+        "1. Always cite the specific document name and page number when referencing information.\n"
+        "2. If the information is NOT in the provided excerpts, say so explicitly — do NOT guess or fabricate.\n"
+        "3. Use construction industry terminology accurately (BOQ, IPC, EOT, VO, RFI, etc.).\n"
+        "4. For numerical questions (quantities, counts, measurements), extract exact values from the text.\n"
+        "5. For yes/no questions, provide the answer first, then supporting evidence.\n"
+        "6. For contract clause questions, quote the exact clause text when available.\n"
+        "7. When multiple documents discuss the same topic, synthesize across all sources.\n"
+        "8. Always answer in English with professional tone suitable for a project manager.\n"
+        "9. Highlight any contradictions or discrepancies between different document sources.\n"
+        "10. If a question relates to data/numbers that would be in Excel tables (manpower counts, "
+        "equipment hours, progress percentages), note that the answer may be more accurately found "
+        "in the project data tables rather than document text."
+    )
+
     def _setup_llm(self):
         """Configure LLM and embedding models."""
         log_llm("Setting up Gemini LLM and embeddings", GEMINI_MODEL)
-        Settings.llm = Gemini(api_key=GOOGLE_API_KEY, model=GEMINI_MODEL)
+        Settings.llm = Gemini(
+            api_key=GOOGLE_API_KEY,
+            model=GEMINI_MODEL,
+            system_prompt=self.DOCUMENT_SYSTEM_PROMPT,
+        )
         Settings.embed_model = GoogleGenAIEmbedding(
             api_key=GOOGLE_API_KEY,
             model_name=EMBEDDING_MODEL,

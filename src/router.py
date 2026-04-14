@@ -203,6 +203,17 @@ class QueryRouter:
         "or 'how many files uploaded' — NOT for searching within documents.\n"
         "11. Words like 'memory', 'system', 'database', 'records' mean the user wants to SEARCH "
         "stored documents — route to DOCUMENT or TIMELINE, NOT FILE_LIST.\n\n"
+        "FEW-SHOT EXAMPLES:\n"
+        "Q: \"How many steel fixers were on Block A in January?\" -> DATA\n"
+        "Q: \"What does clause 12.3 say about liquidated damages?\" -> DOCUMENT\n"
+        "Q: \"List all delay notices sent by the contractor\" -> TIMELINE\n"
+        "Q: \"How many files have been uploaded?\" -> FILE_LIST\n"
+        "Q: \"Compare BOQ quantities with actual IPC progress\" -> HYBRID\n"
+        "Q: \"Show the daily manpower trend for February\" -> DATA\n"
+        "Q: \"What are the payment conditions in the contract?\" -> DOCUMENT\n"
+        "Q: \"Who sent the most recent notice about extension of time?\" -> TIMELINE\n"
+        "Q: \"Total crane hours across all blocks\" -> DATA\n"
+        "Q: \"What is the overall project progress percentage?\" -> DATA\n\n"
         "User query: {user_query}\n\n"
         "Respond with exactly ONE word: FILE_LIST, DATA, DOCUMENT, TIMELINE, or HYBRID."
     )
@@ -433,7 +444,27 @@ class QueryRouter:
 
     # ── Classification: 3-tier strategy (LLM-free by default) ──
 
-    def classify_query(self, query: str) -> RouterDecision:
+    # Mode-specific routing bias: when frontend mode is known, override or bias
+    # classification toward the expected query types for that mode.
+    _MODE_BIAS = {
+        "document_analysis": {
+            # Document Analysis mode: bias toward FILE_LIST and TIMELINE
+            # (listing/organizing documents chronologically)
+            "prefer": [QueryType.FILE_LIST, QueryType.TIMELINE],
+            "reclassify": {
+                # If heuristic/embedding says DOCUMENT with low confidence, switch to FILE_LIST
+                QueryType.DOCUMENT: (QueryType.FILE_LIST, 0.70),
+            },
+        },
+        "correspondence": {
+            # Correspondence mode: bias toward THREAD and DRAFT
+            "prefer": [QueryType.THREAD, QueryType.DRAFT],
+            "reclassify": {},
+        },
+        # 'chat' and None: no bias, use standard classification
+    }
+
+    def classify_query(self, query: str, mode: str | None = None) -> RouterDecision:
         """
         Classify query using 3-tier strategy:
           0. Regex pattern detection for THREAD / DRAFT (cheap, deterministic)
@@ -441,8 +472,11 @@ class QueryRouter:
           2. Embedding-similarity with anchor texts (no LLM)
           3. LLM classification with rich context (last resort)
         Returns RouterDecision with type, confidence, reasons.
+
+        If `mode` is provided (frontend activeMode), applies mode-specific routing
+        bias to better match user intent per UI context.
         """
-        logger.info("Classifying query...")
+        logger.info(f"Classifying query... (mode={mode or 'default'})")
 
         # Expand abbreviations before any classification
         expanded_query = self.jargon.expand_query(query)
@@ -461,6 +495,8 @@ class QueryRouter:
         # ── Tier 1: Heuristic keyword scoring (no LLM) ──
         heuristic_decision = self._classify_heuristic(query_lower)
         if heuristic_decision is not None:
+            # Apply mode bias for low-confidence heuristic decisions
+            heuristic_decision = self._apply_mode_bias(heuristic_decision, mode)
             logger.info(f"   -> Heuristic: {heuristic_decision.query_type.value.upper()} "
                         f"(conf={heuristic_decision.confidence:.2f})")
             return heuristic_decision
@@ -468,15 +504,58 @@ class QueryRouter:
         # ── Tier 2: Embedding similarity (no LLM) ──
         embedding_decision = self._classify_embedding(expanded_query)
         if embedding_decision is not None:
+            # Apply mode bias for low-confidence embedding decisions
+            embedding_decision = self._apply_mode_bias(embedding_decision, mode)
             logger.info(f"   -> Embedding: {embedding_decision.query_type.value.upper()} "
                         f"(conf={embedding_decision.confidence:.2f})")
             return embedding_decision
+
+        # ── Mode-based default (before LLM fallback) ──
+        mode_default = self._mode_default_decision(query, mode)
+        if mode_default is not None:
+            logger.info(f"   -> Mode default: {mode_default.query_type.value.upper()} "
+                        f"(conf={mode_default.confidence:.2f})")
+            return mode_default
 
         # ── Tier 3: LLM classification with full context (last resort) ──
         decision = self._classify_llm_rich(query)
         logger.info(f"   -> LLM: {decision.query_type.value.upper()} "
                     f"(conf={decision.confidence:.2f})")
         return decision
+
+    def _apply_mode_bias(self, decision: RouterDecision, mode: str | None) -> RouterDecision:
+        """Apply mode-specific routing bias to low-confidence decisions."""
+        if not mode or mode == "chat":
+            return decision
+        bias = self._MODE_BIAS.get(mode)
+        if not bias:
+            return decision
+
+        reclassify = bias.get("reclassify", {})
+        if decision.query_type in reclassify and decision.confidence < reclassify[decision.query_type][1]:
+            new_type = reclassify[decision.query_type][0]
+            return RouterDecision(
+                query_type=new_type,
+                confidence=decision.confidence,
+                reasons=decision.reasons + [f"Mode bias: {mode} reclassified {decision.query_type.value} -> {new_type.value}"],
+            )
+        return decision
+
+    def _mode_default_decision(self, query: str, mode: str | None) -> RouterDecision | None:
+        """When all tiers are inconclusive, use mode as tiebreaker."""
+        if mode == "document_analysis":
+            return RouterDecision(
+                query_type=QueryType.FILE_LIST,
+                confidence=0.65,
+                reasons=["Mode default: document_analysis -> FILE_LIST"],
+            )
+        if mode == "correspondence":
+            return RouterDecision(
+                query_type=QueryType.TIMELINE,
+                confidence=0.65,
+                reasons=["Mode default: correspondence -> TIMELINE"],
+            )
+        return None
 
     # Patterns for thread/draft/file-list detection
     _THREAD_PATTERNS = [
@@ -2336,10 +2415,11 @@ class QueryRouter:
 
     # ── Main entry point ──────────────────────────────────────
 
-    def route_and_execute(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    def route_and_execute(self, query: str, doc_ids: Optional[List[str]] = None, mode: str | None = None) -> Dict[str, Any]:
         """Classify and route query to appropriate handler.
         Complex queries are routed through the hybrid executor for multi-step planning.
         If doc_ids is provided, RAG and SQL queries are scoped to those documents.
+        If mode is provided, applies frontend-mode-aware routing bias.
         """
         from .telemetry import start_trace, finish_trace
 
@@ -2368,8 +2448,8 @@ class QueryRouter:
                 logger.info(f"Query complete (hybrid) - {len(result.get('sources', []))} sources")
                 return result
 
-            # Classify with 3-tier strategy
-            decision = self.classify_query(query)
+            # Classify with 3-tier strategy (mode-aware)
+            decision = self.classify_query(query, mode=mode)
             trace.route = decision.query_type.value.upper()
             if decision.llm_usage:
                 trace.record_llm_call(LLMUsage(
@@ -2458,11 +2538,12 @@ class QueryRouter:
 
     # ── Dual-LLM execution ───────────────────────────────────
 
-    def route_and_execute_dual(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    def route_and_execute_dual(self, query: str, doc_ids: Optional[List[str]] = None, mode: str | None = None) -> Dict[str, Any]:
         """
         Classify query and execute with both OpenAI and Claude in parallel.
         Returns dual answers keyed by provider.
         If doc_ids is provided, RAG and SQL queries are scoped to those documents.
+        If mode is provided, applies frontend-mode-aware routing bias.
         """
         from .telemetry import start_trace, finish_trace
         from .config import LLM_PROVIDERS
@@ -2496,8 +2577,8 @@ class QueryRouter:
                                 "reasons": ["Complex multi-step query"], "used_llm": False},
                 }
 
-            # Classify once (uses existing 3-tier, no need to dual-head routing)
-            decision = self.classify_query(query)
+            # Classify once (uses existing 3-tier, mode-aware, no need to dual-head routing)
+            decision = self.classify_query(query, mode=mode)
             trace.route = decision.query_type.value.upper() + "_DUAL"
             if decision.llm_usage:
                 trace.record_llm_call(LLMUsage(

@@ -42,7 +42,7 @@ export function useChat() {
         ? currentEmailIds
         : undefined;
 
-      const response = await sendMessage(text, currentConvId, docIds, emailIds);
+      const response = await sendMessage(text, currentConvId, docIds, emailIds, currentMode);
       return response;
     },
     onSuccess: (response) => {

@@ -18,8 +18,8 @@ export default function RelatedDocsList({ docs, onDocClick }: Props) {
       <p className="text-xs text-[var(--text-secondary)] mb-1.5 font-medium">
         Related Documents ({sorted.length})
       </p>
-      <div className="rounded-lg border border-[var(--border)] overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="rounded-lg border border-[var(--border)] overflow-x-auto">
+        <table className="w-full text-xs md:text-sm">
           <thead>
             <tr className="bg-[var(--bg-surface)]">
               <th className="text-left px-3 py-1.5 text-[10px] text-[var(--text-muted)] font-medium uppercase">

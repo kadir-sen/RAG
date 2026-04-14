@@ -93,9 +93,10 @@ export default function ChatPage() {
           <div className="flex items-center gap-3 px-6 py-3 border-b border-[var(--border)] shrink-0">
             <button
               onClick={handleBack}
+              aria-label="Back to mode selection"
               className="text-xs text-[var(--text-secondary)] hover:text-white transition-colors flex items-center gap-1"
             >
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                 <path d="M8 2L4 6l4 4" />
               </svg>
               Back
@@ -121,7 +122,7 @@ export default function ChatPage() {
 
       {/* Right viewer */}
       {rightPanelOpen && (
-        <div className="w-[420px] flex-shrink-0 h-full">
+        <div className="w-[340px] lg:w-[420px] flex-shrink-0 h-full">
           <RightDocViewer />
         </div>
       )}

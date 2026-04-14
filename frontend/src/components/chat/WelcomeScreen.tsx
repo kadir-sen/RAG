@@ -44,6 +44,15 @@ const DOC_TYPE_LABELS: Record<string, string> = {
   unclassified: 'Other',
 };
 
+const EXAMPLE_QUERIES: { icon: string; text: string; category: string }[] = [
+  { icon: '👷', text: 'How many workers were deployed by trade last month?', category: 'Manpower' },
+  { icon: '🏗️', text: 'What is the total crane utilization by block?', category: 'Equipment' },
+  { icon: '📊', text: 'What is the overall project progress percentage?', category: 'Progress' },
+  { icon: '📄', text: 'What are the key contract terms about delay penalties?', category: 'Documents' },
+  { icon: '📋', text: 'List all notices sent by the contractor this year', category: 'Correspondence' },
+  { icon: '📈', text: 'Show the monthly manpower trend across all blocks', category: 'Trends' },
+];
+
 export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [summary, setSummary] = useState<LibrarySummary | null>(null);
@@ -69,30 +78,32 @@ export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8 w-full relative">
+    <div className="flex-1 flex flex-col items-center overflow-y-auto p-6 md:p-8 w-full relative">
       {/* Big Logo */}
-      <div className="mb-8 flex flex-col items-center animate-fade-in-up">
-        <div className="mb-4">
-          <svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <div className="mb-6 md:mb-8 flex flex-col items-center animate-fade-in-up mt-auto">
+        <div className="mb-3 md:mb-4" aria-hidden="true">
+          <svg className="w-16 h-16 md:w-24 md:h-24 lg:w-[120px] lg:h-[120px]" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M48.5 25L20 100H35L41.5 82H78.5L85 100H100L71.5 25H48.5ZM47 67L60 31L73 67H47Z" fill="white" />
             <path d="M10 70C30 70 40 45 60 45C80 45 90 70 110 70" stroke="#8B5CF6" strokeWidth="8" strokeLinecap="round" />
             <path d="M95 25H110V100H95V25Z" fill="#8B5CF6" />
           </svg>
         </div>
 
-        <h1 className="text-5xl font-semibold tracking-tight text-white mb-10">
+        <h1 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-semibold tracking-tight text-white mb-6 md:mb-10 text-center">
           Construction Project Intelligence
         </h1>
       </div>
 
       {/* Search bar */}
-      <div className="w-full max-w-3xl relative mb-12 animate-fade-in-up" style={{ animationDelay: '0.05s' }}>
-        <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+      <div className="w-full max-w-3xl relative mb-8 md:mb-12 animate-fade-in-up" style={{ animationDelay: '0.05s' }}>
+        <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none" aria-hidden="true">
           <svg className="w-6 h-6 text-[var(--text-secondary)]" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
+        <label htmlFor="welcome-search" className="sr-only">Search your project</label>
         <input
+          id="welcome-search"
           ref={inputRef}
           type="text"
           placeholder="Ask about equipment hours, manpower, progress..."
@@ -102,10 +113,11 @@ export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
         />
         <button
           onClick={handleSend}
-          className="absolute inset-y-2 right-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white p-2 rounded-lg flex items-center justify-center transition-colors shadow-md"
+          aria-label="Send message"
+          className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded-lg flex items-center justify-center transition-colors shadow-md"
           style={{ boxShadow: '0 4px 12px rgba(123, 90, 242, 0.3)' }}
         >
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+          <svg aria-hidden="true" className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
             <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
           </svg>
         </button>
@@ -113,26 +125,50 @@ export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
 
       {/* Feature cards */}
       <div
-        className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-4xl animate-fade-in-up"
+        className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 w-full max-w-4xl animate-fade-in-up"
         style={{ animationDelay: '0.1s' }}
       >
         {FEATURE_CARDS.map((card) => (
           <button
             key={card.title}
             onClick={() => onModeSelect(card.mode)}
-            className="glass-card p-6 text-left group hover:bg-[rgba(255,255,255,0.06)] transition-all duration-300 cursor-pointer"
+            className="glass-card p-4 md:p-6 text-left group hover:bg-[rgba(255,255,255,0.06)] transition-all duration-300 cursor-pointer"
           >
-            <div className="w-10 h-10 rounded-lg border border-[var(--border)] bg-[var(--bg-input)] flex items-center justify-center mb-4 group-hover:border-[var(--text-secondary)] transition-colors">
+            <div className="w-9 h-9 md:w-10 md:h-10 rounded-lg border border-[var(--border)] bg-[var(--bg-input)] flex items-center justify-center mb-3 md:mb-4 group-hover:border-[var(--text-secondary)] transition-colors">
               {card.icon}
             </div>
-            <h3 className="text-lg font-semibold text-white mb-2">
+            <h3 className="text-base md:text-lg font-semibold text-white mb-1.5 md:mb-2">
               {card.title}
             </h3>
-            <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
+            <p className="text-xs md:text-sm text-[var(--text-secondary)] leading-relaxed">
               {card.description}
             </p>
           </button>
         ))}
+      </div>
+
+      {/* Example queries */}
+      <div
+        className="w-full max-w-4xl animate-fade-in-up mt-2"
+        style={{ animationDelay: '0.12s' }}
+      >
+        <p className="text-xs text-[var(--text-muted)] mb-3 font-medium uppercase tracking-wider">
+          Try asking
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {EXAMPLE_QUERIES.map((q) => (
+            <button
+              key={q.text}
+              onClick={() => onSend(q.text)}
+              className="text-left px-3 py-2.5 rounded-lg bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.08)] hover:bg-[rgba(255,255,255,0.08)] hover:border-[rgba(255,255,255,0.15)] transition-all duration-200 group cursor-pointer"
+            >
+              <span className="text-sm mr-1.5">{q.icon}</span>
+              <span className="text-xs text-[var(--text-secondary)] group-hover:text-white transition-colors leading-relaxed">
+                {q.text}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Document classification summary */}
@@ -159,7 +195,7 @@ export default function WelcomeScreen({ onModeSelect, onSend }: Props) {
       )}
 
       {/* Footer disclaimer */}
-      <div className="absolute bottom-6 w-full text-center pointer-events-none">
+      <div className="mt-auto pt-6 pb-2 w-full text-center shrink-0">
         <p className="text-xs text-[var(--text-secondary)]">
           AI-powered construction analytics. Always verify critical project decisions.
         </p>

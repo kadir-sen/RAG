@@ -84,12 +84,16 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   };
 
   return (
-    <aside className={`h-full bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${sidebarOpen ? 'w-64' : 'w-0 border-r-0'}`}>
+    <aside
+      aria-label="Sidebar"
+      aria-hidden={!sidebarOpen}
+      className={`h-full bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${sidebarOpen ? 'w-64' : 'w-0 border-r-0'}`}
+    >
       {/* Header + New Chat */}
       <div className="p-4 shrink-0">
         <button onClick={handleNewChat}
           className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium py-2 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm">
-          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="7" y1="2" x2="7" y2="12" /><line x1="2" y1="7" x2="12" y2="7" />
           </svg>
           New Chat
@@ -217,20 +221,21 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
       )}
 
       {/* Bottom buttons */}
-      <div className="px-3 py-3 border-t border-[var(--border)] shrink-0 space-y-2">
+      <div className="px-3 py-2.5 border-t border-[var(--border)] shrink-0 space-y-1.5">
         <button onClick={handleFileUpload} disabled={isUploading}
-          className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-semibold py-3 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm disabled:opacity-50">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4m0 0L8 8m4-4l4 4" /><path d="M4 18h16" /></svg>
+          className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors text-xs disabled:opacity-50">
+          <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4m0 0L8 8m4-4l4 4" /><path d="M4 18h16" /></svg>
           {isUploading ? 'Uploading...' : 'Add Files'}
         </button>
         {files.length > 0 && (
           <a href={getExportUrl()} download
-            className="w-full bg-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.1)] text-[var(--text-secondary)] hover:text-white border border-[var(--border)] py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm block">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-            Export File List
+            aria-label="Export file list as CSV"
+            className="w-full bg-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.1)] text-[var(--text-secondary)] hover:text-white border border-[var(--border)] py-2 rounded-lg flex items-center justify-center gap-2 transition-colors text-xs block">
+            <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+            Export
           </a>
         )}
-        <input ref={fileInputRef} type="file" accept={ACCEPTED} multiple onChange={onFilesSelected} className="hidden" />
+        <input ref={fileInputRef} type="file" accept={ACCEPTED} multiple onChange={onFilesSelected} className="hidden" aria-label="Upload documents" />
       </div>
     </aside>
   );

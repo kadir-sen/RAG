@@ -62,6 +62,7 @@ class ChatOrchestrator:
         store: ConversationStore,
         doc_ids: list | None = None,
         email_ids: list | None = None,
+        mode: str | None = None,
     ) -> ChatResponse:
         now = datetime.now().isoformat()
 
@@ -94,11 +95,11 @@ class ChatOrchestrator:
         try:
             if is_dual:
                 raw_result = await asyncio.to_thread(
-                    router.route_and_execute_dual, augmented, doc_ids
+                    router.route_and_execute_dual, augmented, doc_ids, mode
                 )
             else:
                 raw_result = await asyncio.to_thread(
-                    router.route_and_execute, augmented, doc_ids
+                    router.route_and_execute, augmented, doc_ids, mode
                 )
         except Exception as e:
             import logging
@@ -166,6 +167,34 @@ class ChatOrchestrator:
 
         return response
 
+    @staticmethod
+    def _read_email_body_direct(file_path_or_name: str) -> str:
+        """Read email body directly from file using email_parser, bypassing RAG."""
+        from pathlib import Path
+        from src.config import BASE_DIR
+
+        # Resolve file path
+        candidates = [
+            Path(file_path_or_name),
+            BASE_DIR / "data" / "emails" / Path(file_path_or_name).name,
+            BASE_DIR / "data" / "documents" / Path(file_path_or_name).name,
+        ]
+        file_path = None
+        for c in candidates:
+            if c.exists():
+                file_path = c
+                break
+        if not file_path:
+            return ""
+
+        suffix = file_path.suffix.lower()
+        if suffix in (".msg", ".eml"):
+            from src.email_parser import EmailParser
+            parser = EmailParser()
+            parsed = parser.parse(str(file_path))
+            return parsed.body_text if parsed else ""
+        return ""
+
     def _build_email_context(self, email_ids: List[str]) -> str:
         """Build full email body context from selected email IDs for correspondence mode."""
         try:
@@ -197,20 +226,26 @@ class ChatOrchestrator:
                 except Exception:
                     notice_meta = {"date": "", "sender": "", "recipient": "", "subject": rec.file_name}
 
-                # Get full body from RAG
+                # Get full body: try direct file parsing first, then RAG fallback
                 body = ""
                 try:
-                    file_info = rag.file_registry.get(rec.file_name, {})
-                    if file_info:
-                        # Get all pages/chunks for this document
-                        result = rag.query(
-                            f"full content of {rec.file_name}",
-                            top_k=10,
-                            doc_ids=[doc_id],
-                        )
-                        body = result.get("answer", "")
+                    body = self._read_email_body_direct(rec.file_path or rec.file_name)
                 except Exception:
                     pass
+
+                if not body:
+                    # Fallback: retrieve via RAG
+                    try:
+                        file_info = rag.file_registry.get(rec.file_name, {})
+                        if file_info:
+                            result = rag.query(
+                                f"full content of {rec.file_name}",
+                                top_k=10,
+                                doc_ids=[doc_id],
+                            )
+                            body = result.get("answer", "")
+                    except Exception:
+                        pass
 
                 emails.append({
                     "date": notice_meta.get("date", ""),

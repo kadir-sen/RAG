@@ -24,4 +24,5 @@ async def chat(
         store=store,
         doc_ids=req.doc_ids,
         email_ids=req.email_ids,
+        mode=req.mode,
     )
