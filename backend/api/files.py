@@ -68,6 +68,66 @@ async def delete_file(file_id: str):
         return {"ok": True}
 
 
+@router.post("/files/{file_id}/reindex")
+async def reindex_file(file_id: str, background_tasks: BackgroundTasks):
+    """Delete and re-index a single file (clean slate)."""
+    from pathlib import Path
+    from src.document_registry import get_document_registry
+    from src.file_router import delete_document
+    from src.document_rag import generate_doc_id
+
+    registry = get_document_registry()
+    rec = registry.get(file_id)
+    if not rec:
+        return {"ok": False, "detail": "Document not found"}
+
+    file_path = rec.file_path
+    file_name = rec.file_name
+
+    # 1. Full cleanup from all stores
+    delete_document(file_id)
+
+    # 2. Check file still on disk (downloaded from GCS at startup)
+    if not Path(file_path).exists():
+        return {"ok": False, "detail": f"File not on disk: {file_path}"}
+
+    # 3. Re-index in background
+    new_doc_id = generate_doc_id(file_path)
+    background_tasks.add_task(index_file_background, new_doc_id, file_path)
+
+    return {"ok": True, "file_name": file_name, "new_file_id": new_doc_id, "status": "reindexing"}
+
+
+@router.post("/files/reindex-stuck")
+async def reindex_stuck_files(background_tasks: BackgroundTasks):
+    """Find all processing/error files, clean them up, and re-index."""
+    from pathlib import Path
+    from src.document_registry import get_document_registry
+    from src.file_router import delete_document
+    from src.document_rag import generate_doc_id
+
+    registry = get_document_registry()
+    stuck = [r for r in registry.get_all() if r.status in ("processing", "error")]
+
+    results = []
+    for rec in stuck:
+        file_path = rec.file_path
+        # Full cleanup
+        delete_document(rec.doc_id)
+
+        # Check file on disk
+        if not Path(file_path).exists():
+            results.append({"name": rec.file_name, "status": "skipped", "reason": "file not on disk"})
+            continue
+
+        # Re-index
+        new_id = generate_doc_id(file_path)
+        background_tasks.add_task(index_file_background, new_id, file_path)
+        results.append({"name": rec.file_name, "status": "reindexing", "new_id": new_id})
+
+    return {"total": len(stuck), "results": results}
+
+
 @router.get("/stats")
 async def get_stats():
     """Return vector count and table count for dashboard metrics."""
