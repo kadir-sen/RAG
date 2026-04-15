@@ -217,7 +217,9 @@ class DataAnalyzerSQL:
         "- Safe date cast: TRY_CAST(column AS DATE) — returns NULL on invalid values\n"
         "- Date truncation: DATE_TRUNC('month', date_column) for monthly grouping\n"
         "- Date extraction: EXTRACT(YEAR FROM date_column), EXTRACT(MONTH FROM date_column)\n"
-        "- Relative dates: CURRENT_DATE - INTERVAL '1 month', DATE_TRUNC('month', CURRENT_DATE)\n"
+        "- Relative dates: PREFER deriving from actual data range (see DATA DATE RANGE below). "
+        "Only use CURRENT_DATE if no date range info is provided. "
+        "For 'last month': find MAX(date_col) first, then filter for the month before that.\n"
         "- String matching: column ILIKE '%pattern%' (case-insensitive). ALWAYS use single quotes around the pattern.\n"
         "- Numeric cast: TRY_CAST(column AS DOUBLE) for strings that may be numbers\n"
         "- Safe division: use NULLIF(divisor, 0) to avoid division by zero\n"
@@ -303,7 +305,9 @@ class DataAnalyzerSQL:
         "DUCKDB SYNTAX REMINDERS:\n"
         "- STRFTIME(format, value) — format string FIRST: STRFTIME('%Y-%m', date_col)\n"
         "- Use TRY_CAST instead of CAST for safe type conversion\n"
-        "- Use WHERE TRY_CAST(col AS DATE) IS NOT NULL to filter invalid dates\n\n"
+        "- Use WHERE TRY_CAST(col AS DATE) IS NOT NULL to filter invalid dates\n"
+        "- Column names with spaces MUST be properly double-quoted with BOTH opening AND closing quotes: \"Activity Name\"\n"
+        "- Always verify all double quotes are properly paired\n\n"
         "Return ONLY the corrected SQL query."
     )
 
@@ -1657,6 +1661,32 @@ class DataAnalyzerSQL:
                     )
         date_format_hint = "DATE FORMAT INFO:\n" + "\n".join(date_format_hints) if date_format_hints else ""
 
+        # Extract actual min/max date ranges so LLM doesn't use CURRENT_DATE blindly
+        date_range_hints = []
+        for col in columns:
+            dtype = str(dtypes.get(col, "VARCHAR")).upper()
+            is_date = any(t in dtype for t in ["DATE", "TIMESTAMP", "TIME"])
+            if is_date:
+                try:
+                    minmax = self.conn.execute(
+                        f'SELECT MIN("{col}") AS mn, MAX("{col}") AS mx '
+                        f'FROM "{table_name}" WHERE "{col}" IS NOT NULL'
+                    ).fetchone()
+                    if minmax and minmax[0] and minmax[1]:
+                        date_range_hints.append(
+                            f'Column "{col}" spans from {minmax[0]} to {minmax[1]}.'
+                        )
+                except Exception:
+                    pass
+        if date_range_hints:
+            date_format_hint += "\nDATA DATE RANGE:\n" + "\n".join(date_range_hints)
+            date_format_hint += (
+                "\nIMPORTANT: Do NOT use CURRENT_DATE for relative time queries. "
+                "The data may not contain recent dates. Instead, derive the 'latest' "
+                "period from the actual MAX date in the data. "
+                "For 'last month': use the month before MAX(date_col), not CURRENT_DATE."
+            )
+
         prompt = safe_render_prompt(
             self.SQL_GENERATION_PROMPT,
             user_query=expanded_question,
@@ -1909,6 +1939,7 @@ class DataAnalyzerSQL:
                 logger.warning(f"   SQL validation failed: {error}, attempting self-correction...")
                 corrected = self._retry_sql_generation(sql, error, table_name)
                 if corrected:
+                    corrected = self._fix_sql_syntax(corrected)
                     is_valid, error = validate_sql(corrected)
                     if is_valid:
                         sql = corrected
@@ -1950,6 +1981,7 @@ class DataAnalyzerSQL:
                 logger.warning(f"   SQL execution failed: {exec_err}, attempting self-correction...")
                 corrected = self._retry_sql_generation(sql, str(exec_err), table_name)
                 if corrected:
+                    corrected = self._fix_sql_syntax(corrected)
                     is_valid, error = validate_sql(corrected)
                     if is_valid:
                         sql = corrected
@@ -2057,6 +2089,7 @@ class DataAnalyzerSQL:
             if not is_valid:
                 corrected = self._retry_sql_generation(sql, error, table_name, provider=provider)
                 if corrected:
+                    corrected = self._fix_sql_syntax(corrected)
                     is_valid, error = validate_sql(corrected)
                     if is_valid:
                         sql = corrected
@@ -2075,6 +2108,7 @@ class DataAnalyzerSQL:
             except Exception as exec_err:
                 corrected = self._retry_sql_generation(sql, str(exec_err), table_name, provider=provider)
                 if corrected:
+                    corrected = self._fix_sql_syntax(corrected)
                     is_valid, error = validate_sql(corrected)
                     if is_valid:
                         sql = corrected

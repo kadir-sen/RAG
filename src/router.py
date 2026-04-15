@@ -49,6 +49,8 @@ DOCUMENT_KEYWORDS = {
     "liability", "obligation", "requirement", "condition", "provision",
     "report", "document", "text", "paragraph", "page", "summary", "summarize",
     "letter", "notice", "correspondence", "scope of work",
+    "what is this", "project about", "overview", "about this", "about the project",
+    "tell me about", "give me an overview", "describe the project",
 }
 
 TIMELINE_KEYWORDS = {
@@ -197,12 +199,14 @@ class QueryRouter:
         "6. ANY question asking 'total number of [trade/workers]' = DATA, NOT DOCUMENT.\n"
         "7. Only use DOCUMENT when the answer is literally TEXT from a contract/report.\n"
         "8. Only use HYBRID when the user explicitly needs both document text AND table numbers.\n"
-        "9. When in doubt: DATA > DOCUMENT > HYBRID.\n"
+        "9. When in doubt between DATA and DOCUMENT: prefer DATA for measurable questions, DOCUMENT for conceptual ones.\n"
         "10. NEVER classify as FILE_LIST if the query asks about CONTENT (delay notices, claims, "
         "correspondence, payment issues, scope changes). FILE_LIST is ONLY for 'what files exist' "
         "or 'how many files uploaded' — NOT for searching within documents.\n"
         "11. Words like 'memory', 'system', 'database', 'records' mean the user wants to SEARCH "
-        "stored documents — route to DOCUMENT or TIMELINE, NOT FILE_LIST.\n\n"
+        "stored documents — route to DOCUMENT or TIMELINE, NOT FILE_LIST.\n"
+        "12. General/conceptual questions ('what is this project about', 'project overview', "
+        "'describe the project', 'give me an overview') = DOCUMENT — these need narrative context, not SQL.\n\n"
         "FEW-SHOT EXAMPLES:\n"
         "Q: \"How many steel fixers were on Block A in January?\" -> DATA\n"
         "Q: \"What does clause 12.3 say about liquidated damages?\" -> DOCUMENT\n"
@@ -213,7 +217,10 @@ class QueryRouter:
         "Q: \"What are the payment conditions in the contract?\" -> DOCUMENT\n"
         "Q: \"Who sent the most recent notice about extension of time?\" -> TIMELINE\n"
         "Q: \"Total crane hours across all blocks\" -> DATA\n"
-        "Q: \"What is the overall project progress percentage?\" -> DATA\n\n"
+        "Q: \"What is the overall project progress percentage?\" -> DATA\n"
+        "Q: \"What is this project about?\" -> DOCUMENT\n"
+        "Q: \"Give me an overview of the project\" -> DOCUMENT\n"
+        "Q: \"Describe the project scope\" -> DOCUMENT\n\n"
         "User query: {user_query}\n\n"
         "Respond with exactly ONE word: FILE_LIST, DATA, DOCUMENT, TIMELINE, or HYBRID."
     )
@@ -866,6 +873,8 @@ class QueryRouter:
                 qtype = QueryType.TIMELINE
             elif "HYBRID" in result:
                 qtype = QueryType.HYBRID
+            elif "DOCUMENT" in result:
+                qtype = QueryType.DOCUMENT
             elif "DATA" in result:
                 qtype = QueryType.DATA
 
