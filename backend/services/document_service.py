@@ -2,11 +2,15 @@
 
 import asyncio
 import base64
+import re
 from pathlib import Path
 
 from backend.models.responses import DocContent
 
 _DATA_EXTENSIONS = {".xlsx", ".xls", ".csv"}
+
+# Pattern to strip deduplication suffixes: "name_3.ext" -> "name.ext"
+_DEDUP_SUFFIX_RE = re.compile(r'_\d+(\.[^.]+)$')
 
 
 class DocumentService:
@@ -16,6 +20,23 @@ class DocumentService:
 
     def _is_data_file(self, file_path: str) -> bool:
         return Path(file_path).suffix.lower() in _DATA_EXTENSIONS
+
+    @staticmethod
+    def _resolve_path(file_path: str) -> str:
+        """Return an existing file path, trying dedup-suffix removal as fallback.
+
+        Registry may store 'letter-_3.docx' but the actual GCS file is 'letter-.docx'.
+        """
+        p = Path(file_path)
+        if p.exists():
+            return file_path
+        # Try stripping deduplication suffix: name_3.ext -> name.ext
+        alt = _DEDUP_SUFFIX_RE.sub(r'\1', p.name)
+        if alt != p.name:
+            alt_path = p.parent / alt
+            if alt_path.exists():
+                return str(alt_path)
+        return file_path  # return original — caller will handle the error
 
     def _get_content_sync(self, doc_id: str, anchor: str) -> DocContent:
         # Guard: empty or whitespace-only doc_id
@@ -43,14 +64,8 @@ class DocumentService:
                 import hashlib
                 fname_hash = hashlib.md5(fname.encode()).hexdigest()[:16]
                 if doc_id in (fname, stored_doc_id, fname_hash):
-                    file_path = info.get("file_path", "")
-                    page = self._parse_anchor_page(anchor)
-                    if file_path.lower().endswith(".pdf"):
-                        return self._serve_pdf_page(file_path, page)
-                    elif self._is_data_file(file_path):
-                        return self._serve_excel_file(file_path)
-                    else:
-                        return self._serve_text_content(file_path)
+                    file_path = self._resolve_path(info.get("file_path", ""))
+                    return self._serve_by_extension(file_path, anchor)
         except Exception:
             pass
 
@@ -68,17 +83,23 @@ class DocumentService:
                         rec = r
                         break
             if rec and rec.file_path:
-                page = self._parse_anchor_page(anchor)
-                if rec.file_path.lower().endswith(".pdf"):
-                    return self._serve_pdf_page(rec.file_path, page)
-                elif self._is_data_file(rec.file_path):
-                    return self._serve_excel_file(rec.file_path)
-                else:
-                    return self._serve_text_content(rec.file_path)
+                file_path = self._resolve_path(rec.file_path)
+                return self._serve_by_extension(file_path, anchor)
         except Exception:
             pass
 
         return DocContent(type="text", error="Document not found")
+
+    def _serve_by_extension(self, file_path: str, anchor: str = "") -> DocContent:
+        """Route to the right renderer based on file extension."""
+        page = self._parse_anchor_page(anchor)
+        lower = file_path.lower()
+        if lower.endswith(".pdf"):
+            return self._serve_pdf_page(file_path, page)
+        elif self._is_data_file(file_path):
+            return self._serve_excel_file(file_path)
+        else:
+            return self._serve_text_content(file_path)
 
     def _parse_anchor_page(self, anchor: str) -> int:
         if anchor.startswith("page_"):
