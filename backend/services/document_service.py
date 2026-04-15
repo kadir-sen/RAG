@@ -137,9 +137,17 @@ class DocumentService:
     def _serve_text_content(self, file_path: str) -> DocContent:
         try:
             fp = Path(file_path)
+            ext = fp.suffix.lower()
             # Handle .msg (Outlook) files — binary format, need extract_msg
-            if fp.suffix.lower() == ".msg":
+            if ext == ".msg":
                 return self._serve_msg_content(file_path)
+            # Handle .docx files — ZIP-based, need python-docx
+            if ext == ".docx":
+                return self._serve_docx_content(file_path)
+            # Handle .doc files — legacy binary
+            if ext == ".doc":
+                return DocContent(type="text", file_name=fp.name,
+                                  text="(Legacy .doc format — preview not available. Download to view.)")
             text = fp.read_text(encoding="utf-8", errors="replace")[:5000]
             return DocContent(
                 type="text",
@@ -148,6 +156,20 @@ class DocumentService:
             )
         except Exception as e:
             return DocContent(type="text", error=str(e))
+
+    def _serve_docx_content(self, file_path: str) -> DocContent:
+        """Parse .docx files and return readable text."""
+        try:
+            from docx import Document
+            doc = Document(file_path)
+            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())[:5000]
+            return DocContent(
+                type="text",
+                file_name=Path(file_path).name,
+                text=text or "(Empty document)",
+            )
+        except Exception as e:
+            return DocContent(type="text", error=f"Cannot parse docx: {e}")
 
     def _serve_msg_content(self, file_path: str) -> DocContent:
         """Parse .msg (Outlook email) files and return readable text."""
