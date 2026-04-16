@@ -1,0 +1,9 @@
+From: test@example.com
+To: receiver@example.com
+Subject: E2E Test Email
+Date: Mon, 14 Apr 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+This is a test email for E2E testing purposes.
+It contains some sample content about construction project updates.
