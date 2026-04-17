@@ -8,6 +8,7 @@ import { getIndexingStatus, getStats, getExportUrl } from '../../api/fileApi';
 import FileUploadArea from './FileUploadArea';
 import FileListItem from './FileListItem';
 import LibraryPickerModal from './LibraryPickerModal';
+import KnowledgeModal from '../knowledge/KnowledgeModal';
 import Badge from '../shared/Badge';
 
 const typeColor: Record<string, string> = {
@@ -22,6 +23,7 @@ export default function LeftDrawer() {
   const { files, uploadMultiple, isUploading, deleteFile } = useFiles();
   const { docs, addDocs, removeDoc } = useConversationDocs(activeConversationId);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
 
   const indexing = useQuery({
     queryKey: ['indexingStatus'],
@@ -170,13 +172,24 @@ export default function LeftDrawer() {
             )}
           </div>
 
-          {/* Add documents button */}
-          <div className="px-3 py-2 border-t border-[var(--border)]">
+          {/* Add documents / Collections buttons */}
+          <div className="px-3 py-2 border-t border-[var(--border)] space-y-1.5">
             <button
               onClick={() => setPickerOpen(true)}
               className="w-full py-2 text-xs font-medium text-[var(--accent)] glass rounded-lg hover:bg-[var(--accent-glow)] hover:border-[var(--accent)] transition-all"
             >
               + Add Documents
+            </button>
+            <button
+              onClick={() => setKnowledgeOpen(true)}
+              className="w-full py-1.5 text-[11px] font-medium text-[var(--text-secondary)] hover:text-white border border-[var(--border)] rounded-lg hover:bg-[var(--bg-hover)] transition-all flex items-center justify-center gap-1.5"
+              title="Knowledge koleksiyonlarını yönet"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z" />
+                <path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z" />
+              </svg>
+              Knowledge Koleksiyonları
             </button>
           </div>
 
@@ -300,6 +313,16 @@ export default function LeftDrawer() {
         onClose={() => setPickerOpen(false)}
         existingDocIds={existingDocIds}
         onAdd={handleAddFromLibrary}
+      />
+
+      {/* Knowledge collections modal */}
+      <KnowledgeModal
+        open={knowledgeOpen}
+        onClose={() => setKnowledgeOpen(false)}
+        onApplyToChat={(docIds) => {
+          if (docIds.length > 0) addDocs.mutate(docIds);
+        }}
+        applyDisabled={!activeConversationId}
       />
     </div>
   );

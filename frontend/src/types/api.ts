@@ -63,6 +63,8 @@ export interface ConversationMeta {
   updated_at: string;
   message_count: number;
   document_ids: string[];
+  pinned: boolean;
+  archived: boolean;
 }
 
 export interface LibraryDocument {
@@ -76,6 +78,26 @@ export interface LibraryDocument {
   notice_extracted: boolean;
   created_at: string;
   notice_metadata: NoticeMetadata | null;
+}
+
+export interface KnowledgeCollection {
+  collection_id: string;
+  name: string;
+  description: string;
+  document_ids: string[];
+  document_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeCollectionDetail {
+  collection_id: string;
+  name: string;
+  description: string;
+  document_ids: string[];
+  documents: LibraryDocument[];
+  created_at: string;
+  updated_at: string;
 }
 
 export interface FileInfo {

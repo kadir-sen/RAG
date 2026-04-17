@@ -4,40 +4,55 @@ import {
   createConversation,
   deleteConversation,
   renameConversation,
+  pinConversation,
+  archiveConversation,
 } from '../api/conversationApi';
 import { useChatStore } from '../stores/chatStore';
 
-export function useConversations() {
+export function useConversations(options?: { archived?: boolean }) {
+  const archived = options?.archived ?? false;
   const queryClient = useQueryClient();
   const setConversation = useChatStore((s) => s.setConversation);
 
   const query = useQuery({
-    queryKey: ['conversations'],
-    queryFn: listConversations,
+    queryKey: ['conversations', { archived }],
+    queryFn: () => listConversations(archived),
     staleTime: 30_000,
   });
+
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['conversations'] });
+  };
 
   const create = useMutation({
     mutationFn: createConversation,
     onSuccess: (conv) => {
       setConversation(conv.conversation_id, []);
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      invalidate();
     },
   });
 
   const remove = useMutation({
     mutationFn: deleteConversation,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    },
+    onSuccess: invalidate,
   });
 
   const rename = useMutation({
     mutationFn: ({ id, title }: { id: string; title: string }) =>
       renameConversation(id, title),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    },
+    onSuccess: invalidate,
+  });
+
+  const pin = useMutation({
+    mutationFn: ({ id, pinned }: { id: string; pinned: boolean }) =>
+      pinConversation(id, pinned),
+    onSuccess: invalidate,
+  });
+
+  const archive = useMutation({
+    mutationFn: ({ id, archived }: { id: string; archived: boolean }) =>
+      archiveConversation(id, archived),
+    onSuccess: invalidate,
   });
 
   return {
@@ -46,5 +61,7 @@ export function useConversations() {
     createConversation: create.mutateAsync,
     deleteConversation: remove.mutate,
     renameConversation: rename.mutate,
+    pinConversation: pin.mutate,
+    archiveConversation: archive.mutate,
   };
 }

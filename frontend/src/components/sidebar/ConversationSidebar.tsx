@@ -29,7 +29,15 @@ const QUICK_PROMPTS = [
 interface SidebarProps { onSend?: (text: string) => void; }
 
 export default function ConversationSidebar({ onSend }: SidebarProps) {
-  const { conversations, createConversation, deleteConversation, renameConversation } = useConversations();
+  const [viewingArchived, setViewingArchived] = useState(false);
+  const {
+    conversations,
+    createConversation,
+    deleteConversation,
+    renameConversation,
+    pinConversation,
+    archiveConversation,
+  } = useConversations({ archived: viewingArchived });
   const { files, uploadMultiple, uploading, isUploading } = useFiles();
   const { activeConversationId, setConversation, activeMode, selectedEmailIds, toggleEmailSelection } = useChatStore();
   const { openDocument } = useUIStore();
@@ -40,12 +48,18 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const [editTitle, setEditTitle] = useState('');
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
 
   const libraryQuery = useQuery({ queryKey: ['library'], queryFn: getLibrary, staleTime: 60_000, enabled: activeMode === 'correspondence' });
 
-  const filtered = conversations.filter((c) => c.conversation_id === activeConversationId || c.message_count > 0);
+  const trimmedQuery = searchQuery.trim().toLowerCase();
+  const filtered = conversations.filter((c) => {
+    if (!viewingArchived && c.conversation_id !== activeConversationId && c.message_count === 0) return false;
+    if (trimmedQuery && !c.title.toLowerCase().includes(trimmedQuery)) return false;
+    return true;
+  });
 
   const handleNewChat = () => createConversation('New Chat');
   const handleSelect = async (id: string) => {
@@ -116,10 +130,47 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
         </button>
       </div>
 
+      {/* Search + archive toggle */}
+      <div className="px-3 pb-2 shrink-0 space-y-1.5">
+        <div className="relative">
+          <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+            className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)]">
+            <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.5" y2="16.5" />
+          </svg>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={viewingArchived ? 'Arşivde ara...' : 'Sohbetlerde ara...'}
+            aria-label="Sohbet ara"
+            className="w-full bg-[rgba(255,255,255,0.04)] border border-[var(--border)] rounded-lg pl-7 pr-6 py-1.5 text-xs text-white placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+          />
+          {searchQuery && (
+            <button onClick={() => setSearchQuery('')} aria-label="Aramayı temizle"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-white">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="2" y1="2" x2="10" y2="10" /><line x1="10" y1="2" x2="2" y2="10" />
+              </svg>
+            </button>
+          )}
+        </div>
+        <button
+          onClick={() => { setViewingArchived((v) => !v); setSearchQuery(''); }}
+          className="w-full text-left text-[10px] text-[var(--text-muted)] hover:text-white transition-colors flex items-center gap-1.5 px-1"
+        >
+          <svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="4" width="20" height="5" rx="1" /><path d="M4 9v10a1 1 0 001 1h14a1 1 0 001-1V9" /><line x1="10" y1="13" x2="14" y2="13" />
+          </svg>
+          {viewingArchived ? '← Sohbetlere dön' : 'Arşivi göster'}
+        </button>
+      </div>
+
       {/* Chat list */}
-      {filtered.length > 0 && (
-        <div className="px-3 pb-2 shrink-0 max-h-36 overflow-y-auto">
-          <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 px-1">Recent Chats</p>
+      {filtered.length > 0 ? (
+        <div className="px-3 pb-2 shrink-0 max-h-44 overflow-y-auto">
+          <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 px-1">
+            {viewingArchived ? 'Arşivlenenler' : 'Recent Chats'}
+          </p>
           {filtered.map((c) => {
             const isActive = c.conversation_id === activeConversationId;
             const isEditing = c.conversation_id === editingId;
@@ -143,6 +194,12 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                   </div>
                 ) : (
                   <>
+                    {c.pinned && !viewingArchived && (
+                      <svg aria-hidden="true" width="9" height="9" viewBox="0 0 24 24" fill="currentColor"
+                        className="mr-1 shrink-0 text-[var(--accent)]">
+                        <path d="M12 2L9 8H4l4 4-2 8 6-4 6 4-2-8 4-4h-5z" />
+                      </svg>
+                    )}
                     <span className="truncate flex-1">{c.title}</span>
                     {switchingId === c.conversation_id && (
                       <span className="ml-auto w-3 h-3 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" />
@@ -151,10 +208,35 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                 )}
                 {!isEditing && pendingDeleteId !== c.conversation_id && isHovered && !switchingId && (
                   <div className="flex items-center gap-0.5 ml-1">
-                    <button onClick={(e) => { e.stopPropagation(); startRename(c); }} className="p-0.5 text-[var(--text-muted)] hover:text-white" title="Rename">
-                      <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M7 2l3 3-6 6H1V8z" /></svg>
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); handleDelete(c.conversation_id); }} className="p-0.5 text-[var(--text-muted)] hover:text-[var(--danger)]" title="Delete">
+                    {!viewingArchived && (
+                      <>
+                        <button onClick={(e) => { e.stopPropagation(); pinConversation({ id: c.conversation_id, pinned: !c.pinned }); }}
+                          className={`p-0.5 hover:text-white ${c.pinned ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}
+                          title={c.pinned ? 'Sabitlemeyi kaldır' : 'Sabitle'}>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill={c.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 2L9 8H4l4 4-2 8 6-4 6 4-2-8 4-4h-5z" />
+                          </svg>
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); startRename(c); }} className="p-0.5 text-[var(--text-muted)] hover:text-white" title="Yeniden adlandır">
+                          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M7 2l3 3-6 6H1V8z" /></svg>
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); archiveConversation({ id: c.conversation_id, archived: true }); }}
+                          className="p-0.5 text-[var(--text-muted)] hover:text-white" title="Arşivle">
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="4" width="20" height="5" rx="1" /><path d="M4 9v10a1 1 0 001 1h14a1 1 0 001-1V9" /><line x1="10" y1="13" x2="14" y2="13" />
+                          </svg>
+                        </button>
+                      </>
+                    )}
+                    {viewingArchived && (
+                      <button onClick={(e) => { e.stopPropagation(); archiveConversation({ id: c.conversation_id, archived: false }); }}
+                        className="p-0.5 text-[var(--text-muted)] hover:text-white" title="Arşivden çıkar">
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 8v13H3V8" /><rect x="1" y="3" width="22" height="5" /><path d="M10 12h4" /><path d="M9 16l3-3 3 3" />
+                        </svg>
+                      </button>
+                    )}
+                    <button onClick={(e) => { e.stopPropagation(); handleDelete(c.conversation_id); }} className="p-0.5 text-[var(--text-muted)] hover:text-[var(--danger)]" title="Sil">
                       <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2 3h8M4 3V2h4v1M5 5v4M7 5v4M3 3l.5 7h5l.5-7" /></svg>
                     </button>
                   </div>
@@ -163,6 +245,14 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             );
           })}
         </div>
+      ) : (
+        (viewingArchived || trimmedQuery) && (
+          <div className="px-3 pb-2 shrink-0">
+            <p className="text-xs text-[var(--text-muted)] py-3 text-center">
+              {trimmedQuery ? 'Sonuç bulunamadı' : 'Arşivlenen sohbet yok'}
+            </p>
+          </div>
+        )
       )}
 
       {/* Divider */}

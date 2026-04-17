@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 
 from backend.core.config import CORS_ORIGINS
 from backend.core.lifespan import lifespan
-from backend.api import chat, conversations, files, documents, indexing, library
+from backend.api import chat, conversations, files, documents, indexing, library, knowledge
 
 # Frontend build directory (exists only in Docker / after npm run build)
 _frontend_dist = Path(_project_root) / "frontend" / "dist"
@@ -46,6 +46,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router, prefix="/api", tags=["documents"])
     app.include_router(indexing.router, prefix="/api", tags=["indexing"])
     app.include_router(library.router, prefix="/api", tags=["library"])
+    app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
 
     # Serve React frontend in production
     if _frontend_dist.exists():

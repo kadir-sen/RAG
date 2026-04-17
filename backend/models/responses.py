@@ -70,6 +70,8 @@ class ConversationMeta(BaseModel):
     updated_at: str
     message_count: int
     document_ids: List[str] = Field(default_factory=list)
+    pinned: bool = False
+    archived: bool = False
 
 
 class MessageOut(BaseModel):
@@ -127,6 +129,26 @@ class LibraryDocument(BaseModel):
     notice_extracted: bool = False
     created_at: str = ""
     notice_metadata: Optional[NoticeMetadataOut] = None
+
+
+class KnowledgeCollectionOut(BaseModel):
+    collection_id: str
+    name: str
+    description: str = ""
+    document_ids: List[str] = Field(default_factory=list)
+    document_count: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class KnowledgeCollectionDetail(BaseModel):
+    collection_id: str
+    name: str
+    description: str = ""
+    document_ids: List[str] = Field(default_factory=list)
+    documents: List[LibraryDocument] = Field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class DocContent(BaseModel):

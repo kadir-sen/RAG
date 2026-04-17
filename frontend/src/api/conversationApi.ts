@@ -1,8 +1,12 @@
 import apiClient from './client';
 import type { ConversationMeta } from '../types/api';
 
-export async function listConversations(): Promise<ConversationMeta[]> {
-  const { data } = await apiClient.get<ConversationMeta[]>('/conversations');
+export async function listConversations(
+  archived = false,
+): Promise<ConversationMeta[]> {
+  const { data } = await apiClient.get<ConversationMeta[]>('/conversations', {
+    params: archived ? { archived: true } : undefined,
+  });
   return data;
 }
 
@@ -26,4 +30,26 @@ export async function deleteConversation(id: string) {
 
 export async function renameConversation(id: string, title: string) {
   await apiClient.patch(`/conversations/${id}`, { title });
+}
+
+export async function pinConversation(
+  id: string,
+  pinned: boolean,
+): Promise<ConversationMeta> {
+  const { data } = await apiClient.patch<ConversationMeta>(
+    `/conversations/${id}/pin`,
+    { pinned },
+  );
+  return data;
+}
+
+export async function archiveConversation(
+  id: string,
+  archived: boolean,
+): Promise<ConversationMeta> {
+  const { data } = await apiClient.patch<ConversationMeta>(
+    `/conversations/${id}/archive`,
+    { archived },
+  );
+  return data;
 }

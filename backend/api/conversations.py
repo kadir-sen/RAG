@@ -3,7 +3,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List
 
-from backend.models.requests import ConversationCreate, ConversationRename, AddDocumentsRequest
+from backend.models.requests import (
+    ConversationCreate,
+    ConversationRename,
+    AddDocumentsRequest,
+    PinRequest,
+    ArchiveRequest,
+)
 from backend.models.responses import ConversationMeta, ConversationOut, MessageOut, LibraryDocument
 from backend.core.dependencies import get_conversation_store
 from backend.services.response_builder import build_chat_response
@@ -19,20 +25,26 @@ _LEGACY_QUERY_TYPE_MAP = {
 }
 
 
+def _meta_to_out(c) -> ConversationMeta:
+    return ConversationMeta(
+        conversation_id=c.conversation_id,
+        title=c.title,
+        created_at=c.created_at,
+        updated_at=c.updated_at,
+        message_count=getattr(c, "message_count", 0),
+        document_ids=getattr(c, "document_ids", []),
+        pinned=getattr(c, "pinned", False),
+        archived=getattr(c, "archived", False),
+    )
+
+
 @router.get("/conversations", response_model=List[ConversationMeta])
-async def list_conversations(store=Depends(get_conversation_store)):
-    convs = store.list_conversations()
-    return [
-        ConversationMeta(
-            conversation_id=c.conversation_id,
-            title=c.title,
-            created_at=c.created_at,
-            updated_at=c.updated_at,
-            message_count=c.message_count,
-            document_ids=getattr(c, "document_ids", []),
-        )
-        for c in convs
-    ]
+async def list_conversations(
+    archived: bool = False, store=Depends(get_conversation_store)
+):
+    """List conversations. If archived=true, returns archived ones instead."""
+    convs = store.list_archived() if archived else store.list_conversations()
+    return [_meta_to_out(c) for c in convs]
 
 
 @router.post("/conversations", response_model=ConversationMeta)
@@ -40,13 +52,7 @@ async def create_conversation(
     body: ConversationCreate, store=Depends(get_conversation_store)
 ):
     conv = store.create_conversation(body.title)
-    return ConversationMeta(
-        conversation_id=conv.conversation_id,
-        title=conv.title,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-        message_count=0,
-    )
+    return _meta_to_out(conv)
 
 
 @router.get("/conversations/{conv_id}", response_model=ConversationOut)
@@ -100,6 +106,26 @@ async def rename_conversation(
 ):
     store.rename_conversation(conv_id, body.title)
     return {"ok": True}
+
+
+@router.patch("/conversations/{conv_id}/pin", response_model=ConversationMeta)
+async def pin_conversation(
+    conv_id: str, body: PinRequest, store=Depends(get_conversation_store)
+):
+    meta = store.set_pinned(conv_id, body.pinned)
+    if meta is None:
+        raise HTTPException(404, "Conversation not found")
+    return _meta_to_out(meta)
+
+
+@router.patch("/conversations/{conv_id}/archive", response_model=ConversationMeta)
+async def archive_conversation(
+    conv_id: str, body: ArchiveRequest, store=Depends(get_conversation_store)
+):
+    meta = store.set_archived(conv_id, body.archived)
+    if meta is None:
+        raise HTTPException(404, "Conversation not found")
+    return _meta_to_out(meta)
 
 
 # ── Document scoping ──────────────────────────────────

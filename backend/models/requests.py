@@ -23,3 +23,21 @@ class ConversationRename(BaseModel):
 
 class AddDocumentsRequest(BaseModel):
     doc_ids: List[str]
+
+
+class PinRequest(BaseModel):
+    pinned: bool
+
+
+class ArchiveRequest(BaseModel):
+    archived: bool
+
+
+class KnowledgeCollectionCreate(BaseModel):
+    name: str
+    description: str = ""
+
+
+class KnowledgeCollectionUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None

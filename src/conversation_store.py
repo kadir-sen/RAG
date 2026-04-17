@@ -23,6 +23,7 @@ class ConversationMeta:
     updated_at: str
     message_count: int = 0
     pinned: bool = False
+    archived: bool = False
 
 
 @dataclass
@@ -68,7 +69,7 @@ class ConversationStore:
         if self.index_path.exists():
             try:
                 data = json.loads(self.index_path.read_text(encoding="utf-8"))
-                self._index = [ConversationMeta(**item) for item in data]
+                self._index = [self._meta_from_dict(item) for item in data]
             except Exception as e:
                 logger.warning(f"[ConvStore] Failed to load index for {self.username}: {e}")
                 self._index = []
@@ -79,9 +80,22 @@ class ConversationStore:
                 sync_user_conversations_from_gcs(self.username)
                 if self.index_path.exists():
                     data = json.loads(self.index_path.read_text(encoding="utf-8"))
-                    self._index = [ConversationMeta(**item) for item in data]
+                    self._index = [self._meta_from_dict(item) for item in data]
             except Exception:
                 self._index = []
+
+    @staticmethod
+    def _meta_from_dict(item: Dict[str, Any]) -> ConversationMeta:
+        """Backward-compatible ConversationMeta loader (ignores unknown keys, defaults missing ones)."""
+        return ConversationMeta(
+            conversation_id=item["conversation_id"],
+            title=item.get("title", ""),
+            created_at=item.get("created_at", ""),
+            updated_at=item.get("updated_at", ""),
+            message_count=item.get("message_count", 0),
+            pinned=item.get("pinned", False),
+            archived=item.get("archived", False),
+        )
 
     def _save_index(self) -> None:
         """Save conversation index to disk."""
@@ -165,9 +179,48 @@ class ConversationStore:
         """Get a full conversation by ID."""
         return self._load_conversation(conv_id)
 
-    def list_conversations(self) -> List[ConversationMeta]:
-        """List all conversations, newest first."""
-        return list(self._index)
+    def list_conversations(self, include_archived: bool = False) -> List[ConversationMeta]:
+        """
+        List conversations. Pinned first, then by recency.
+        Archived conversations are excluded unless include_archived=True.
+        """
+        items = [m for m in self._index if include_archived or not m.archived]
+        # Stable sort: by updated_at desc first, then by pinned desc.
+        # Pinned items end up on top, each group sorted by recency.
+        items.sort(key=lambda m: m.updated_at, reverse=True)
+        items.sort(key=lambda m: m.pinned, reverse=True)
+        return items
+
+    def list_archived(self) -> List[ConversationMeta]:
+        """List only archived conversations, most recently updated first."""
+        items = [m for m in self._index if m.archived]
+        items.sort(key=lambda m: m.updated_at, reverse=True)
+        return items
+
+    def set_pinned(self, conv_id: str, pinned: bool) -> Optional[ConversationMeta]:
+        """Pin or unpin a conversation. Returns updated meta or None if not found."""
+        for meta in self._index:
+            if meta.conversation_id == conv_id:
+                meta.pinned = bool(pinned)
+                meta.updated_at = datetime.now().isoformat()
+                self._save_index()
+                self.sync_to_gcs()
+                return meta
+        return None
+
+    def set_archived(self, conv_id: str, archived: bool) -> Optional[ConversationMeta]:
+        """Archive or unarchive a conversation. Returns updated meta or None if not found."""
+        for meta in self._index:
+            if meta.conversation_id == conv_id:
+                meta.archived = bool(archived)
+                # Archiving also unpins
+                if archived:
+                    meta.pinned = False
+                meta.updated_at = datetime.now().isoformat()
+                self._save_index()
+                self.sync_to_gcs()
+                return meta
+        return None
 
     def rename_conversation(self, conv_id: str, new_title: str) -> None:
         """Rename a conversation."""
