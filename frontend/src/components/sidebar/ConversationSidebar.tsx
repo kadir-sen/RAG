@@ -49,6 +49,8 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [docsExpanded, setDocsExpanded] = useState(true);
+  const [activeTypeFilter, setActiveTypeFilter] = useState<'all' | 'data' | 'document' | 'email'>('all');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
 
@@ -117,13 +119,13 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
     <aside
       aria-label="Sidebar"
       aria-hidden={!sidebarOpen}
-      className={`h-full md:h-full h-dvh bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out md:relative fixed md:z-auto z-40 top-0 left-0 ${sidebarOpen ? 'w-64' : 'w-0 border-r-0'}`}
+      className={`h-full md:h-full h-dvh bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out md:relative fixed md:z-auto z-40 top-0 left-0 ${sidebarOpen ? 'w-72' : 'w-0 border-r-0'}`}
     >
       {/* Header + New Chat */}
       <div className="p-4 shrink-0">
         <button onClick={handleNewChat}
-          className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium py-2 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm">
-          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-semibold py-2.5 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm shadow-sm shadow-[var(--accent)]/20">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <line x1="7" y1="2" x2="7" y2="12" /><line x1="2" y1="7" x2="12" y2="7" />
           </svg>
           New Chat
@@ -133,8 +135,8 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
       {/* Search + archive toggle */}
       <div className="px-3 pb-2 shrink-0 space-y-1.5">
         <div className="relative">
-          <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-            className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--text-muted)]">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]">
             <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.5" y2="16.5" />
           </svg>
           <input
@@ -143,7 +145,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={viewingArchived ? 'Arşivde ara...' : 'Sohbetlerde ara...'}
             aria-label="Sohbet ara"
-            className="w-full bg-[rgba(255,255,255,0.04)] border border-[var(--border)] rounded-lg pl-7 pr-6 py-1.5 text-xs text-white placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+            className="w-full bg-[rgba(255,255,255,0.04)] border border-[var(--border)] rounded-lg pl-9 pr-7 py-2 text-sm text-white placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
           />
           {searchQuery && (
             <button onClick={() => setSearchQuery('')} aria-label="Aramayı temizle"
@@ -167,7 +169,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
 
       {/* Chat list */}
       {filtered.length > 0 ? (
-        <div className="px-3 pb-2 shrink-0 max-h-44 overflow-y-auto">
+        <div className="px-3 pb-2 flex-1 min-h-0 overflow-y-auto">
           <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider mb-1.5 px-1">
             {viewingArchived ? 'Arşivlenenler' : 'Recent Chats'}
           </p>
@@ -299,41 +301,83 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col flex-1 overflow-hidden px-3 py-2">
-          <div className="mb-1 px-1 shrink-0">
-            <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">
+        <div className={`flex flex-col overflow-hidden px-3 py-2 shrink-0 ${docsExpanded ? 'h-64' : ''}`}>
+          <button
+            type="button"
+            onClick={() => setDocsExpanded((v) => !v)}
+            aria-expanded={docsExpanded}
+            className="mb-1 px-1 shrink-0 flex items-center justify-between w-full text-[var(--text-muted)] hover:text-white transition-colors"
+          >
+            <p className="text-xs font-semibold uppercase tracking-wider">
               Documents {files.length > 0 && `(${files.length})`}
             </p>
-          </div>
+            <svg aria-hidden="true" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              className={`transition-transform ${docsExpanded ? 'rotate-180' : ''}`}>
+              <path d="M2 4l4 4 4-4" />
+            </svg>
+          </button>
 
-          {/* Type counts */}
-          {files.length > 0 && (() => {
+          {docsExpanded && files.length > 0 && (() => {
             const counts: Record<string, number> = {};
             for (const f of files) { counts[f.file_type || 'unknown'] = (counts[f.file_type || 'unknown'] || 0) + 1; }
+            const chips: Array<{ key: 'data' | 'document' | 'email'; label: string; dot: string; count: number }> = [
+              { key: 'data',     label: 'Excel', dot: 'bg-green-500', count: counts['data'] || 0 },
+              { key: 'document', label: 'PDF',   dot: 'bg-red-500',   count: counts['document'] || 0 },
+              { key: 'email',    label: 'Mail',  dot: 'bg-blue-500',  count: counts['email'] || 0 },
+            ].filter((c) => c.count > 0);
             return (
-              <div className="flex gap-3 mb-2 px-1 text-xs text-[var(--text-muted)] shrink-0">
-                {counts['data'] && <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-green-500" />{counts['data']} excel</span>}
-                {counts['document'] && <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-red-500" />{counts['document']} pdf</span>}
-                {counts['email'] && <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-blue-500" />{counts['email']} mail</span>}
+              <div className="flex flex-wrap gap-1 mb-2 px-1 shrink-0">
+                {chips.map((c) => {
+                  const isActive = activeTypeFilter === c.key;
+                  return (
+                    <button
+                      key={c.key}
+                      type="button"
+                      aria-pressed={isActive}
+                      onClick={() => setActiveTypeFilter((prev) => (prev === c.key ? 'all' : c.key))}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] border transition-colors ${
+                        isActive
+                          ? 'bg-[var(--accent-glow)] border-[var(--accent)] text-white'
+                          : 'bg-[rgba(255,255,255,0.03)] border-[var(--border)] text-[var(--text-secondary)] hover:text-white hover:bg-[rgba(255,255,255,0.06)]'
+                      }`}
+                    >
+                      <span className={`w-2 h-2 rounded-full ${c.dot}`} />
+                      <span className="tabular-nums font-medium">{c.count}</span>
+                      <span>{c.label}</span>
+                    </button>
+                  );
+                })}
+                {activeTypeFilter !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTypeFilter('all')}
+                    className="px-2 py-1 rounded-md text-[11px] text-[var(--text-muted)] hover:text-white transition-colors"
+                  >
+                    Tümünü göster
+                  </button>
+                )}
               </div>
             );
           })()}
 
-          {/* File list - compact, scrollable with padding */}
-          <div className="flex-1 overflow-y-auto py-1">
-            {files.length === 0 ? (
-              <p className="text-xs text-[var(--text-muted)] py-4 text-center">No files uploaded yet</p>
-            ) : (
-              files.map((f) => (
-                <div key={f.id}
-                  onClick={() => openDocument({ docId: f.id, fileName: f.name })}
-                  className="flex items-center gap-2 cursor-pointer hover:bg-[rgba(255,255,255,0.04)] px-1 py-1 rounded transition-colors group">
-                  <FileIcon fileType={f.file_type} />
-                  <span className="text-[11px] truncate text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors flex-1">{f.name}</span>
-                </div>
-              ))
-            )}
-          </div>
+          {docsExpanded && (
+            <div className="flex-1 overflow-y-auto py-1 min-h-0">
+              {files.length === 0 ? (
+                <p className="text-xs text-[var(--text-muted)] py-4 text-center">No files uploaded yet</p>
+              ) : (
+                files
+                  .filter((f) => activeTypeFilter === 'all' || (f.file_type || 'unknown') === activeTypeFilter)
+                  .map((f) => (
+                    <div key={f.id}
+                      onClick={() => openDocument({ docId: f.id, fileName: f.name })}
+                      className="flex items-center gap-2 cursor-pointer hover:bg-[rgba(255,255,255,0.04)] px-1 py-1 rounded transition-colors group">
+                      <FileIcon fileType={f.file_type} />
+                      <span className="text-[11px] truncate text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors flex-1">{f.name}</span>
+                    </div>
+                  ))
+              )}
+            </div>
+          )}
         </div>
       )}
 

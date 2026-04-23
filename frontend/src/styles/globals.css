@@ -81,6 +81,19 @@ body {
   box-shadow: var(--shadow-glow);
 }
 
+/* ── Chat message surfaces ── */
+
+.assistant-card {
+  background: linear-gradient(180deg, var(--bg-surface) 0%, #1B1A24 100%);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.user-bubble {
+  background: linear-gradient(135deg, var(--user-bubble) 0%, #4A52D8 100%);
+  box-shadow: 0 2px 8px rgba(93, 100, 232, 0.25);
+}
+
 .gradient-text {
   background: var(--gradient-accent);
   -webkit-background-clip: text;

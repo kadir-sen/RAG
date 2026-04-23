@@ -6,6 +6,7 @@ interface Props {
   onNext?: () => void;
   onClose: () => void;
   onExport?: () => void;
+  typeBadge?: { label: string; dotClass: string; textClass: string; bgClass: string };
 }
 
 export default function ViewerToolbar({
@@ -16,12 +17,20 @@ export default function ViewerToolbar({
   onNext,
   onClose,
   onExport,
+  typeBadge,
 }: Props) {
   return (
-    <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-surface)] shrink-0">
-      <span className="text-xs text-[var(--text-primary)] truncate min-w-0 flex-1">
-        {fileName}
-      </span>
+    <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-[var(--border)] bg-[var(--bg-surface)] shrink-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
+        {typeBadge && (
+          <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide ${typeBadge.bgClass} ${typeBadge.textClass}`}>
+            {typeBadge.label}
+          </span>
+        )}
+        <span className="text-sm font-medium text-[var(--text-primary)] truncate min-w-0">
+          {fileName}
+        </span>
+      </div>
       <div className="flex items-center gap-1.5 flex-shrink-0">
         {page != null && totalPages != null && totalPages > 1 && (
           <>
