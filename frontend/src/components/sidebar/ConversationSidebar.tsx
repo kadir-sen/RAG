@@ -320,11 +320,12 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           {docsExpanded && files.length > 0 && (() => {
             const counts: Record<string, number> = {};
             for (const f of files) { counts[f.file_type || 'unknown'] = (counts[f.file_type || 'unknown'] || 0) + 1; }
-            const chips: Array<{ key: 'data' | 'document' | 'email'; label: string; dot: string; count: number }> = [
+            const allChips: Array<{ key: 'data' | 'document' | 'email'; label: string; dot: string; count: number }> = [
               { key: 'data',     label: 'Excel', dot: 'bg-green-500', count: counts['data'] || 0 },
               { key: 'document', label: 'PDF',   dot: 'bg-red-500',   count: counts['document'] || 0 },
               { key: 'email',    label: 'Mail',  dot: 'bg-blue-500',  count: counts['email'] || 0 },
-            ].filter((c) => c.count > 0);
+            ];
+            const chips = allChips.filter((c) => c.count > 0);
             return (
               <div className="flex flex-wrap gap-1 mb-2 px-1 shrink-0">
                 {chips.map((c) => {
