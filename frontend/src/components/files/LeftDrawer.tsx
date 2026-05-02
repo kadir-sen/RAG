@@ -10,6 +10,7 @@ import FileListItem from './FileListItem';
 import LibraryPickerModal from './LibraryPickerModal';
 import KnowledgeModal from '../knowledge/KnowledgeModal';
 import Badge from '../shared/Badge';
+import DataTablesPanel from '../admin/DataTablesPanel';
 
 const typeColor: Record<string, string> = {
   document: '#3b82f6',
@@ -24,6 +25,7 @@ export default function LeftDrawer() {
   const { docs, addDocs, removeDoc } = useConversationDocs(activeConversationId);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [dataTablesOpen, setDataTablesOpen] = useState(false);
 
   const indexing = useQuery({
     queryKey: ['indexingStatus'],
@@ -209,10 +211,17 @@ export default function LeftDrawer() {
               <p className="text-lg font-bold text-[var(--accent)]">{vecCount}</p>
               <p className="text-[10px] text-[var(--text-muted)] font-medium">Vectors</p>
             </div>
-            <div className="flex-1 rounded-lg bg-[var(--bg-primary)] p-2.5 text-center border border-[var(--border)]">
+            <button
+              onClick={() => setDataTablesOpen(true)}
+              className="flex-1 rounded-lg bg-[var(--bg-primary)] p-2.5 text-center border border-[var(--border)] hover:border-[var(--accent)]/50 transition-colors"
+              title="Manage SQL data tables"
+            >
               <p className="text-lg font-bold text-[var(--accent)]">{tblCount}</p>
-              <p className="text-[10px] text-[var(--text-muted)] font-medium">Tables</p>
-            </div>
+              <p className="text-[10px] text-[var(--text-muted)] font-medium">
+                Tables
+                <span className="ml-1 underline opacity-70">manage</span>
+              </p>
+            </button>
           </div>
 
           {/* Indexing status */}
@@ -323,6 +332,12 @@ export default function LeftDrawer() {
           if (docIds.length > 0) addDocs.mutate(docIds);
         }}
         applyDisabled={!activeConversationId}
+      />
+
+      {/* SQL data tables admin panel */}
+      <DataTablesPanel
+        open={dataTablesOpen}
+        onClose={() => setDataTablesOpen(false)}
       />
     </div>
   );

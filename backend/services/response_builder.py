@@ -3,7 +3,14 @@
 import hashlib
 import re
 from typing import Dict, Any, List
-from backend.models.responses import ChatResponse, Citation, RelatedDoc, SQLArtifact, ProviderAnswer
+from backend.models.responses import (
+    CallToAction,
+    ChatResponse,
+    Citation,
+    ProviderAnswer,
+    RelatedDoc,
+    SQLArtifact,
+)
 
 
 # Regex: only safe URL chars (hex hash, alphanumeric, dash, underscore, dot)
@@ -51,6 +58,7 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     ui_intent = INTENT_MAP.get(query_type, "answer")
     citations, related_docs = _extract_citations_and_related(sources, query_type)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
+    cta = _extract_cta(result_data)
 
     # Extract routing confidence for frontend display
     routing = raw.get("routing", {})
@@ -63,6 +71,7 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
         related_docs=related_docs,
         routing_confidence=routing_confidence,
         sql_artifact=sql_artifact,
+        cta=cta,
     )
 
 
@@ -116,6 +125,7 @@ def _build_from_dual(raw: Dict[str, Any]) -> ChatResponse:
 
     citations, related_docs = _extract_citations_and_related(sources, query_type)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
+    cta = _extract_cta(result_data)
 
     return ChatResponse(
         ui_intent=ui_intent,
@@ -125,6 +135,7 @@ def _build_from_dual(raw: Dict[str, Any]) -> ChatResponse:
         sql_artifact=sql_artifact,
         provider_answers=provider_answers,
         routing_confidence=routing_confidence,
+        cta=cta,
     )
 
 
@@ -172,7 +183,7 @@ def _extract_citations_and_related(
 
 def _build_sql_artifact(
     sql: str | None,
-    result_data: list | None,
+    result_data: Any,
     sources: List[Dict[str, Any]],
 ) -> SQLArtifact | None:
     if not sql:
@@ -190,15 +201,30 @@ def _build_sql_artifact(
         source_file_id = data_source.get("doc_id", "")
         source_file_name = data_source.get("file_name", "")
 
-    preview = []
-    if result_data and isinstance(result_data, list):
-        preview = result_data[:20]
+    rows: List[Dict[str, Any]] = []
+    if isinstance(result_data, list):
+        rows = result_data
 
     return SQLArtifact(
         generated_sql=sql,
         tables_used=tables_used,
-        row_count=len(result_data) if result_data else 0,
-        preview_rows=preview,
+        row_count=len(rows),
+        preview_rows=rows[:20],
         source_file_id=source_file_id,
         source_file_name=source_file_name,
     )
+
+
+def _extract_cta(result_data: Any) -> CallToAction | None:
+    """Pull a CallToAction hint from result_data when it's a dict carrying 'action'.
+    Used by SQL handler to surface 'Reindex Data Tables' when no tables exist."""
+    if not isinstance(result_data, dict):
+        return None
+    action = result_data.get("action")
+    if not action:
+        return None
+    label = ""
+    if action == "reindex_data_tables":
+        label = "Reindex Data Tables"
+    metadata = {k: v for k, v in result_data.items() if k != "action"}
+    return CallToAction(action=action, label=label, metadata=metadata)

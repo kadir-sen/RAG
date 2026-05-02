@@ -32,6 +32,31 @@ function FileListItem({ file, onClick, noticeMetadata }: Props) {
         <span className="flex-1 text-xs text-[var(--text-primary)] truncate">
           {file.name}
         </span>
+        {file.file_type === 'data' && file.data_table_status && (
+          <span
+            title={
+              file.data_table_status === 'registered'
+                ? `Queryable as SQL (${file.data_tables_count ?? 0} table(s))`
+                : file.data_table_status === 'no_schema_match'
+                  ? 'Indexed for RAG only — no schema match for SQL'
+                  : 'Failed to register as SQL table'
+            }
+            className={
+              'text-[9px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ' +
+              (file.data_table_status === 'registered'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : file.data_table_status === 'no_schema_match'
+                  ? 'bg-zinc-500/20 text-zinc-300 border border-zinc-500/30'
+                  : 'bg-red-500/20 text-red-300 border border-red-500/30')
+            }
+          >
+            {file.data_table_status === 'registered'
+              ? 'DB'
+              : file.data_table_status === 'no_schema_match'
+                ? 'RAG'
+                : 'ERR'}
+          </span>
+        )}
         <Badge label={file.file_type} />
       </div>
       {/* Metadata chips */}
