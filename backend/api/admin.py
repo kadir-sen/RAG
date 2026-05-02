@@ -68,22 +68,38 @@ def _get_data_records():
 
 @router.get("/admin/data-tables/status", response_model=StatusResponse)
 async def data_tables_status() -> StatusResponse:
-    from src.catalog import get_catalog
+    from pathlib import Path as _Path
+    from src.catalog import get_catalog, PARQUET_DIR
     from src.data_analyzer_sql import get_data_analyzer
 
+    catalog = get_catalog()
+
+    # Build a fast lookup of which files are present in the catalog so we can
+    # treat catalog membership as the source of truth for "registered" — older
+    # uploads predate the data_table_status field on DocumentRecord.
+    catalog_files: dict[str, int] = {}
+    for entry in catalog.entries.values():
+        fname = _Path(entry.source_file).name
+        catalog_files[fname] = len(entry.tables)
+
     records = _get_data_records()
-    files = [
-        FileStatus(
+    files: list[FileStatus] = []
+    for r in records:
+        status = getattr(r, "data_table_status", None)
+        tables_count = getattr(r, "data_tables_count", 0)
+        # Backfill when registry was written before data_table_status existed
+        if status is None and r.file_name in catalog_files:
+            status = "registered"
+            tables_count = catalog_files[r.file_name] or tables_count
+        files.append(FileStatus(
             file_id=r.doc_id,
             file_name=r.file_name,
             extension=r.extension,
             status=r.status,
-            data_table_status=getattr(r, "data_table_status", None),
-            data_tables_count=getattr(r, "data_tables_count", 0),
+            data_table_status=status,
+            data_tables_count=tables_count,
             table_names=list(getattr(r, "table_names", []) or []),
-        )
-        for r in records
-    ]
+        ))
 
     counts = {"registered": 0, "no_schema_match": 0, "error": 0, "pending": 0}
     for f in files:
@@ -97,12 +113,15 @@ async def data_tables_status() -> StatusResponse:
         else:
             counts["pending"] += 1
 
-    # Schema breakdown from catalog
+    # Schema breakdown from catalog (target_schema is set per TableMetadata)
     schema_summary: dict[str, int] = {}
-    catalog = get_catalog()
     for entry in catalog.entries.values():
         for t in entry.tables:
-            sid = getattr(t, "target_schema", None) or "unknown"
+            sid = (
+                getattr(t, "target_schema", None)
+                or getattr(t, "extraction_method", None)
+                or "unknown"
+            )
             schema_summary[sid] = schema_summary.get(sid, 0) + 1
 
     # Live DuckDB count
@@ -112,15 +131,10 @@ async def data_tables_status() -> StatusResponse:
     except Exception:
         duckdb_loaded = 0
 
-    # Parquet files on disk
+    # Parquet files on disk — use the canonical PARQUET_DIR from catalog.py
     parquet_count = 0
-    try:
-        from src.config import CATALOG_DIR  # type: ignore
-        parquet_dir = Path(CATALOG_DIR) / "parquets"
-    except Exception:
-        parquet_dir = Path("data/catalog/parquets")
-    if parquet_dir.exists():
-        parquet_count = sum(1 for _ in parquet_dir.glob("*.parquet"))
+    if PARQUET_DIR.exists():
+        parquet_count = sum(1 for _ in PARQUET_DIR.glob("*.parquet"))
 
     return StatusResponse(
         total_data_files=len(files),

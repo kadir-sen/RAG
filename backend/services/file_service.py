@@ -150,6 +150,11 @@ class FileService:
                     f["file_type"] = "data" if entry.source_type in ("excel", "csv") else f["file_type"]
                     f["tables"] = len(entry.tables)
                     f["rows"] = sum(t.row_count for t in entry.tables)
+                    # Backfill for files registered before data_table_status existed.
+                    # Catalog membership is the truth for "registered".
+                    if not f.get("data_table_status"):
+                        f["data_table_status"] = "registered"
+                        f["data_tables_count"] = len(entry.tables)
                     if entry.notice_summary:
                         ns = entry.notice_summary
                         f["document_date"] = ns.get("date", "") or ""
