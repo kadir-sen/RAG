@@ -117,6 +117,8 @@ class FileService:
                     "sender": "",
                     "recipient": "",
                     "subject": "",
+                    "data_table_status": getattr(rec, 'data_table_status', None),
+                    "data_tables_count": getattr(rec, 'data_tables_count', 0),
                 })
         except Exception:
             pass

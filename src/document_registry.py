@@ -8,7 +8,7 @@ import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import STORAGE_DIR
 from .document_rag import generate_doc_id
@@ -33,6 +33,14 @@ class DocumentRecord:
     created_at: str = ""
     completed_at: str = ""
     error: Optional[str] = None
+    # Excel/CSV ingestion outcome (only meaningful when file_type == "data")
+    # "registered"      → at least one parquet/DuckDB table created
+    # "no_schema_match" → file processed but no sheet matched a target schema
+    # "rag_only"        → not a data file (kept for default Optional in JSON)
+    # "error"           → processing crashed
+    data_table_status: Optional[str] = None
+    data_tables_count: int = 0
+    schema_match_details: List[Dict] = field(default_factory=list)
 
 
 class DocumentRegistry:
@@ -140,6 +148,9 @@ class DocumentRegistry:
         doc_id: str,
         table_names: Optional[List[str]] = None,
         notice_extracted: bool = False,
+        data_table_status: Optional[str] = None,
+        data_tables_count: Optional[int] = None,
+        schema_match_details: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         with self._file_lock:
             rec = self._records.get(doc_id)
@@ -148,6 +159,12 @@ class DocumentRegistry:
                 rec.completed_at = datetime.now().isoformat()
                 rec.table_names = table_names or []
                 rec.notice_extracted = notice_extracted
+                if data_table_status is not None:
+                    rec.data_table_status = data_table_status
+                if data_tables_count is not None:
+                    rec.data_tables_count = data_tables_count
+                if schema_match_details is not None:
+                    rec.schema_match_details = schema_match_details
                 self._save()
                 logger.info(f"[Registry] Completed: {rec.file_name}")
 

@@ -46,6 +46,9 @@ class ProcessingResult:
     converter_generated: bool = False
     target_schema: Optional[str] = None
     error: Optional[str] = None
+    # Per-sheet schema match diagnostics for Excel/CSV (one entry per sheet attempted)
+    # Each: {sheet, schema_id, ratio, matched_columns, missing_columns, registered}
+    schema_match_details: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def route_file(file_path: str) -> ProcessingResult:
@@ -458,6 +461,14 @@ def _process_data_file(file_path: str) -> ProcessingResult:
                 total_rows += len(conv_result.df)
                 if conv_result.target_schema == "ipc_sample":
                     ipc_table_names.append(table_name)
+
+                result.schema_match_details.append({
+                    "sheet": conv_result.sheet_name,
+                    "schema_id": conv_result.target_schema,
+                    "table_name": table_name,
+                    "rows": len(conv_result.df),
+                    "registered": True,
+                })
 
             if tables_saved > 0:
                 # Load all tables into DuckDB

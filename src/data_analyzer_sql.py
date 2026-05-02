@@ -1072,6 +1072,8 @@ class DataAnalyzerSQL:
                 if info.get("parquet_path")
             }
 
+            from .catalog import PARQUET_DIR
+
             count = 0
             for table_meta in all_tables:
                 # Skip already loaded tables
@@ -1082,8 +1084,19 @@ class DataAnalyzerSQL:
                 if parquet_path in loaded_parquets:
                     continue
                 if not Path(parquet_path).exists():
-                    logger.warning(f"[Catalog] Parquet not found: {parquet_path}")
-                    continue
+                    # Auto-heal: catalog may have a stale absolute path (e.g. from
+                    # a Docker container). Try the same filename under the local
+                    # PARQUET_DIR before giving up.
+                    fallback = PARQUET_DIR / Path(parquet_path).name
+                    if fallback.exists():
+                        logger.info(
+                            f"[Catalog] Parquet path remapped: "
+                            f"{parquet_path} -> {fallback}"
+                        )
+                        parquet_path = str(fallback)
+                    else:
+                        logger.warning(f"[Catalog] Parquet not found: {parquet_path}")
+                        continue
                 if self.register_parquet_view(parquet_path, table_meta.table_name):
                     self.tables[table_meta.table_name]["source_file"] = table_meta.source_file
                     self.tables[table_meta.table_name]["source_type"] = table_meta.source_type
@@ -1901,11 +1914,41 @@ class DataAnalyzerSQL:
         logger.info(f"Question: {question[:100]}...")
 
         if not self.tables:
+            # Inspect registry to give a precise, actionable diagnosis
+            excel_count = 0
+            registered_count = 0
+            try:
+                from .document_registry import get_document_registry
+                registry = get_document_registry()
+                for rec in registry.get_all():
+                    if rec.file_type == "data":
+                        excel_count += 1
+                        if rec.data_table_status == "registered":
+                            registered_count += 1
+            except Exception:
+                pass
+
+            if excel_count == 0:
+                msg = (
+                    "No data tables loaded. Please upload Excel or CSV files first."
+                )
+            else:
+                msg = (
+                    f"No data tables available for SQL queries. "
+                    f"You have {excel_count} Excel/CSV file(s) uploaded but none "
+                    f"are registered as queryable tables. "
+                    f"Use 'Reindex Data Tables' to (re-)process them."
+                )
+
             return {
-                "answer": "No data tables loaded. Please upload Excel or CSV files first.",
+                "answer": msg,
                 "sources": [],
                 "sql": None,
-                "result_data": None,
+                "result_data": {
+                    "action": "reindex_data_tables",
+                    "excel_count": excel_count,
+                    "registered_count": registered_count,
+                } if excel_count > 0 else None,
             }
 
         # Select table

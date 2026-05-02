@@ -10,6 +10,7 @@ import DocListResponse from './DocListResponse';
 import SqlArtifact from './SqlArtifact';
 import EmailTraceResponse from './EmailTraceResponse';
 import ProviderTabs from './ProviderTabs';
+import CtaButton from './CtaButton';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -124,6 +125,8 @@ function AssistantMessage({ response, text, onDocClick, failedText, onRetry }: P
               {!hasProviders && intent === 'sql_result' && response.sql_artifact && (
                 <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
               )}
+
+              {response.cta && <CtaButton cta={response.cta} />}
 
               <CitationChipRow
                 citations={response.citations}

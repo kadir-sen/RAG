@@ -53,6 +53,14 @@ class ProviderAnswer(BaseModel):
     sql_artifact: Optional[SQLArtifact] = None
 
 
+class CallToAction(BaseModel):
+    """An actionable hint the frontend can render as a button.
+    Currently used to surface 'Reindex Data Tables' when SQL has no tables."""
+    action: str                              # e.g. "reindex_data_tables"
+    label: str = ""
+    metadata: dict = Field(default_factory=dict)
+
+
 class ChatResponse(BaseModel):
     ui_intent: str       # "answer" | "doc_list" | "email_trace" | "sql_result"
     assistant_text: str
@@ -61,6 +69,7 @@ class ChatResponse(BaseModel):
     sql_artifact: Optional[SQLArtifact] = None
     provider_answers: List[ProviderAnswer] = Field(default_factory=list)
     routing_confidence: Optional[float] = None  # 0.0-1.0, shown to user when low
+    cta: Optional[CallToAction] = None
 
 
 class ConversationMeta(BaseModel):
@@ -101,6 +110,9 @@ class FileInfo(BaseModel):
     rows: int = 0
     notice_extracted: bool = False
     status: str = "completed"
+    # Excel/CSV specific: registered/no_schema_match/error/None
+    data_table_status: Optional[str] = None
+    data_tables_count: int = 0
 
 
 class UploadResult(BaseModel):

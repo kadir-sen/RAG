@@ -46,6 +46,8 @@ async def list_files():
             tables=f.get("tables", 0),
             rows=f.get("rows", 0),
             status=f.get("status", "completed"),
+            data_table_status=f.get("data_table_status"),
+            data_tables_count=f.get("data_tables_count", 0),
         )
         for f in raw
     ]

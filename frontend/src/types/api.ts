@@ -46,6 +46,12 @@ export interface ProviderAnswer {
   sql_artifact: SQLArtifact | null;
 }
 
+export interface CallToAction {
+  action: string;
+  label: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface ChatResponse {
   ui_intent: 'answer' | 'doc_list' | 'email_trace' | 'sql_result';
   assistant_text: string;
@@ -54,6 +60,7 @@ export interface ChatResponse {
   sql_artifact: SQLArtifact | null;
   provider_answers: ProviderAnswer[];
   routing_confidence: number | null;
+  cta: CallToAction | null;
 }
 
 export interface ConversationMeta {
@@ -100,6 +107,12 @@ export interface KnowledgeCollectionDetail {
   updated_at: string;
 }
 
+export type DataTableStatus =
+  | 'registered'
+  | 'no_schema_match'
+  | 'error'
+  | null;
+
 export interface FileInfo {
   id: string;
   name: string;
@@ -109,6 +122,76 @@ export interface FileInfo {
   tables: number;
   rows: number;
   notice_extracted: boolean;
+  data_table_status?: DataTableStatus;
+  data_tables_count?: number;
+}
+
+export interface DataTablesStatus {
+  total_data_files: number;
+  registered: number;
+  no_schema_match: number;
+  error: number;
+  pending: number;
+  duckdb_tables_loaded: number;
+  catalog_entries: number;
+  parquet_files: number;
+  schema_summary: Record<string, number>;
+  files: Array<{
+    file_id: string;
+    file_name: string;
+    extension: string;
+    status: string;
+    data_table_status: DataTableStatus;
+    data_tables_count: number;
+    table_names: string[];
+  }>;
+}
+
+export interface ReindexDryRunResult {
+  dry_run: true;
+  total_targets: number;
+  would_register: number;
+  previews: Array<{
+    file_id: string;
+    file_name: string;
+    would_register: boolean;
+    reason: string | null;
+    schema_matches: Array<{ sheet: string; schema_id: string; rows: number }>;
+  }>;
+}
+
+export interface ReindexScheduledResult {
+  dry_run: false;
+  scheduled: number;
+  files: string[];
+}
+
+export type ReindexResult = ReindexDryRunResult | ReindexScheduledResult;
+
+export interface DiagnoseResult {
+  ok: boolean;
+  error?: string;
+  file?: {
+    id: string;
+    name: string;
+    extension: string;
+    data_table_status: DataTableStatus;
+  };
+  extractor_matches?: Array<[string, string]> | null;
+  sheets?: Array<{
+    sheet: string;
+    rows?: number;
+    columns?: string[];
+    error?: string;
+    schema_matches?: Array<{
+      schema_id: string;
+      matched: string[];
+      missing: string[];
+      ratio: number;
+    }>;
+    best_schema?: string | null;
+    best_ratio?: number;
+  }>;
 }
 
 export interface UploadResult {
