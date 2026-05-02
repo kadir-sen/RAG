@@ -1854,15 +1854,21 @@ class DataAnalyzerSQL:
         from . import llm_client
         from .prompt_security import safe_render_prompt, build_system_prompt
 
-        # For enumeration queries, send more data to LLM
-        enum_keywords = ["how many", "list all", "types", "categories"]
+        # Send the full result to the LLM whenever it's small enough that the
+        # narrative could otherwise miss late rows (e.g. 33-month time series
+        # truncated to 20 makes the answer claim the data ends mid-series).
+        # Threshold is generous because aggregated results stay tiny in tokens.
+        enum_keywords = ["how many", "list all", "types", "categories",
+                         "trend", "monthly", "by month", "show the",
+                         "over time", "per month", "per year", "by trade"]
         is_enum = any(kw in question.lower() for kw in enum_keywords)
-        if is_enum and len(result_df) <= 50:
-            preview = result_df.to_string(index=False)
-        elif not result_df.empty:
-            preview = result_df.head(20).to_string(index=False)
-        else:
+        if result_df.empty:
             preview = "Empty result"
+        elif len(result_df) <= 50 or (is_enum and len(result_df) <= 200):
+            preview = result_df.to_string(index=False)
+        else:
+            preview = result_df.head(20).to_string(index=False)
+            preview += f"\n... ({len(result_df) - 20} more rows truncated)"
         table_context = self._build_table_context(table_name) if table_name else ""
         jargon_hints = self.jargon.build_column_context(list(result_df.columns))
 
