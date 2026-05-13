@@ -3,14 +3,15 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import type { ChatResponse } from '../../types/api';
 import type { ViewerDoc } from '../../stores/uiStore';
+import { useChatStore } from '../../stores/chatStore';
 import Badge from '../shared/Badge';
 import CitationChipRow from './CitationChipRow';
 import RelatedDocsList from './RelatedDocsList';
 import DocListResponse from './DocListResponse';
 import SqlArtifact from './SqlArtifact';
 import EmailTraceResponse from './EmailTraceResponse';
-import ProviderTabs from './ProviderTabs';
 import CtaButton from './CtaButton';
+import DocumentAnalysisTimeline, { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -45,14 +46,29 @@ const markdownComponents: Components = {
 interface Props {
   response?: ChatResponse;
   text: string;
+  timestamp?: number;
   onDocClick: (doc: ViewerDoc) => void;
   failedText?: string;
   onRetry?: (text: string) => void;
 }
 
-function AssistantMessage({ response, text, onDocClick, failedText, onRetry }: Props) {
+function formatTime(ts?: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function AssistantMessage({ response, text, timestamp, onDocClick, failedText, onRetry }: Props) {
   const intent = response?.ui_intent ?? 'answer';
-  const hasProviders = response?.provider_answers && response.provider_answers.length > 1;
+  // Provider names are hidden from the UI; always render the primary text.
+  const _unusedProviderAnswers = response?.provider_answers; void _unusedProviderAnswers;
+  const activeMode = useChatStore((s) => s.activeMode);
+  const showTimeline =
+    activeMode === 'document_analysis' &&
+    intent === 'doc_list' &&
+    !!response?.related_docs?.length;
+  const intentLabel = showTimeline ? 'timeline' : intent;
+  const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
@@ -63,55 +79,53 @@ function AssistantMessage({ response, text, onDocClick, failedText, onRetry }: P
   }, [text]);
 
   return (
-    <div className="flex justify-start mb-6 gap-3 px-4 animate-fade-in-up group">
-      {/* AI Avatar */}
-      <div className="flex-shrink-0 w-7 h-7 md:w-8 md:h-8 rounded-full bg-[var(--accent)] flex items-center justify-center mt-1 ring-2 ring-[var(--accent)]/30 shadow-[0_0_12px_rgba(123,90,242,0.35)]" aria-hidden="true">
-        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-          <path d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </div>
-
+    <div className="mb-6 px-4 animate-fade-in-up group">
       <div className="max-w-4xl min-w-0">
-        {/* Intent badge + low confidence indicator */}
+        {/* Intent label row — mono "CIQ · {kind}" + low confidence + copy */}
         <div className="mb-1.5 flex flex-wrap items-center gap-1.5 md:gap-2">
-          <Badge label={intent} />
+          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--accent)]">
+            Asistant · {intentLabel}{time && ` · ${time}`}
+          </span>
           {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
-            <span className="text-[10px] text-[var(--text-muted)] italic truncate max-w-[200px]">
-              Low confidence — try rephrasing
-            </span>
+            <Badge label="low confidence" />
           )}
           {/* Copy button — visible on hover */}
           <button
             onClick={handleCopy}
             aria-label={copied ? 'Response copied' : 'Copy response'}
-            className="ml-auto opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity px-2 py-0.5 rounded text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+            className="ml-auto opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity px-2 py-0.5 rounded text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
           >
-            {copied ? 'Copied!' : 'Copy'}
+            {copied ? 'copied!' : 'copy'}
           </button>
         </div>
 
-        {/* Main content card */}
-        <div className="px-4 py-4 md:px-6 md:py-5 rounded-2xl rounded-tl-sm assistant-card text-sm leading-relaxed">
-          {/* Multi-provider tabs OR single answer */}
-          {hasProviders ? (
-            <ProviderTabs
-              answers={response!.provider_answers}
-              onSourceClick={onDocClick}
-            />
-          ) : (
-            <div className="prose prose-invert prose-sm max-w-none text-[var(--text-primary)]">
-              <ReactMarkdown components={markdownComponents}>{text}</ReactMarkdown>
-            </div>
-          )}
+        {/* Main content card — column layout, hairline border, no avatar */}
+        <div className="px-4 py-4 md:px-5 md:py-4 rounded-md border border-[var(--border)] bg-[rgba(255,255,255,0.02)] text-sm leading-relaxed">
+          {/* Provider tabs are hidden — always render the single primary answer. */}
+          <div className="prose prose-invert prose-sm max-w-none text-[var(--text-primary)]">
+            <ReactMarkdown components={markdownComponents}>{text}</ReactMarkdown>
+          </div>
 
           {/* Intent-specific rendering */}
           {response && (
             <>
-              {intent === 'doc_list' && (
+              {intent === 'doc_list' && !showTimeline && (
                 <DocListResponse
                   docs={response.related_docs}
                   onDocClick={onDocClick}
                 />
+              )}
+
+              {showTimeline && (
+                <div className="mt-3">
+                  <DocumentAnalysisTimeline
+                    events={mapRelatedDocsToTimeline(response.related_docs)}
+                    onEventClick={(e) => {
+                      if (!e.id) return;
+                      onDocClick({ docId: e.id, fileName: e.title });
+                    }}
+                  />
+                </div>
               )}
 
               {intent === 'email_trace' && (
@@ -133,7 +147,7 @@ function AssistantMessage({ response, text, onDocClick, failedText, onRetry }: P
                 onChipClick={onDocClick}
               />
 
-              {intent !== 'doc_list' && intent !== 'email_trace' && (
+              {intent !== 'doc_list' && intent !== 'email_trace' && !showTimeline && (
                 <RelatedDocsList
                   docs={response.related_docs}
                   onDocClick={onDocClick}

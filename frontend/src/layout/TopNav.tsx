@@ -1,4 +1,5 @@
 import { useUIStore } from '../stores/uiStore';
+import UsageBadge from '../components/shared/UsageBadge';
 
 export default function TopNav() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
@@ -29,14 +30,14 @@ export default function TopNav() {
             </svg>
           )}
         </button>
-        <div className="flex items-center gap-1.5" aria-label="ConstructionIQ">
-          <span className="font-semibold text-sm text-white">Construction</span>
-          <span className="font-semibold text-sm text-[var(--accent)]">IQ</span>
+        <div className="flex items-center gap-1.5" aria-label="Asistant">
+          <span className="font-semibold text-sm text-white">Asistant</span>
         </div>
       </nav>
 
-      {/* Right — settings + avatar */}
+      {/* Right — usage badge + settings + avatar */}
       <div className="flex items-center gap-3 text-[var(--text-secondary)]">
+        <UsageBadge />
         <button
           onClick={toggleSettings}
           aria-label="Open settings"

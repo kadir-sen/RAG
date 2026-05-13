@@ -11,12 +11,7 @@ import LibraryPickerModal from './LibraryPickerModal';
 import KnowledgeModal from '../knowledge/KnowledgeModal';
 import Badge from '../shared/Badge';
 import DataTablesPanel from '../admin/DataTablesPanel';
-
-const typeColor: Record<string, string> = {
-  document: '#3b82f6',
-  data: '#10b981',
-  email: '#f59e0b',
-};
+import { getFileTypeBadge } from '../../styles/tokens';
 
 export default function LeftDrawer() {
   const { leftDrawerOpen, toggleLeftDrawer, openDocument, leftDrawerTab, setLeftDrawerTab } = useUIStore();
@@ -26,6 +21,13 @@ export default function LeftDrawer() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [dataTablesOpen, setDataTablesOpen] = useState(false);
+  const [openFolders, setOpenFolders] = useState<Record<'documents' | 'tables' | 'communications', boolean>>({
+    documents: false,
+    tables: false,
+    communications: false,
+  });
+  const toggleFolder = (key: 'documents' | 'tables' | 'communications') =>
+    setOpenFolders((prev) => ({ ...prev, [key]: !prev[key] }));
 
   const indexing = useQuery({
     queryKey: ['indexingStatus'],
@@ -138,7 +140,7 @@ export default function LeftDrawer() {
                 >
                   <div
                     className="w-0.5 h-6 rounded-full ml-1 flex-shrink-0"
-                    style={{ background: typeColor[doc.file_type] || '#6366f1' }}
+                    style={{ background: getFileTypeBadge(doc.file_type).dot }}
                   />
                   <div
                     className="flex-1 min-w-0 cursor-pointer"
@@ -260,11 +262,11 @@ export default function LeftDrawer() {
             </div>
           )}
 
-          {/* File list header */}
+          {/* Export bar */}
           {files.length > 0 && (
             <div className="flex items-center justify-between px-3 pb-1">
               <h3 className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                Uploaded Files ({files.length})
+                Library ({files.length})
               </h3>
               <a
                 href={getExportUrl()}
@@ -277,41 +279,121 @@ export default function LeftDrawer() {
             </div>
           )}
 
-          {/* File list */}
+          {/* Folder list */}
           <div className="flex-1 overflow-y-auto px-2 py-1">
-            {files.length === 0 ? (
-              <div className="px-2 py-8 text-center text-xs text-[var(--text-muted)]">
-                No files uploaded yet.
-              </div>
-            ) : (
-              files.map((f) => (
-                <div
-                  key={f.id}
-                  className="group flex items-center rounded-lg hover:bg-[var(--bg-hover)] transition-colors mb-0.5"
+            {(() => {
+              const groups = {
+                documents: files.filter((f) => {
+                  const t = (f.file_type || '').toLowerCase();
+                  return t === 'document' || t === 'pdf' || t === 'doc' || t === 'docx' || t === 'text' || t === 'txt';
+                }),
+                tables: files.filter((f) => {
+                  const t = (f.file_type || '').toLowerCase();
+                  return t === 'data' || t === 'excel' || t === 'xls' || t === 'xlsx' || t === 'csv';
+                }),
+                communications: files.filter((f) => {
+                  const t = (f.file_type || '').toLowerCase();
+                  return t === 'email' || t === 'eml' || t === 'msg';
+                }),
+              };
+
+              const FolderIcon = ({ open }: { open: boolean }) => (
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={`transition-transform ${open ? 'rotate-90' : ''}`}
                 >
-                  <div
-                    className="w-0.5 h-6 rounded-full ml-1 flex-shrink-0"
-                    style={{ background: typeColor[f.file_type] || '#6366f1' }}
-                  />
-                  <div
-                    className="flex-1 min-w-0 cursor-pointer"
-                    onClick={() => openDocument({ docId: f.id, fileName: f.name })}
-                  >
-                    <FileListItem file={f} onClick={() => {}} />
+                  <path d="M4 2.5L7.5 6L4 9.5" />
+                </svg>
+              );
+
+              const folders: Array<{
+                key: 'documents' | 'tables' | 'communications';
+                label: string;
+                items: typeof files;
+                accent: string;
+              }> = [
+                { key: 'documents', label: 'Documents', items: groups.documents, accent: 'var(--type-pdf)' },
+                { key: 'tables', label: 'Tables', items: groups.tables, accent: 'var(--type-xls)' },
+                { key: 'communications', label: 'Communications', items: groups.communications, accent: 'var(--type-eml)' },
+              ];
+
+              if (files.length === 0) {
+                return (
+                  <div className="px-2 py-8 text-center text-xs text-[var(--text-muted)]">
+                    No files uploaded yet.
                   </div>
-                  <button
-                    onClick={() => deleteFile(f.id)}
-                    className="hidden group-hover:flex items-center justify-center w-6 h-6 mr-1 rounded-md text-[var(--text-muted)] hover:text-[var(--danger)] hover:bg-[var(--bg-surface)] transition-colors"
-                    title="Remove file"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                      <line x1="2" y1="2" x2="8" y2="8" />
-                      <line x1="8" y1="2" x2="2" y2="8" />
-                    </svg>
-                  </button>
-                </div>
-              ))
-            )}
+                );
+              }
+
+              return folders.map((folder) => {
+                const isOpen = openFolders[folder.key];
+                return (
+                  <div key={folder.key} className="mb-1">
+                    <button
+                      onClick={() => toggleFolder(folder.key)}
+                      className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-[var(--bg-hover)] transition-colors text-left"
+                    >
+                      <FolderIcon open={isOpen} />
+                      <span
+                        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                        style={{ background: folder.accent }}
+                      />
+                      <span className="text-xs font-medium text-[var(--text-primary)] flex-1">
+                        {folder.label}
+                      </span>
+                      <span className="text-[10px] text-[var(--text-muted)]">
+                        {folder.items.length}
+                      </span>
+                    </button>
+
+                    {isOpen && (
+                      <div className="ml-3 mt-0.5 border-l border-[var(--border)] pl-1">
+                        {folder.items.length === 0 ? (
+                          <div className="px-2 py-2 text-[11px] text-[var(--text-muted)] italic">
+                            Empty
+                          </div>
+                        ) : (
+                          folder.items.map((f) => (
+                            <div
+                              key={f.id}
+                              className="group flex items-center rounded-lg hover:bg-[var(--bg-hover)] transition-colors mb-0.5"
+                            >
+                              <div
+                                className="w-0.5 h-6 rounded-full ml-1 flex-shrink-0"
+                                style={{ background: getFileTypeBadge(f.file_type).dot }}
+                              />
+                              <div
+                                className="flex-1 min-w-0 cursor-pointer"
+                                onClick={() => openDocument({ docId: f.id, fileName: f.name })}
+                              >
+                                <FileListItem file={f} onClick={() => {}} />
+                              </div>
+                              <button
+                                onClick={() => deleteFile(f.id)}
+                                className="hidden group-hover:flex items-center justify-center w-6 h-6 mr-1 rounded-md text-[var(--text-muted)] hover:text-[var(--danger)] hover:bg-[var(--bg-surface)] transition-colors"
+                                title="Remove file"
+                              >
+                                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                                  <line x1="2" y1="2" x2="8" y2="8" />
+                                  <line x1="8" y1="2" x2="2" y2="8" />
+                                </svg>
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()}
           </div>
         </>
       )}

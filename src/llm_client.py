@@ -18,6 +18,7 @@ from .config import (
 )
 from .types import LLMUsage, LLMResponse, DualLLMResponse
 from .logger import logger
+from .usage_tracker import enforce_budget, record_usage
 
 # ── Cache Backend ────────────────────────────────────────────
 
@@ -251,6 +252,9 @@ def generate_text(
         key_data = f"{provider}:{model}:{system[:200]}:{prompt}"
         cache_key = "llm:" + hashlib.sha256(key_data.encode()).hexdigest()[:32]
 
+    # ── Enforce global usage budget (cache hits still allowed below) ──
+    enforce_budget()
+
     # ── Check cache ──
     cached = _cache_get(cache_key)
     if cached is not None:
@@ -318,6 +322,12 @@ def generate_text(
 
             # ── Cache result ──
             _cache_set(cache_key, text, ttl_s)
+
+            # ── Record into global usage tracker ──
+            try:
+                record_usage(prompt_tok, comp_tok, cost)
+            except Exception as track_err:
+                logger.warning(f"[LLMClient] usage tracker failed: {track_err}")
 
             return LLMResponse(text=text, usage=usage, raw=response)
 
