@@ -14,14 +14,13 @@ test.describe('Settings Modal', () => {
     await expect(settingsPage.title).toHaveText('Settings');
   });
 
-  test('should display LLM providers (Gemini, OpenAI, Claude)', async ({
-    settingsPage,
-  }) => {
+  test('LLM Providers section has been removed', async ({ settingsPage }) => {
     await settingsPage.open();
-
-    await expect(settingsPage.dialog.getByText('Gemini', { exact: true })).toBeVisible();
-    await expect(settingsPage.dialog.getByText('OpenAI', { exact: true })).toBeVisible();
-    await expect(settingsPage.dialog.getByText('Claude', { exact: true })).toBeVisible();
+    await expect(settingsPage.dialog.getByText('LLM Providers')).toHaveCount(0);
+    // And no provider names leak through.
+    for (const name of ['Gemini', 'OpenAI', 'Claude', 'GPT']) {
+      await expect(settingsPage.dialog.getByText(name, { exact: true })).toHaveCount(0);
+    }
   });
 
   test('should display Pinecone vector database', async ({ settingsPage }) => {

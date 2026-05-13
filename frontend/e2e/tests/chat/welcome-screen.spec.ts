@@ -1,4 +1,5 @@
 import { test, expect } from '../../fixtures/base.fixture';
+import { S } from '../../helpers/selectors';
 
 test.describe('Welcome Screen', () => {
   test.beforeEach(async ({ page, sidebarPage }) => {
@@ -7,37 +8,36 @@ test.describe('Welcome Screen', () => {
     await sidebarPage.createNewChat();
   });
 
-  test('should display welcome heading and search bar', async ({ welcomePage }) => {
+  test('shows the welcome heading', async ({ welcomePage }) => {
     await welcomePage.waitForVisible();
-    await expect(welcomePage.searchInput).toBeVisible();
+    await expect(welcomePage.heading).toBeVisible();
   });
 
-  test('should show Correspondence Mode and Document Analysis cards', async ({
-    welcomePage,
-  }) => {
+  test('shows the Correspondence and Document Analysis tiles', async ({ welcomePage }) => {
     await expect(welcomePage.correspondenceCard).toBeVisible();
     await expect(welcomePage.documentAnalysisCard).toBeVisible();
   });
 
-  test('should display example query buttons', async ({ page }) => {
-    // There should be 6 example queries
-    const exampleButtons = page.locator('button:has-text("workers"), button:has-text("crane"), button:has-text("progress"), button:has-text("contract"), button:has-text("notices"), button:has-text("manpower trend")');
-    const count = await exampleButtons.count();
-    expect(count).toBeGreaterThanOrEqual(4);
+  test('no inline search input is rendered (composer is now bottom-anchored)', async ({ page }) => {
+    await expect(page.locator('#welcome-search')).toHaveCount(0);
   });
 
-  test('should send message from welcome search bar', async ({ page, welcomePage }) => {
-    await welcomePage.searchAndSend('Hello test');
-
-    // Should transition to chat and show typing indicator
-    await expect(page.locator('[role="status"]')).toBeVisible({ timeout: 10_000 });
+  test('no "Try asking" example query buttons are rendered', async ({ page }) => {
+    const categories = ['MANPOWER', 'EQUIPMENT', 'PROGRESS', 'CONTRACT', 'NOTICES', 'TREND'];
+    for (const cat of categories) {
+      const count = await page.locator(`button >> text="${cat}"`).count();
+      expect(count, `Stale example chip "${cat}" still rendered`).toBe(0);
+    }
   });
 
-  test('should send message when clicking an example query', async ({ page }) => {
-    // Click the first example query about workers
-    await page.locator('button:has-text("workers were deployed")').click();
+  test('mode tiles navigate into their mode screens', async ({ page, welcomePage }) => {
+    await welcomePage.selectCorrespondenceMode();
+    await expect(page.getByText('CORRESPONDENCE MODE').first()).toBeVisible({ timeout: 5_000 });
 
-    // Should start loading
-    await expect(page.locator('[role="status"]')).toBeVisible({ timeout: 10_000 });
+    await page.locator(S.backButton).click();
+    await welcomePage.waitForVisible();
+
+    await welcomePage.selectDocumentAnalysisMode();
+    await expect(page.getByText('DOCUMENT ANALYSIS').first()).toBeVisible({ timeout: 5_000 });
   });
 });

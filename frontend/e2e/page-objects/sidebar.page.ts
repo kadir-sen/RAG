@@ -71,4 +71,41 @@ export class SidebarPage {
     const ariaHidden = await sidebar.getAttribute('aria-hidden');
     return ariaHidden === 'false';
   }
+
+  // ── Library folders (Documents / Correspondence / Spreadsheet) ──
+
+  folderHeader(name: 'Documents' | 'Correspondence' | 'Spreadsheet'): Locator {
+    return this.page.locator(S.folderHeader(name));
+  }
+
+  async folderIsExpanded(
+    name: 'Documents' | 'Correspondence' | 'Spreadsheet',
+  ): Promise<boolean> {
+    const v = await this.folderHeader(name).getAttribute('aria-expanded');
+    return v === 'true';
+  }
+
+  async openFolder(name: 'Documents' | 'Correspondence' | 'Spreadsheet') {
+    if (!(await this.folderIsExpanded(name))) {
+      await this.folderHeader(name).click();
+      await expect(this.folderHeader(name)).toHaveAttribute('aria-expanded', 'true');
+    }
+  }
+
+  async closeFolder(name: 'Documents' | 'Correspondence' | 'Spreadsheet') {
+    if (await this.folderIsExpanded(name)) {
+      await this.folderHeader(name).click();
+      await expect(this.folderHeader(name)).toHaveAttribute('aria-expanded', 'false');
+    }
+  }
+
+  /** Reads the trailing count badge inside the folder header. */
+  async folderCount(
+    name: 'Documents' | 'Correspondence' | 'Spreadsheet',
+  ): Promise<number> {
+    // The header layout puts the count in the last <span> of the row.
+    const text = (await this.folderHeader(name).locator('span').last().innerText()).trim();
+    const n = parseInt(text, 10);
+    return Number.isFinite(n) ? n : -1;
+  }
 }

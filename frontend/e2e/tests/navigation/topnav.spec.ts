@@ -43,9 +43,9 @@ test.describe('Top Navigation', () => {
     await expect(page.locator(S.settingsDialog)).toBeVisible({ timeout: 3_000 });
   });
 
-  test('should display brand text', async ({ page }) => {
-    await expect(page.getByText('Construction', { exact: true })).toBeVisible();
-    await expect(page.getByText('IQ', { exact: true })).toBeVisible();
+  test('should display the Asistant brand', async ({ page }) => {
+    await expect(page.locator(S.branding)).toBeVisible();
+    await expect(page.locator(S.branding).getByText('Asistant', { exact: true })).toBeVisible();
   });
 
   test('should display user avatar', async ({ page }) => {

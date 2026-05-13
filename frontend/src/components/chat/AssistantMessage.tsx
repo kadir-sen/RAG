@@ -60,8 +60,6 @@ function formatTime(ts?: number): string {
 
 function AssistantMessage({ response, text, timestamp, onDocClick, failedText, onRetry }: Props) {
   const intent = response?.ui_intent ?? 'answer';
-  // Provider names are hidden from the UI; always render the primary text.
-  const _unusedProviderAnswers = response?.provider_answers; void _unusedProviderAnswers;
   const activeMode = useChatStore((s) => s.activeMode);
   const showTimeline =
     activeMode === 'document_analysis' &&
@@ -135,8 +133,8 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
                 />
               )}
 
-              {/* Show SQL artifact only when NOT multi-provider (tabs handle their own) */}
-              {!hasProviders && intent === 'sql_result' && response.sql_artifact && (
+              {/* SQL artifact (provider tabs are hidden — always render). */}
+              {intent === 'sql_result' && response.sql_artifact && (
                 <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
               )}
 

@@ -8,9 +8,11 @@ test.describe('App Loading', () => {
     await page.goto('/', { timeout: 60_000 });
     await page.waitForLoadState('networkidle', { timeout: 60_000 });
 
-    // Branding visible (TopNav has "Construction" + "IQ" spans)
-    await expect(page.getByText('Construction', { exact: true })).toBeVisible();
-    await expect(page.getByText('IQ', { exact: true })).toBeVisible();
+    // Branding visible (TopNav renders "Asistant").
+    await expect(page.locator('[aria-label="Asistant"]')).toBeVisible();
+    await expect(
+      page.locator('[aria-label="Asistant"]').getByText('Asistant', { exact: true }),
+    ).toBeVisible();
 
     // No JS errors
     expect(errors).toHaveLength(0);
@@ -20,20 +22,15 @@ test.describe('App Loading', () => {
     await page.goto('/');
     await welcomePage.waitForVisible();
 
-    await expect(page.locator('h1')).toContainText('Construction Project Intelligence');
+    await expect(page.locator('h1').first()).toContainText('Asistant');
   });
 
   test('should have chat input visible and focusable', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
 
-    // Either welcome search or chat input should be visible
-    const welcomeSearch = page.locator('#welcome-search');
-    const chatInput = page.locator('#chat-input');
-
-    const isWelcome = await welcomeSearch.isVisible();
-    const isChat = await chatInput.isVisible();
-    expect(isWelcome || isChat).toBeTruthy();
+    // Composer is now bottom-anchored on every screen.
+    await expect(page.locator('#chat-input')).toBeVisible();
   });
 
   test('should show sidebar with New Chat button', async ({ page }) => {

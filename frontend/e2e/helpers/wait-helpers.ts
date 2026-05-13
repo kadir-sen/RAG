@@ -8,10 +8,13 @@ import { S } from './selectors';
 export async function sendMessageAndWait(
   page: Page,
   message: string,
-  options: { timeout?: number; useWelcomeInput?: boolean } = {},
+  options: { timeout?: number } = {},
 ) {
-  const { timeout = 90_000, useWelcomeInput = false } = options;
-  const inputSelector = useWelcomeInput ? S.welcomeSearch : S.chatInput;
+  const { timeout = 90_000 } = options;
+  // The composer is now bottom-anchored on every screen, so there is a single
+  // selector for the chat input regardless of whether we are on the Welcome
+  // screen, in a mode intro, or mid-conversation.
+  const inputSelector = S.chatInput;
 
   await page.locator(inputSelector).fill(message);
   await page.locator(inputSelector).press('Enter');
@@ -59,8 +62,6 @@ export async function waitForUploadComplete(page: Page, timeout = 30_000) {
  */
 export async function createNewChat(page: Page) {
   await page.locator(S.newChatButton).click();
-  // Wait for welcome screen or chat input to be ready
-  await expect(
-    page.locator(`${S.welcomeSearch}, ${S.chatInput}`).first(),
-  ).toBeVisible({ timeout: 5_000 });
+  // Wait for the chat composer (always present at the bottom).
+  await expect(page.locator(S.chatInput)).toBeVisible({ timeout: 5_000 });
 }

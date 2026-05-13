@@ -14,8 +14,8 @@ test.describe('Mode Selection', () => {
   }) => {
     await welcomePage.selectCorrespondenceMode();
 
-    // Mode header should appear
-    await expect(page.locator('text=Correspondence Mode')).toBeVisible({ timeout: 5_000 });
+    // Mode header chip in ChatPage shows "CORRESPONDENCE MODE" (uppercase).
+    await expect(page.getByText('CORRESPONDENCE MODE').first()).toBeVisible({ timeout: 5_000 });
 
     // Back button should be visible
     await expect(page.locator(S.backButton)).toBeVisible();
@@ -27,8 +27,8 @@ test.describe('Mode Selection', () => {
   }) => {
     await welcomePage.selectDocumentAnalysisMode();
 
-    // Mode header should appear
-    await expect(page.locator('text=Document Analysis')).toBeVisible({ timeout: 5_000 });
+    // Mode header chip in ChatPage shows "DOCUMENT ANALYSIS" (uppercase).
+    await expect(page.getByText('DOCUMENT ANALYSIS').first()).toBeVisible({ timeout: 5_000 });
 
     // Back button should be visible
     await expect(page.locator(S.backButton)).toBeVisible();

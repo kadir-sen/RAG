@@ -9,11 +9,10 @@ export const S = {
   sidebarClosed: '[aria-label="Open sidebar"]',
   settingsButton: '[aria-label="Open settings"]',
   userAvatar: '[aria-label="User avatar"]',
-  branding: '[aria-label="ConstructionIQ"]',
+  branding: '[aria-label="Asistant"]',
 
   // ── Chat Input ─────────────────────────────────────────
   chatInput: '#chat-input',
-  welcomeSearch: '#welcome-search',
   sendButton: '[aria-label="Send message"]',
 
   // ── Chat Stream ────────────────────────────────────────
@@ -24,9 +23,8 @@ export const S = {
 
   // ── Welcome Screen ─────────────────────────────────────
   welcomeHeading: 'h1',
-  correspondenceCard: 'button:has-text("Correspondence Mode")',
-  documentAnalysisCard: 'button:has-text("Document Analysis")',
-  exampleQuery: (text: string) => `button:has-text("${text}")`,
+  correspondenceCard: 'button:has-text("Correspondence"):has-text("MODE.01")',
+  documentAnalysisCard: 'button:has-text("Document Analysis"):has-text("MODE.02")',
 
   // ── Sidebar ────────────────────────────────────────────
   sidebar: '[aria-label="Sidebar"]',
@@ -38,6 +36,24 @@ export const S = {
   fileInput: 'input[type="file"]',
   renameButton: '[title="Rename"]',
   deleteButton: '[title="Delete"]',
+  sidebarAiAssistantHeading: 'p:has-text("AI Assistant")',
+
+  // ── Sidebar Folders (Documents / Correspondence / Spreadsheet) ──
+  folderDocuments: 'button[aria-expanded]:has-text("Documents")',
+  folderCorrespondence: 'button[aria-expanded]:has-text("Correspondence")',
+  folderSpreadsheet: 'button[aria-expanded]:has-text("Spreadsheet")',
+  folderHeader: (name: string) =>
+    `button[aria-expanded]:has-text("${name}")`,
+
+  // ── Chat Action Chips ──────────────────────────────────
+  actionChipsStrip: 'div:has(> span:has-text("Programs"))',
+  chipCorrespondence: 'button[aria-pressed]:has-text("Correspondence")',
+  chipDocumentAnalysis: 'button[aria-pressed]:has-text("Document Analysis")',
+  chipByLabel: (label: string) =>
+    `button[aria-pressed]:has-text("${label}")`,
+
+  // ── Usage Badge ────────────────────────────────────────
+  usageBadge: '[aria-label="Usage budget"]',
 
   // ── Correspondence Mode ────────────────────────────────
   emailCheckbox: 'input[type="checkbox"]',
