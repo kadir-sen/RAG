@@ -224,7 +224,7 @@ async def export_files_excel():
 
             # Add notice/title header using openpyxl
             ws = writer.sheets[sheet_name]
-            title_cell = ws.cell(row=1, column=1, value=f"AI Construction Project Intelligence - {sheet_name}")
+            title_cell = ws.cell(row=1, column=1, value=f"Asistant - {sheet_name}")
             title_cell.font = Font(bold=True, size=13)
             date_cell = ws.cell(row=2, column=1, value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
             date_cell.font = Font(italic=True, size=10, color="666666")
@@ -273,7 +273,7 @@ async def export_files_excel():
 
     buf.seek(0)
 
-    filename = "AI_Construction_Project_Intelligence_Documents.xlsx"
+    filename = "Asistant_Documents.xlsx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

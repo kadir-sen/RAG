@@ -12,14 +12,15 @@ if _project_root not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(Path(_project_root) / ".env")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from backend.core.config import CORS_ORIGINS
 from backend.core.lifespan import lifespan
-from backend.api import admin, chat, conversations, files, documents, indexing, library, knowledge
+from backend.api import admin, admin_jargon, chat, conversations, files, documents, indexing, library, knowledge, usage
+from src.usage_tracker import BudgetExceededError
 
 # Frontend build directory (exists only in Docker / after npm run build)
 _frontend_dist = Path(_project_root) / "frontend" / "dist"
@@ -48,6 +49,14 @@ def create_app() -> FastAPI:
     app.include_router(library.router, prefix="/api", tags=["library"])
     app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
     app.include_router(admin.router, prefix="/api", tags=["admin"])
+    app.include_router(admin_jargon.router, prefix="/api", tags=["admin"])
+    app.include_router(usage.router, prefix="/api", tags=["usage"])
+
+    @app.exception_handler(BudgetExceededError)
+    async def _budget_exceeded_handler(_req: Request, exc: BudgetExceededError):
+        # HTTP 402 — payment required: signals to the UI that the global LLM
+        # budget for this application has been spent.
+        return JSONResponse(status_code=402, content={"detail": str(exc), "error": "budget_exceeded"})
 
     @app.get("/api/health", tags=["health"])
     async def health():

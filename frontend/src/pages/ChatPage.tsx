@@ -7,14 +7,18 @@ import { getConversation } from '../api/conversationApi';
 import ConversationSidebar from '../components/sidebar/ConversationSidebar';
 import ChatStream from '../components/chat/ChatStream';
 import ChatInput from '../components/chat/ChatInput';
+import ChatActionChips from '../components/chat/ChatActionChips';
 import WelcomeScreen from '../components/chat/WelcomeScreen';
+import DocumentAnalysisIntro from '../components/chat/DocumentAnalysisIntro';
+import CorrespondenceCenter from '../components/chat/CorrespondenceCenter';
 import RightDocViewer from '../components/viewer/RightDocViewer';
+import MonoTag from '../components/ui/MonoTag';
 
 export default function ChatPage() {
   const { messages, isLoading, isPending, sendMessage } = useChat();
   const { conversations, createConversation } = useConversations();
   const { rightPanelOpen, openDocument } = useUIStore();
-  const { activeConversationId, setConversation, activeMode, setMode } = useChatStore();
+  const { activeConversationId, setConversation, activeMode, setMode, selectedEmailIds } = useChatStore();
   const pendingMessageRef = useRef<string | null>(null);
   const restoredRef = useRef(false);
 
@@ -88,11 +92,15 @@ export default function ChatPage() {
   const handleBack = useCallback(() => setMode(null), [setMode]);
 
   const showWelcome = activeMode === null && messages.length === 0 && !isLoading;
-  const modeLabel = activeMode === 'correspondence'
-    ? 'Correspondence Mode'
+  const showDocAnalysisIntro =
+    activeMode === 'document_analysis' && messages.length === 0 && !isLoading;
+  const showCorrespondenceCenter =
+    activeMode === 'correspondence' && messages.length === 0 && !isLoading;
+  const modeMeta = activeMode === 'correspondence'
+    ? { label: 'CORRESPONDENCE MODE', sublabel: 'thread digest · email trace' }
     : activeMode === 'document_analysis'
-      ? 'Document Analysis'
-      : '';
+      ? { label: 'DOCUMENT ANALYSIS', sublabel: 'topic → chronological roadmap' }
+      : null;
 
   return (
     <div className="flex h-full w-full overflow-clip">
@@ -102,36 +110,48 @@ export default function ChatPage() {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 h-full">
         {/* Mode header — only for correspondence/document_analysis */}
-        {activeMode && activeMode !== 'chat' && (
-          <div className="flex items-center gap-3 px-6 py-3 border-b border-[var(--border)] shrink-0">
+        {activeMode && activeMode !== 'chat' && modeMeta && (
+          <div className="flex items-center gap-3 px-6 py-2.5 border-b border-[var(--border)] shrink-0 bg-[var(--bg-secondary)]/40">
             <button
               onClick={handleBack}
               aria-label="Back to mode selection"
-              className="text-xs text-[var(--text-secondary)] hover:text-white transition-colors flex items-center gap-1"
+              className="font-mono text-[11px] text-[var(--text-secondary)] hover:text-white transition-colors flex items-center gap-1"
             >
-              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <svg aria-hidden="true" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                 <path d="M8 2L4 6l4 4" />
               </svg>
               Back
             </button>
-            <span className="text-sm font-medium text-[var(--accent)]">{modeLabel}</span>
+            <MonoTag tone="accent">{modeMeta.label}</MonoTag>
+            <span className="font-mono text-[11px] text-[var(--text-secondary)] tracking-wide">
+              {modeMeta.sublabel}
+            </span>
+            <span className="flex-1" />
+            {activeMode === 'correspondence' && selectedEmailIds.length > 0 && (
+              <MonoTag tone="accent">{selectedEmailIds.length} emails scoped</MonoTag>
+            )}
           </div>
         )}
 
         {/* Content area */}
-        {showWelcome ? (
-          <WelcomeScreen onModeSelect={handleModeSelect} onSend={handleSend} />
-        ) : (
-          <div className="flex-1 flex flex-col min-h-0 relative">
+        <div className="flex-1 flex flex-col min-h-0 relative">
+          {showWelcome ? (
+            <WelcomeScreen onModeSelect={handleModeSelect} />
+          ) : showCorrespondenceCenter ? (
+            <CorrespondenceCenter onSend={handleSend} />
+          ) : showDocAnalysisIntro ? (
+            <DocumentAnalysisIntro onSend={handleSend} />
+          ) : (
             <ChatStream
               messages={messages}
               isLoading={isLoading}
               onDocClick={openDocument}
               onRetry={sendMessage}
             />
-            <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
-          </div>
-        )}
+          )}
+          <ChatActionChips activeMode={activeMode} onModeSelect={handleModeSelect} />
+          <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
+        </div>
       </div>
 
       {/* Right viewer */}

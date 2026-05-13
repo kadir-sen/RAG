@@ -22,15 +22,15 @@ DATA_KEYWORDS = {
     "filter", "sort", "group by", "aggregate", "maximum", "minimum", "max", "min",
     "variance", "std", "deviation", "percentage", "ratio", "percent",
     "compare", "trend", "statistics", "column", "row", "table", "excel", "csv",
-    "spreadsheet", "data", "number", "numeric", "value",
+    "spreadsheet",
     "manpower", "equipment", "cost", "quantity", "rate", "amount",
     "machinery", "worker", "workers", "production", "floor", "block",
-    "ipc", "boq", "activity", "activities", "types", "list all",
+    "ipc", "boq", "activity", "activities",
     # Construction-domain additions
-    "show me all", "list all", "list the", "breakdown", "distribution", "utilization",
+    "breakdown", "distribution", "utilization",
     "hours", "headcount", "productivity",
     "daily", "monthly", "weekly", "distinct", "unique",
-    "how much", "what types", "what kind", "what are the",
+    "how much",
     "trades", "craft", "crane", "excavator",
     # Construction trades / workforce (common in manpower tables)
     "steel fixer", "steel fixers", "carpenter", "carpenters", "mason", "masons",
@@ -40,6 +40,13 @@ DATA_KEYWORDS = {
     "scaffolder", "scaffolders", "rigger", "riggers", "fitter", "fitters",
     "technician", "technicians", "operator", "operators", "driver", "drivers",
     "on site", "deployed", "total number",
+}
+
+# Generic words that often appear in document questions too — count as half a hit.
+WEAK_DATA_KEYWORDS = {
+    "data", "number", "numeric", "value",
+    "list all", "list the", "show me all",
+    "what types", "what kind", "what are the", "types",
 }
 
 DOCUMENT_KEYWORDS = {
@@ -68,12 +75,40 @@ TIMELINE_KEYWORDS = {
     "cluster", "categorize", "document group",
 }
 
+_KW_BOUNDARY_RE_CACHE: Dict[str, "re.Pattern[str]"] = {}
+
+
+def _kw_match(kw: str, query_lower: str) -> bool:
+    """Match a keyword against a (lower-cased) query.
+
+    Multi-word phrases use plain substring matching (preserves intent of
+    phrases like "how many", "list all"). Single tokens use word-boundary
+    regex so `"sum"` does not match inside `"summarize"`, `"min"` inside
+    `"reminder"`, etc.
+    """
+    if " " in kw:
+        return kw in query_lower
+    pat = _KW_BOUNDARY_RE_CACHE.get(kw)
+    if pat is None:
+        pat = re.compile(rf"\b{re.escape(kw)}\b")
+        _KW_BOUNDARY_RE_CACHE[kw] = pat
+    return pat.search(query_lower) is not None
+
+
 # Patterns that strongly indicate DOCUMENT intent even when timeline keywords match
 # (user wants to READ content, not trace chronology)
 _DOCUMENT_INTENT_PATTERNS = [
     "what does", "what did", "explain", "describe", "content of",
     "according to", "mentioned in", "stated in", "says about",
     "terms of", "clause", "section", "article",
+    # Document-type cues: when the user names a specific document/letter/notice
+    # the answer must come from PDF prose, not the data tables.
+    "letter", "rfi", "noc", "memo", "minutes",
+    "delay notice", "delay notification", "notification",
+    "response to", "response letter", "inspection report",
+    "update letter", "undertaking letter",
+    "summarize the", "summarise the", "tell me about", "show me the",
+    ".pdf", ".docx", ".doc",
 ]
 
 
@@ -165,6 +200,7 @@ class QueryRouter:
         "You are a query router for a construction project management system.\n\n"
         "AVAILABLE FILES IN SYSTEM:\n{file_inventory}\n\n"
         "DATA TABLES (SQL queryable):\n{table_inventory}\n\n"
+        "SCHEMA & JARGON CONTEXT (matched to this query):\n{schema_context}\n\n"
         "CATEGORIES — pick exactly ONE:\n"
         "- FILE_LIST: Questions about what files/documents exist, file counts, listing, deletion.\n"
         "  Examples: \"how many documents\", \"list all files\", \"show uploaded files\"\n\n"
@@ -220,7 +256,19 @@ class QueryRouter:
         "Q: \"What is the overall project progress percentage?\" -> DATA\n"
         "Q: \"What is this project about?\" -> DOCUMENT\n"
         "Q: \"Give me an overview of the project\" -> DOCUMENT\n"
-        "Q: \"Describe the project scope\" -> DOCUMENT\n\n"
+        "Q: \"Describe the project scope\" -> DOCUMENT\n"
+        "Q: \"What is the Response Letter to Multiplex dated 04.10.16?\" -> DOCUMENT\n"
+        "Q: \"Tell me about the DPS letter for TABH project\" -> DOCUMENT\n"
+        "Q: \"Show me the Delay Notification dated 26 January 2017\" -> DOCUMENT\n"
+        "Q: \"What is in the Tetra Antennas RFI-00053 response?\" -> DOCUMENT\n"
+        "Q: \"Summarize the Inspection Report for TABH\" -> DOCUMENT\n"
+        "Q: \"What does the Update Letter from December 2017 say?\" -> DOCUMENT\n"
+        "Q: \"Tell me about TABH Security Control Server Room letter from 03.07.16\" -> DOCUMENT\n\n"
+        "DOCUMENT vs DATA disambiguation: when the query names a specific letter, "
+        "RFI, NOC, notification, memo, inspection report, or otherwise references a "
+        "single document by date or reference number, the user wants to READ that "
+        "document — route to DOCUMENT, NOT DATA, even if dates/codes look like "
+        "table values.\n\n"
         "User query: {user_query}\n\n"
         "Respond with exactly ONE word: FILE_LIST, DATA, DOCUMENT, TIMELINE, or HYBRID."
     )
@@ -230,6 +278,7 @@ class QueryRouter:
         "with actual project data to provide actionable insights.\n\n"
         "Do NOT invent facts - only use information from the sources below.\n\n"
         "QUESTION: {user_query}\n\n"
+        "SCHEMA & JARGON CONTEXT:\n{schema_context}\n\n"
         "DOCUMENT/CONTRACT INFORMATION:\n{doc_results}\n\n"
         "ACTUAL PROJECT DATA:\n{data_results}\n\n"
         "Provide a comprehensive answer that:\n"
@@ -606,17 +655,25 @@ class QueryRouter:
 
     def _classify_heuristic(self, query_lower: str) -> Optional[RouterDecision]:
         """Tier 1: keyword-based scoring with schema-aware data boost and negative signals."""
-        data_score = sum(1 for kw in DATA_KEYWORDS if kw in query_lower)
-        doc_score = sum(1 for kw in DOCUMENT_KEYWORDS if kw in query_lower)
-        timeline_score = sum(1 for kw in TIMELINE_KEYWORDS if kw in query_lower)
+        data_score = sum(1 for kw in DATA_KEYWORDS if _kw_match(kw, query_lower))
+        weak_data_hits = sum(1 for kw in WEAK_DATA_KEYWORDS if _kw_match(kw, query_lower))
+        data_score += weak_data_hits * 0.5
+        doc_score = sum(1 for kw in DOCUMENT_KEYWORDS if _kw_match(kw, query_lower))
+        timeline_score = sum(1 for kw in TIMELINE_KEYWORDS if _kw_match(kw, query_lower))
 
-        # Schema-aware boost: if query matches table column names or values, boost DATA
-        schema_boost = self._schema_data_boost(query_lower)
-        data_score += schema_boost
-
-        # Negative signal: content-seeking patterns suppress TIMELINE
-        # (user wants to READ content, not trace chronology)
+        # Document-intent signal — explicit content-seeking patterns
+        # ("what does", "explain", "describe", "according to", "stated in", ...)
         doc_intent_boost = sum(1 for p in _DOCUMENT_INTENT_PATTERNS if p in query_lower)
+
+        # Schema-aware boost: if query matches table column names or values, boost DATA.
+        # Suppress when document intent is present — column-name overlap should not
+        # outweigh an explicit "what does the contract say" signal.
+        schema_boost = 0
+        if doc_intent_boost == 0:
+            schema_boost = self._schema_data_boost(query_lower)
+            data_score += schema_boost
+
+        # Document-intent boost goes to DOCUMENT and suppresses TIMELINE
         if doc_intent_boost > 0:
             doc_score += doc_intent_boost
             timeline_score = max(0, timeline_score - doc_intent_boost)
@@ -643,6 +700,15 @@ class QueryRouter:
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         top_type, top_score = ranked[0]
         second_score = ranked[1][1]
+
+        # Document-intent override: if user clearly asked for document content,
+        # never let a tied/winning DATA score steal the route.
+        if doc_intent_boost > 0 and top_type == QueryType.DATA and doc_score > 0:
+            return RouterDecision(
+                query_type=QueryType.DOCUMENT,
+                confidence=min(0.9, 0.6 + doc_intent_boost * 0.1),
+                reasons=[f"Document intent overrides DATA (doc_intent={doc_intent_boost})"],
+            )
 
         # Strong match: top score high AND clear margin
         if top_score >= self.STRONG_HEURISTIC_THRESHOLD and (top_score - second_score) >= self.MARGIN_THRESHOLD:
@@ -789,10 +855,19 @@ class QueryRouter:
         try:
             _, data_files = self._get_available_sources()
 
+            try:
+                from .schema_context import get_schema_prompt_block
+                schema_context = get_schema_prompt_block(query, mode="router", max_tables=5)
+            except Exception:
+                schema_context = ""
+
             prompt = safe_render_prompt(
                 self.CLASSIFICATION_PROMPT,
                 user_query=query,
                 data_files=data_files,
+                file_inventory="",
+                table_inventory="",
+                schema_context=schema_context,
             )
             system = build_system_prompt("You are a query classifier.")
 
@@ -828,10 +903,9 @@ class QueryRouter:
 
         except Exception as e:
             logger.error(f"   LLM classification error: {e}")
-            # Fallback: prefer DATA if tables are loaded
-            qtype = QueryType.DATA if self.data_analyzer.list_tables() else QueryType.DOCUMENT
+            # Fallback: default to DOCUMENT — see comment in _classify_llm_rich.
             return RouterDecision(
-                query_type=qtype,
+                query_type=QueryType.DOCUMENT,
                 confidence=0.5,
                 reasons=[f"Fallback after LLM error: {e}"],
             )
@@ -844,11 +918,18 @@ class QueryRouter:
         try:
             file_inventory, table_inventory = self._get_classification_context()
 
+            try:
+                from .schema_context import get_schema_prompt_block
+                schema_context = get_schema_prompt_block(query, mode="router", max_tables=6)
+            except Exception:
+                schema_context = ""
+
             prompt = safe_render_prompt(
                 self.CLASSIFICATION_PROMPT,
                 user_query=query,
                 file_inventory=file_inventory,
                 table_inventory=table_inventory,
+                schema_context=schema_context,
             )
             system = build_system_prompt("You are a precise query classifier.")
 
@@ -864,9 +945,12 @@ class QueryRouter:
             if trace:
                 trace.record_llm_call(resp.usage)
 
-            # Parse result — check FILE_LIST first (contains "DATA" substring)
-            # Default to DATA if tables are loaded, DOCUMENT otherwise
-            qtype = QueryType.DATA if self.data_analyzer.list_tables() else QueryType.DOCUMENT
+            # Parse result — check FILE_LIST first (contains "DATA" substring).
+            # Default to DOCUMENT when the LLM output is unparseable: an empty/garbled
+            # response is a model failure, not a signal that the user wants SQL.
+            # The document path returns a graceful "no matching documents" answer;
+            # the SQL path will fabricate aggregates over irrelevant tables.
+            qtype = QueryType.DOCUMENT
             if "FILE_LIST" in result:
                 qtype = QueryType.FILE_LIST
             elif "TIMELINE" in result:
@@ -899,10 +983,10 @@ class QueryRouter:
             if decision is not None:
                 decision.reasons.append(f"Heuristic fallback after LLM error: {e}")
                 return decision
-            # Last resort: prefer DATA if tables are loaded
-            qtype = QueryType.DATA if self.data_analyzer.list_tables() else QueryType.DOCUMENT
+            # Last resort: default to DOCUMENT — an LLM/heuristic miss should not
+            # silently send the query to SQL just because tables happen to be loaded.
             return RouterDecision(
-                query_type=qtype,
+                query_type=QueryType.DOCUMENT,
                 confidence=0.5,
                 reasons=[f"Fallback after LLM error: {e}"],
             )
@@ -942,7 +1026,7 @@ class QueryRouter:
             schema_counts[schema] = schema_counts.get(schema, 0) + 1
 
         greeting = (
-            "Welcome to **ConstructionIQ** — your intelligent construction project analytics platform.\n\n"
+            "Welcome to **Asistant** — your intelligent project analytics platform.\n\n"
             "I analyze your project's **Excel data** (equipment logs, manpower reports, IPC certificates) "
             "and **documents** (contracts, letters, notices) to provide instant, data-driven insights.\n\n"
         )
@@ -1000,6 +1084,145 @@ class QueryRouter:
 
         return False
 
+    # ── Retrieval helpers ─────────────────────────────────────
+
+    # Tokens that match too broadly to be useful as filename signals.
+    _FILENAME_STOP_TOKENS = {
+        "the", "and", "for", "with", "from", "about", "into", "what", "when",
+        "where", "which", "this", "that", "these", "those", "show", "tell",
+        "find", "get", "give", "list", "summarize", "summarise", "explain",
+        "describe", "letter", "email", "doc", "document", "file", "files",
+        "documents", "report", "letter's", "how", "why",
+    }
+
+    # When the query mentions one of these "formal document" cues, file_name
+    # resolution should prefer PDFs/DOCXs over .msg/.eml even if the latter
+    # have stronger token overlap (mail filenames tend to contain the project
+    # acronyms verbatim — TABH, DPS, NOC etc. — while the actual letter/report
+    # PDF filename is shorter and matches fewer tokens).
+    _DOC_TYPE_CUES = {
+        "letter", "letters", "memo", "minutes", "report", "rfi",
+        "notification", "notice", "inspection", "audit", "submittal",
+        "rfp", "noc", "transmittal", "deliverable", "document", "documents",
+    }
+
+    def _resolve_filename_hints(self, query: str) -> List[str]:
+        """Return file_names whose stem/name matches tokens in the query.
+
+        Returns file_name strings (not doc_ids) because Pinecone metadata's
+        `doc_id` field is a per-chunk UUID, not a stable document identifier.
+        `file_name` is the only consistent doc-level handle in the index.
+
+        Two-stage match:
+          (1) substring hit on filename via DocumentRegistry.search_by_name
+          (2) fuzzy token-set ratio on filename stems (rapidfuzz)
+        Used to bias citation re-ranking and re-scope vector retrieval at
+        the source-merge step in _handle_document_query / _dual.
+        """
+        try:
+            from rapidfuzz import fuzz, process
+        except ImportError:
+            return []
+        try:
+            from .document_registry import get_document_registry
+            reg = get_document_registry()
+        except Exception as e:
+            logger.debug(f"[FilenameResolve] registry unavailable: {e}")
+            return []
+
+        all_completed = reg.get_completed()
+        if not all_completed:
+            return []
+
+        # Bias to PDFs/DOCXs when the query names a formal-document type.
+        q_lower = query.lower()
+        prefer_pdf = any(cue in q_lower for cue in self._DOC_TYPE_CUES)
+        if prefer_pdf:
+            doc_exts = (".pdf", ".docx", ".doc")
+            completed = [r for r in all_completed if r.file_name.lower().endswith(doc_exts)]
+            if not completed:
+                completed = all_completed
+        else:
+            completed = all_completed
+
+        tokens = [
+            t.strip(".,?!:;()[]\"'")
+            for t in query.split()
+            if len(t) >= 3 and t.lower() not in self._FILENAME_STOP_TOKENS
+        ]
+        tokens = [t for t in tokens if t]
+        if not tokens:
+            return []
+
+        # Build a candidate set of file_names (lower-cased) that we will score.
+        candidate_names = {r.file_name for r in completed}
+        hits: Dict[str, int] = {}  # file_name -> score
+
+        # 1) Substring hit on filename — strongest signal (within candidate set)
+        for tok in tokens:
+            for rec in reg.search_by_name(tok):
+                if rec.file_name in candidate_names:
+                    hits[rec.file_name] = hits.get(rec.file_name, 0) + 100
+
+        # 2) Fuzzy on filename stem (catches abbreviations / spelling drift,
+        # e.g. "TABH" -> "DPS Letter_TABH.pdf")
+        stems: Dict[str, str] = {}
+        for r in completed:
+            stem = Path(r.file_name).stem.lower()
+            stems.setdefault(stem, r.file_name)
+
+        for tok in tokens:
+            try:
+                matches = process.extract(
+                    tok.lower(), list(stems.keys()),
+                    scorer=fuzz.token_set_ratio,
+                    limit=5, score_cutoff=80,
+                )
+            except Exception:
+                matches = []
+            for stem, score, _ in matches:
+                fn = stems[stem]
+                hits[fn] = hits.get(fn, 0) + int(score)
+
+        if not hits:
+            return []
+
+        ranked = sorted(hits.items(), key=lambda kv: -kv[1])[:5]
+        logger.info(
+            f"[FilenameResolve] {len(hits)} hits, top: "
+            + ", ".join(f"{fn}={s}" for fn, s in ranked[:3])
+        )
+        return [fn for fn, _ in ranked]
+
+    def _rerank_sources(
+        self,
+        sources: List[Dict[str, Any]],
+        filename_hints: List[str],
+        metadata_doc_ids: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Score-blend re-rank: vector score + filename match + metadata + PDF nudge.
+
+        Boosts:
+          +0.30 if the source's file_name is in filename_hints (named-doc query)
+          +0.10 if its doc_id was found by the notices metadata search
+          +0.05 if it is a PDF (counter mail-domination of the chunk pool)
+        """
+        f_set = {fn.lower() for fn in (filename_hints or [])}
+        m_set = set(metadata_doc_ids or [])
+        for s in sources:
+            base = s.get("score") or 0.0
+            try:
+                base = float(base)
+            except (TypeError, ValueError):
+                base = 0.0
+            fn = (s.get("file_name") or "").lower()
+            boost = 0.30 if fn in f_set else 0.0
+            boost += 0.10 if s.get("doc_id") in m_set else 0.0
+            if fn.endswith(".pdf"):
+                boost += 0.05
+            s["_final_score"] = base + boost
+        return sorted(sources, key=lambda x: -(x.get("_final_score") or 0.0))
+
     # ── Query handlers ────────────────────────────────────────
 
     def _handle_document_query(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -1013,6 +1236,16 @@ class QueryRouter:
         except Exception as e:
             logger.warning(f"[DocQuery] Jargon expansion failed: {e}")
         logger.info("Routing to Document RAG...")
+
+        # 0. Filename resolver — strongest signal when user names a specific doc.
+        # Returns file_name strings (not doc_ids) — used for re-rank, not for
+        # vector-store scoping (Pinecone doc_id is per-chunk UUID, IN filter
+        # never matches doc-level intent).
+        filename_hints: List[str] = []
+        try:
+            filename_hints = self._resolve_filename_hints(query)
+        except Exception as e:
+            logger.warning(f"[FilenameResolve] failed: {e}")
 
         # 1. DuckDB metadata search — find matching doc_ids from notices
         metadata_sources = []
@@ -1050,12 +1283,24 @@ class QueryRouter:
         except Exception as e:
             logger.warning(f"Metadata search failed: {e}")
 
-        # 2. RAG vector search — use metadata doc_ids as filter if available
-        combined_ids = doc_ids or []
-        if metadata_doc_ids and not combined_ids:
-            combined_ids = metadata_doc_ids
+        # 2. When filename resolves to PDFs, scope the vector search to those
+        # file_names so the named doc's chunks are guaranteed to surface (a
+        # heavily mail-dominated index otherwise drowns short PDFs).
+        if filename_hints:
+            top_k = 15
+            logger.info(
+                f"[DocQuery] filename-resolved ({len(filename_hints)} files); "
+                f"filter+top_k={top_k}"
+            )
+        else:
+            top_k = 10
 
-        result = self.document_rag.query(query, doc_ids=combined_ids if combined_ids else None)
+        result = self.document_rag.query(
+            query,
+            top_k=top_k,
+            doc_ids=doc_ids if doc_ids else None,
+            file_names=filename_hints if filename_hints else None,
+        )
 
         # 3. Merge sources — metadata first, then RAG (deduplicated)
         rag_sources = result.get("sources", [])
@@ -1070,6 +1315,13 @@ class QueryRouter:
                 seen_keys.add(key)
 
         final_sources = metadata_sources if metadata_sources else rag_sources
+
+        # 3a. Score-blend re-rank: lift filename-matched + PDF chunks above
+        # mail noise so the citation list reflects the user's intent.
+        if final_sources and (filename_hints or metadata_doc_ids):
+            final_sources = self._rerank_sources(
+                final_sources, filename_hints, metadata_doc_ids
+            )
 
         # 3b. Find related Excel/data tables for this topic (scoped)
         try:
@@ -1222,11 +1474,18 @@ class QueryRouter:
             from . import llm_client
             from .prompt_security import safe_render_prompt, build_system_prompt
 
+            try:
+                from .schema_context import get_schema_prompt_block
+                schema_context = get_schema_prompt_block(query, mode="full", max_tables=6, include_samples=True)
+            except Exception:
+                schema_context = ""
+
             prompt = safe_render_prompt(
                 self.HYBRID_SYNTHESIS_PROMPT,
                 user_query=query,
                 doc_results=doc_result["answer"],
                 data_results=data_result["answer"],
+                schema_context=schema_context,
             )
             system = build_system_prompt("You synthesize information from multiple sources.")
 
@@ -2377,12 +2636,129 @@ class QueryRouter:
         elif query_type == QueryType.DATA:
             return self.data_analyzer.query_dual(expanded, allowed_tables=allowed_tables)
         elif query_type == QueryType.DOCUMENT:
+            # When the user names a specific document by filename, route to a
+            # dedicated path that fetches chunks directly from Pinecone (with
+            # a file_name metadata filter) instead of via LlamaIndex's query
+            # engine. This bypasses two failure modes: (1) doc_id IN filter
+            # never matches because Pinecone's doc_id is a per-chunk UUID;
+            # (2) MetadataFilter on file_name occasionally returns empty
+            # source_nodes from the LlamaIndex layer.
+            try:
+                filename_hints = self._resolve_filename_hints(expanded)
+            except Exception as e:
+                logger.warning(f"[FilenameResolveDispatch] failed: {e}")
+                filename_hints = []
+            if filename_hints:
+                logger.info(
+                    f"[Dispatch] DOCUMENT named-doc path: {len(filename_hints)} "
+                    f"file_name(s) — {filename_hints[:3]}"
+                )
+                return self.document_rag.query_named_docs_dual(
+                    expanded, filename_hints,
+                )
             return self.document_rag.query_dual(expanded, doc_ids=doc_ids)
         elif query_type == QueryType.TIMELINE:
             single = self._handle_timeline_query(query)
             return {p: single for p in LLM_PROVIDERS}
         else:  # HYBRID
             return self._handle_hybrid_query_dual(expanded)
+
+    def _handle_document_query_dual(
+        self, query: str, doc_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Multi-provider variant of _handle_document_query.
+
+        Resolves filename hints, runs a wider top-k vector retrieval (so the
+        named doc's chunks have room to surface), and re-ranks each provider's
+        sources by file_name match + PDF preference. Vector-store scoping by
+        doc_id is intentionally skipped: in this index doc_id is a per-chunk
+        UUID, not a doc-level handle, so an IN filter would always be empty.
+        """
+        # 0. Filename resolver — strongest signal when user names a doc.
+        filename_hints: List[str] = []
+        try:
+            filename_hints = self._resolve_filename_hints(query)
+        except Exception as e:
+            logger.warning(f"[FilenameResolveDual] failed: {e}")
+
+        # 1. Notices metadata search.
+        metadata_doc_ids: List[str] = []
+        metadata_sources: List[Dict[str, Any]] = []
+        try:
+            from src.light_graph import get_light_graph
+            graph = get_light_graph()
+            meta_results = graph.search_by_topic(query, limit=20)
+            if meta_results:
+                metadata_doc_ids = [r["doc_id"] for r in meta_results if r.get("doc_id")]
+                for r in meta_results:
+                    file_name = r.get("file_name", "")
+                    file_path = ""
+                    total_pages = 1
+                    try:
+                        reg = self.document_rag.file_registry.get(file_name, {})
+                        file_path = reg.get("file_path", "")
+                        total_pages = reg.get("page_count", 1)
+                    except Exception:
+                        pass
+                    metadata_sources.append({
+                        "file_name": file_name,
+                        "file_path": file_path,
+                        "page_number": 1,
+                        "total_pages": total_pages,
+                        "doc_id": r.get("doc_id", ""),
+                        "date": r.get("date", ""),
+                        "sender": r.get("sender", ""),
+                        "recipient": r.get("recipient", ""),
+                        "subject": r.get("subject", ""),
+                        "doc_type": r.get("doc_type", "document"),
+                        "type": "notice",
+                    })
+                logger.info(f"[DocQueryDual] notices found {len(metadata_doc_ids)} docs")
+        except Exception as e:
+            logger.warning(f"[DocQueryDual] notices search failed: {e}")
+
+        # 2. When filename resolves to PDFs, scope the vector search to those
+        # file_names so the named doc's chunks are guaranteed to surface.
+        # Combined with the PDF-cue bias in _resolve_filename_hints this
+        # avoids both the mail-domination problem AND the empty-citation
+        # corner case where mail-named filenames get filter-included.
+        if filename_hints:
+            top_k = 15
+            logger.info(
+                f"[DocQueryDual] filename-resolved ({len(filename_hints)} files); "
+                f"filter+top_k={top_k}"
+            )
+        else:
+            top_k = 10
+
+        # 3. Fan out to providers.
+        provider_results = self.document_rag.query_dual(
+            query,
+            top_k=top_k,
+            doc_ids=doc_ids if doc_ids else None,
+            file_names=filename_hints if filename_hints else None,
+        )
+
+        # 4. Re-rank each provider's sources and prepend metadata sources.
+        for provider, res in provider_results.items():
+            if not isinstance(res, dict):
+                continue
+            rag_sources = res.get("sources", []) or []
+            seen_keys = {
+                (s.get("file_name"), s.get("page_number"))
+                for s in metadata_sources
+            }
+            merged = list(metadata_sources)
+            for rs in rag_sources:
+                key = (rs.get("file_name"), rs.get("page_number"))
+                if key not in seen_keys:
+                    merged.append(rs)
+                    seen_keys.add(key)
+            if merged and (filename_hints or metadata_doc_ids):
+                merged = self._rerank_sources(merged, filename_hints, metadata_doc_ids)
+            res["sources"] = merged
+
+        return provider_results
 
     _FALLBACK_MAP = {
         QueryType.DOCUMENT: QueryType.DATA,
@@ -2500,19 +2876,45 @@ class QueryRouter:
                             )
                             trace.route = f"{secondary.value.upper()}_FALLBACK"
 
-            # Fallback: if DOCUMENT returned empty and tables exist, retry as DATA
+            # Fallback: if DOCUMENT returned empty and tables exist, retry as DATA —
+            # but only when the query has NO document-intent signals. A query like
+            # "explain the contract scope" with zero RAG hits should return an honest
+            # empty answer, not a fabricated SQL aggregate over unrelated tables.
             if (decision.query_type == QueryType.DOCUMENT
                     and not result.get("sources")
                     and self.data_analyzer.list_tables()):
-                logger.info("   Document query returned empty, retrying as DATA (tables available)")
-                result = self._handle_data_query(expanded, doc_ids=doc_ids)
-                result["query_type"] = QueryType.DATA.value
-                decision = RouterDecision(
-                    query_type=QueryType.DATA,
-                    confidence=decision.confidence,
-                    reasons=decision.reasons + ["fallback: doc empty, tables available"],
+                answer_text = (result.get("answer") or "").strip()
+                answer_lower = answer_text.lower()
+                empty_answer = (
+                    not answer_text
+                    or len(answer_text) < 20
+                    or "no documents indexed" in answer_lower
+                    or "not found" in answer_lower
+                    or "no relevant" in answer_lower
                 )
-                trace.route = "DATA_FALLBACK"
+                q_lower = expanded.lower()
+                has_doc_intent = (
+                    any(p in q_lower for p in _DOCUMENT_INTENT_PATTERNS)
+                    or any(kw in q_lower for kw in DOCUMENT_KEYWORDS)
+                )
+
+                if empty_answer and not has_doc_intent:
+                    logger.info("   Document query returned empty, retrying as DATA (tables available)")
+                    result = self._handle_data_query(expanded, doc_ids=doc_ids)
+                    result["query_type"] = QueryType.DATA.value
+                    decision = RouterDecision(
+                        query_type=QueryType.DATA,
+                        confidence=decision.confidence,
+                        reasons=decision.reasons + ["fallback: doc empty, no doc intent, tables available"],
+                    )
+                    trace.route = "DATA_FALLBACK"
+                elif has_doc_intent and empty_answer:
+                    logger.info("   Document query empty but doc-intent signals present — keeping DOCUMENT (no SQL fallback)")
+                    decision = RouterDecision(
+                        query_type=decision.query_type,
+                        confidence=decision.confidence,
+                        reasons=decision.reasons + ["fallback suppressed: doc-intent signals"],
+                    )
 
             # Fallback: if HYBRID returned error/empty and tables exist, retry as DATA
             if (decision.query_type == QueryType.HYBRID
@@ -2663,11 +3065,18 @@ class QueryRouter:
             from .prompt_security import safe_render_prompt, build_system_prompt
 
             try:
+                try:
+                    from .schema_context import get_schema_prompt_block
+                    schema_context = get_schema_prompt_block(query, mode="full", max_tables=6, include_samples=True)
+                except Exception:
+                    schema_context = ""
+
                 prompt = safe_render_prompt(
                     self.HYBRID_SYNTHESIS_PROMPT,
                     user_query=query,
                     doc_results=doc_result["answer"],
                     data_results=data_result["answer"],
+                    schema_context=schema_context,
                 )
                 system = build_system_prompt("You synthesize information from multiple sources.")
                 resp = llm_client.generate_text(prompt, system=system, provider=provider)

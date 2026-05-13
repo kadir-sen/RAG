@@ -1,36 +1,64 @@
 @import "tailwindcss";
 
 :root {
-  /* ── Backgrounds (from HTML mockup) ── */
-  --bg-primary: #16151B;
-  --bg-secondary: #1A1B26;
-  --bg-surface: #35374B;
-  --bg-hover: #3F4259;
-  --bg-input: rgba(255, 255, 255, 0.08);
+  /* ── ARIA brand palette (visual_template — Apple-inspired dark) ── */
+  --aria-blue:  #4f8ef7;
+  --aria-purp:  #8b5cf6;
+  --aria-cyan:  #06b6d4;
+  --aria-pink:  #ec4899;
+  --aria-green: #4ade80;
+  --aria-amber: #f59e0b;
+
+  /* ── Backgrounds ── */
+  --bg-primary: #0E1116;
+  --bg-secondary: #16151B;
+  --bg-surface: #1F1E29;
+  --bg-hover: #2A2937;
+  --bg-input: rgba(255, 255, 255, 0.06);
 
   /* ── Borders ── */
-  --border: #3F3F46;
-  --border-light: #52525b;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.16);
 
   /* ── Text ── */
   --text-primary: #E2E8F0;
   --text-secondary: #94A3B8;
   --text-muted: #71717a;
 
-  /* ── Accent (purple from mockup) ── */
-  --accent: #7B5AF2;
-  --accent-hover: #6D4AE6;
-  --accent-glow: rgba(123, 90, 242, 0.15);
-  --accent-green: #22c55e;
+  /* ── Accent (ARIA blue → violet gradient) ── */
+  --accent: var(--aria-blue);
+  --accent-hover: #6FA0F9;
+  --accent-rgb: 79, 142, 247;             /* expose channels for rgba() in components */
+  --accent-glow: rgba(79, 142, 247, 0.18);
+  --accent-green: var(--aria-green);
+  --warning: var(--aria-amber);
+  --warning-strong: #ef4444;
   --danger: #ef4444;
-  --user-bubble: #5D64E8;
+  --user-bubble: var(--aria-blue);
+
+  /* ── File-type indicator dots ── */
+  --type-pdf: var(--aria-pink);
+  --type-xls: var(--aria-green);
+  --type-eml: var(--aria-cyan);
+
+  /* ── LLM provider chip dots (legacy; provider names no longer rendered) ── */
+  --provider-gemini: var(--aria-blue);
+  --provider-openai: var(--aria-green);
+  --provider-claude: var(--aria-amber);
+  --provider-fallback: #71717a;
 
   /* ── Glass & Effects ── */
   --glass-bg: rgba(255, 255, 255, 0.05);
-  --glass-border: rgba(255, 255, 255, 0.15);
-  --gradient-accent: linear-gradient(135deg, #7B5AF2 0%, #8B5CF6 100%);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.25);
-  --shadow-glow: 0 0 20px rgba(123, 90, 242, 0.12);
+  --glass-border: rgba(255, 255, 255, 0.10);
+  --gradient-accent: linear-gradient(135deg, #4f8ef7 0%, #8b5cf6 50%, #ec4899 100%);
+  --gradient-aria:   linear-gradient(135deg, #4f8ef7 0%, #8b5cf6 50%, #ec4899 100%);
+  --gradient-warning: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.45);
+  --shadow-glow: 0 0 24px rgba(79, 142, 247, 0.22);
+
+  /* ── Typography ── */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 * {
@@ -47,16 +75,40 @@ html {
 body {
   height: 100%;
   overflow: clip;
-  background: radial-gradient(circle at center, #2c2541 0%, #16151B 100%);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(139, 92, 246, 0.10), transparent 60%),
+    radial-gradient(900px 500px at 0% 10%, rgba(79, 142, 247, 0.08), transparent 60%),
+    radial-gradient(circle at center, #131220 0%, #0A0B0F 100%);
   color: var(--text-primary);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Apply JetBrains Mono everywhere the existing Tailwind utility `font-mono`
+   is used (citation chips, timestamps, action labels, etc.). Lower coverage
+   = visible identity refresh without touching every component. */
+.font-mono,
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
 }
 
 #root {
   height: 100%;
   overflow: clip;
+}
+
+/* ── Blueprint grid (welcome screen + doc analysis) ── */
+
+.welcome-blueprint {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 0 0;
 }
 
 /* ── Glass Card (from mockup) ── */
