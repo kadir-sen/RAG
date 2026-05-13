@@ -503,7 +503,71 @@ In order, with rough effort:
 
 ---
 
-## 11. After this PR ships — follow-ups
+## 11. Local run results (this branch, 2026-05-13)
+
+Tests were implemented and executed against the local stack:
+
+- Backend: `ASISTANT_USAGE_LIMIT_USD=100 uvicorn backend.main:app --host 127.0.0.1 --port 8080`
+- Frontend: `npm run dev` (Vite served on `:3000` per `vite.config.ts`)
+- Command: `BASE_URL=http://127.0.0.1:3000 npx playwright test --config=e2e/playwright.config.ts tests/smoke/ tests/chat/ tests/sidebar/folders.spec.ts tests/modals/settings.spec.ts tests/navigation/topnav.spec.ts tests/usage/`
+
+**Result: 60 passed, 0 failed (2.2 min wall time).**
+
+Bugs caught along the way (all fixed in this branch):
+
+| Bug | Where | Symptom |
+|---|---|---|
+| Stale `hasProviders` ref | `AssistantMessage.tsx:139` | `ReferenceError: hasProviders is not defined` crashed the app whenever an assistant bubble carried an `sql_artifact`. |
+| Strict-mode locator violations | mode-selection, action-chips, composer-layout, welcome-screen | `getByText('DOCUMENT ANALYSIS')` matched 3 elements (mode header tag + intro MonoTag + action chip). Wrapped with `.first()`. |
+| Typing indicator race | send-message, composer-layout | `[role="status"]` flashes through too quickly on cached / very-short responses. Tests now wait for the chat log / first assistant bubble instead. |
+| Folder count source mismatch | sidebar/folders.spec.ts | Test compared against `/api/library` (107 entries) but the sidebar reads `/api/files` (75). Switched to `/api/files`. |
+
+Local environment notes:
+
+- `npm install @rollup/rollup-darwin-arm64 --no-save` was required to fix npm's optional-deps bug.
+- `xattr -dr com.apple.quarantine node_modules` was needed for esbuild to spawn child processes (macOS quarantine).
+- Python 3.14 system env needed `pip install llama-index llama-index-llms-gemini llama-index-llms-openai llama-index-embeddings-google-genai llama-index-vector-stores-pinecone` for `/api/library` to return 200.
+
+## 12. Post-deploy run results — Lightsail (2026-05-13)
+
+Image rebuilt locally (cross-build `linux/amd64`), shipped to `18.185.38.217` via `docker save | ssh | docker load`, and brought up via `docker compose -f docker-compose.prod.yml`.
+
+Pre-deploy: tagged the previous image as `mvp-api:previous` on the host for rollback.
+
+Post-deploy server smoke (curl):
+
+| Endpoint | Result |
+|---|---|
+| `GET /api/health` | 200 — `{"status":"ok"}` |
+| `GET /api/usage` | 200 — `{ used_usd: 0, limit_usd: 100, ... over_budget: false, total_calls: 0 }` |
+| `GET /api/library` | 200 — 107 docs (registry intact) |
+| `GET /` (HTML) | `<title>Asistant</title>`, no `Construction` string |
+
+Post-deploy Playwright run:
+
+```bash
+BASE_URL=http://18.185.38.217 npm run e2e -- \
+  tests/smoke/ tests/chat/branding.spec.ts tests/chat/provider-hidden.spec.ts \
+  tests/chat/composer-layout.spec.ts tests/usage/usage-badge.spec.ts \
+  tests/modals/settings.spec.ts tests/navigation/topnav.spec.ts \
+  tests/sidebar/folders.spec.ts tests/chat/action-chips.spec.ts \
+  tests/chat/welcome-screen.spec.ts
+```
+
+**Result: 52 passed, 0 failed (1.3 min).**
+
+Rollback procedure (if needed in the next few hours):
+
+```bash
+ssh -i ~/Downloads/LightsailDefaultKey-eu-central-1.pem ubuntu@18.185.38.217 '
+  cd /opt/mvp-api &&
+  sudo docker compose -f docker-compose.prod.yml down &&
+  sudo docker tag mvp-api:previous mvp-api:latest &&
+  sudo docker compose -f docker-compose.prod.yml up -d
+'
+```
+
+## 13. Follow-ups (post-merge)
 
 These tests should be added once the corresponding features land, but are **not** in scope of this gate:
 
