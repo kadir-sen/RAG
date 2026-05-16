@@ -42,7 +42,7 @@ test.describe('App Loading', () => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
 
-    await expect(page.locator('button:has-text("New Chat")')).toBeVisible();
+    await expect(page.locator('button:has-text("Yeni sohbet")')).toBeVisible();
   });
 
   test('should show top navigation elements', async ({ page }) => {

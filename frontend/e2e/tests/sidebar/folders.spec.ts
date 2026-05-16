@@ -10,8 +10,34 @@ test.describe('Sidebar library folders', () => {
     await sidebarPage.createNewChat();
   });
 
-  test('AI Assistant section header is rendered', async ({ page }) => {
-    await expect(page.locator(S.sidebarAiAssistantHeading)).toBeVisible();
+  test('"Sohbetler" section header is rendered above the recent chat list', async ({ page }) => {
+    await expect(page.locator(S.sidebarChatsHeading)).toBeVisible();
+  });
+
+  test('top primary action buttons render in the expected order', async ({ page }) => {
+    // The five rail entries (in order):
+    //   Yeni sohbet → Sohbetlerde ara → Documents → Correspondence → Spreadsheet
+    const labels = ['Yeni sohbet', 'Sohbetlerde ara', 'Documents', 'Correspondence', 'Spreadsheet'];
+    const tops: number[] = [];
+    for (const label of labels) {
+      const btn = page.locator(`aside button:has-text("${label}")`).first();
+      await expect(btn).toBeVisible();
+      const box = await btn.boundingBox();
+      expect(box).not.toBeNull();
+      if (box) tops.push(box.y);
+    }
+    // Strictly increasing vertical order — no ties allowed.
+    for (let i = 1; i < tops.length; i++) {
+      expect(tops[i], `${labels[i]} should sit below ${labels[i - 1]}`).toBeGreaterThan(tops[i - 1]);
+    }
+  });
+
+  test('"Sohbetlerde ara" toggles an inline search input', async ({ page }) => {
+    await expect(page.locator('input[aria-label="Search chats"]')).toHaveCount(0);
+    await page.locator(S.sidebarSearchChats).click();
+    await expect(page.locator('input[aria-label="Search chats"]')).toBeVisible();
+    await page.locator(S.sidebarSearchChats).click();
+    await expect(page.locator('input[aria-label="Search chats"]')).toHaveCount(0);
   });
 
   test('all three folders render with a numeric count', async ({ sidebarPage }) => {
@@ -75,8 +101,10 @@ test.describe('Sidebar library folders', () => {
       test.skip(true, 'Documents folder is empty in this environment');
     }
     await sidebarPage.openFolder('Documents');
-    // The expanded panel sits immediately after the header in the DOM and uses ml-3 border-l styling.
-    const panel = page.locator('div.ml-3.border-l').first();
-    await expect(panel).toBeVisible();
+    // After expansion an indented file panel sits in the sidebar with the
+    // border-l guide rail. We assert a file row (a button rendered via
+    // FileTypeBadge) is visible somewhere inside the sidebar.
+    const fileRow = page.locator('aside .border-l button').first();
+    await expect(fileRow).toBeVisible();
   });
 });

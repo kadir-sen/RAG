@@ -28,7 +28,7 @@ export const S = {
 
   // ── Sidebar ────────────────────────────────────────────
   sidebar: '[aria-label="Sidebar"]',
-  newChatButton: 'button:has-text("New Chat")',
+  newChatButton: 'button:has-text("Yeni sohbet")',
   recentChats: '.truncate',
   addFilesButton: 'button:has-text("Add Files")',
   uploadingButton: 'button:has-text("Uploading...")',
@@ -36,7 +36,11 @@ export const S = {
   fileInput: 'input[type="file"]',
   renameButton: '[title="Rename"]',
   deleteButton: '[title="Delete"]',
-  sidebarAiAssistantHeading: 'p:has-text("AI Assistant")',
+  sidebarChatsHeading: 'p:has-text("Sohbetler")',
+
+  // ── Sidebar primary action buttons (the five "big" rows) ───
+  sidebarNewChat: 'button:has-text("Yeni sohbet")',
+  sidebarSearchChats: 'button:has-text("Sohbetlerde ara")',
 
   // ── Sidebar Folders (Documents / Correspondence / Spreadsheet) ──
   folderDocuments: 'button[aria-expanded]:has-text("Documents")',
