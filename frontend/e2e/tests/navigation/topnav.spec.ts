@@ -43,9 +43,10 @@ test.describe('Top Navigation', () => {
     await expect(page.locator(S.settingsDialog)).toBeVisible({ timeout: 3_000 });
   });
 
-  test('should display the Asistant brand', async ({ page }) => {
+  test('should display the COAir brand', async ({ page }) => {
     await expect(page.locator(S.branding)).toBeVisible();
-    await expect(page.locator(S.branding).getByText('Asistant', { exact: true })).toBeVisible();
+    await expect(page.locator(S.branding).getByText('CO', { exact: true })).toBeVisible();
+    await expect(page.locator(S.branding).getByText('Air', { exact: true })).toBeVisible();
   });
 
   test('should display user avatar', async ({ page }) => {

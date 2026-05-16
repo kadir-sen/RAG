@@ -8,10 +8,13 @@ test.describe('App Loading', () => {
     await page.goto('/', { timeout: 60_000 });
     await page.waitForLoadState('networkidle', { timeout: 60_000 });
 
-    // Branding visible (TopNav renders "Asistant").
-    await expect(page.locator('[aria-label="Asistant"]')).toBeVisible();
+    // Branding visible (TopNav renders the COAir wordmark — CO + Air).
+    await expect(page.locator('[aria-label="COAir"]')).toBeVisible();
     await expect(
-      page.locator('[aria-label="Asistant"]').getByText('Asistant', { exact: true }),
+      page.locator('[aria-label="COAir"]').getByText('CO', { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.locator('[aria-label="COAir"]').getByText('Air', { exact: true }),
     ).toBeVisible();
 
     // No JS errors
@@ -22,7 +25,9 @@ test.describe('App Loading', () => {
     await page.goto('/');
     await welcomePage.waitForVisible();
 
-    await expect(page.locator('h1').first()).toContainText('Asistant');
+    // The hero h1 is the wordmark — "CO" black/white + "Air" orange.
+    await expect(page.locator('h1').first()).toContainText('CO');
+    await expect(page.locator('h1').first()).toContainText('Air');
   });
 
   test('should have chat input visible and focusable', async ({ page }) => {

@@ -38,7 +38,7 @@ export default function DocumentAnalysisIntro({ onSend }: Props) {
             Trace a topic across the project, in time order.
           </h1>
           <p className="text-sm text-[var(--text-secondary)] mt-1">
-            Enter a subject, vendor, or system. Asistant surfaces every related
+            Enter a subject, vendor, or system. COAir surfaces every related
             email, contract, and data file along a clickable timeline.
           </p>
         </div>

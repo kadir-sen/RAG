@@ -1,4 +1,4 @@
-// Centralized design tokens for Asistant.
+// Centralized design tokens for COAir.
 // Every component reads file-type and provider colors from here so a single
 // change in globals.css cascades through the whole UI.
 

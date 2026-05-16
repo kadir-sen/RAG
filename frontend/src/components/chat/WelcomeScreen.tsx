@@ -89,11 +89,12 @@ export default function WelcomeScreen({ onModeSelect }: Props) {
             className="w-14 h-14 grid place-items-center border border-[var(--border)] bg-[rgba(255,255,255,0.04)] rounded"
             aria-hidden="true"
           >
-            <span className="font-mono font-bold text-white tracking-wider text-lg">AS</span>
+            <span className="font-mono font-bold text-white tracking-wider text-lg">CO</span>
           </div>
           <div>
             <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-white">
-              Asistant
+              <span>CO</span>
+              <span className="text-[var(--accent)]">Air</span>
             </h1>
             <p className="text-xs md:text-sm text-[var(--text-secondary)] font-mono mt-1 tracking-wide">
               chat · cite · verify — your project data, on demand

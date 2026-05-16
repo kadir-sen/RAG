@@ -1026,7 +1026,7 @@ class QueryRouter:
             schema_counts[schema] = schema_counts.get(schema, 0) + 1
 
         greeting = (
-            "Welcome to **Asistant** — your intelligent project analytics platform.\n\n"
+            "Welcome to **COAir** — your intelligent project analytics platform.\n\n"
             "I analyze your project's **Excel data** (equipment logs, manpower reports, IPC certificates) "
             "and **documents** (contracts, letters, notices) to provide instant, data-driven insights.\n\n"
         )

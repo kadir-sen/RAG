@@ -1,5 +1,6 @@
 import { useUIStore } from '../stores/uiStore';
 import UsageBadge from '../components/shared/UsageBadge';
+import BrandMark from '../components/shared/BrandMark';
 
 export default function TopNav() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
@@ -30,9 +31,8 @@ export default function TopNav() {
             </svg>
           )}
         </button>
-        <div className="flex items-center gap-1.5" aria-label="Asistant">
-          <span className="font-semibold text-sm text-white">Asistant</span>
-        </div>
+        <BrandMark size="sm" />
+
       </nav>
 
       {/* Right — usage badge + settings + avatar */}

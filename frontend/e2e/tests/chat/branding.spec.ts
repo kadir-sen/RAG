@@ -1,30 +1,37 @@
 import { test, expect } from '../../fixtures/base.fixture';
 import { S } from '../../helpers/selectors';
 
-test.describe('Branding — Asistant', () => {
+test.describe('Branding — COAir', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
   });
 
-  test('document title is "Asistant"', async ({ page }) => {
-    await expect(page).toHaveTitle('Asistant');
+  test('document title is "COAir"', async ({ page }) => {
+    await expect(page).toHaveTitle('COAir');
   });
 
-  test('TopNav surfaces the Asistant brand', async ({ page }) => {
+  test('TopNav surfaces the COAir brand (CO white + Air orange)', async ({ page }) => {
     const banner = page.locator(S.branding);
     await expect(banner).toBeVisible();
-    await expect(banner.getByText('Asistant', { exact: true })).toBeVisible();
+    // The wordmark is split across two spans — assert both halves exist.
+    await expect(banner.getByText('CO', { exact: true })).toBeVisible();
+    await expect(banner.getByText('Air', { exact: true })).toBeVisible();
   });
 
-  test('no "Construction" / "ConstructionIQ" string appears anywhere in the visible UI', async ({ page }) => {
-    // Body must not contain the legacy brand.
-    await expect(page.locator('body')).not.toContainText(/Construction(IQ)?/i);
+  test('assistant message prefix uses the CO monogram, not Asistant', async ({ page }) => {
+    // Make sure the legacy "Asistant ·" prefix is gone everywhere in the DOM.
+    await expect(page.locator('body')).not.toContainText(/Asistant\s*·/);
   });
 
-  test('legacy "CIQ" monogram is no longer rendered', async ({ page }) => {
-    // The welcome hero used to show "CIQ" — must be gone.
-    const ciqHits = await page.getByText('CIQ', { exact: true }).count();
-    expect(ciqHits).toBe(0);
+  test('no "Construction" / "Asistant" string appears in the visible UI', async ({ page }) => {
+    const body = page.locator('body');
+    await expect(body).not.toContainText(/Construction(IQ)?/i);
+    await expect(body).not.toContainText(/Asistant/);
+  });
+
+  test('legacy monograms (CIQ, AS) are no longer rendered', async ({ page }) => {
+    expect(await page.getByText('CIQ', { exact: true }).count()).toBe(0);
+    expect(await page.getByText('AS', { exact: true }).count()).toBe(0);
   });
 });

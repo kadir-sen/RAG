@@ -82,7 +82,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
         {/* Intent label row — mono "CIQ · {kind}" + low confidence + copy */}
         <div className="mb-1.5 flex flex-wrap items-center gap-1.5 md:gap-2">
           <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--accent)]">
-            Asistant · {intentLabel}{time && ` · ${time}`}
+            CO · {intentLabel}{time && ` · ${time}`}
           </span>
           {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
             <Badge label="low confidence" />

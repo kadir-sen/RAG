@@ -9,7 +9,7 @@ export const S = {
   sidebarClosed: '[aria-label="Open sidebar"]',
   settingsButton: '[aria-label="Open settings"]',
   userAvatar: '[aria-label="User avatar"]',
-  branding: '[aria-label="Asistant"]',
+  branding: '[aria-label="COAir"]',
 
   // ── Chat Input ─────────────────────────────────────────
   chatInput: '#chat-input',

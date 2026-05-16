@@ -4,7 +4,9 @@ Application-wide token/cost budget tracker.
 A single shared budget that all conversations deduct from. Backed by Redis
 when REDIS_URL is set; falls back to a JSON file under STORAGE_DIR.
 
-The limit is configured via env var ASISTANT_USAGE_LIMIT_USD (default: 100.0).
+The limit is configured via env var COAIR_USAGE_LIMIT_USD (default: 100.0).
+For backward compatibility with earlier deploys, ASISTANT_USAGE_LIMIT_USD is
+still honoured if the new var is unset.
 When the cumulative cost crosses the limit, `is_over_budget()` returns True
 and `enforce_budget()` raises BudgetExceededError, which the LLM client should
 surface to the API layer (returned as HTTP 402).
@@ -24,9 +26,11 @@ from .logger import logger
 
 # ── Settings ──────────────────────────────────────────────────
 
-USAGE_LIMIT_USD: float = float(os.getenv("ASISTANT_USAGE_LIMIT_USD", "100.0"))
+USAGE_LIMIT_USD: float = float(
+    os.getenv("COAIR_USAGE_LIMIT_USD") or os.getenv("ASISTANT_USAGE_LIMIT_USD") or "100.0"
+)
 
-_REDIS_KEY_PREFIX = "asistant:usage:"
+_REDIS_KEY_PREFIX = "coair:usage:"
 _REDIS_KEY_USED_USD = _REDIS_KEY_PREFIX + "used_usd"
 _REDIS_KEY_PROMPT_TOKENS = _REDIS_KEY_PREFIX + "prompt_tokens"
 _REDIS_KEY_COMPLETION_TOKENS = _REDIS_KEY_PREFIX + "completion_tokens"
