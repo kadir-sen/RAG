@@ -1,29 +1,32 @@
-import { useRef, useCallback, type KeyboardEvent } from 'react';
+import { useRef, useState, useCallback, type KeyboardEvent } from 'react';
 
 interface Props {
   onSend: (text: string) => void;
   disabled?: boolean;
 }
 
+/**
+ * Minimal single-line composer. Auto-grows up to 200px. Enter sends,
+ * Shift+Enter inserts a newline. The `→` glyph fades in only when there
+ * is content to send.
+ */
 export default function ChatInput({ onSend, disabled }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  const resetHeight = () => {
-    if (inputRef.current) inputRef.current.style.height = 'auto';
-  };
+  const [hasText, setHasText] = useState(false);
 
   const handleSend = useCallback(() => {
-    const text = inputRef.current?.value.trim();
+    const text = inputRef.current?.value.trim() ?? '';
     if (!text || disabled) return;
     onSend(text);
     if (inputRef.current) {
       inputRef.current.value = '';
-      resetHeight();
+      inputRef.current.style.height = 'auto';
       inputRef.current.focus();
     }
+    setHasText(false);
   }, [onSend, disabled]);
 
-  const handleKeyDown = (e: KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -35,34 +38,39 @@ export default function ChatInput({ onSend, disabled }: Props) {
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    setHasText(el.value.trim().length > 0);
   };
 
   return (
     <div className="px-4 pb-4 md:px-6 md:pb-6 pt-2 flex-shrink-0">
-      <div className="max-w-5xl mx-auto relative flex items-end">
-        <label htmlFor="chat-input" className="sr-only">Chat message</label>
-        <textarea
-          id="chat-input"
-          ref={inputRef}
-          rows={1}
-          placeholder="Ask about equipment, manpower, progress..."
-          onKeyDown={handleKeyDown}
-          onInput={handleInput}
-          disabled={disabled}
-          style={{ resize: 'none', overflow: 'hidden' }}
-          className="w-full bg-[var(--bg-surface)] border border-[var(--border)] text-[var(--text-primary)] placeholder-[var(--text-secondary)] rounded-xl py-3 md:py-4 pl-4 pr-14 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] focus:border-[var(--accent)] text-sm transition-shadow"
-          autoFocus
-        />
-        <button
-          onClick={handleSend}
-          disabled={disabled}
-          aria-label="Send message"
-          className="absolute right-2 bottom-1.5 md:bottom-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white w-10 h-10 flex items-center justify-center rounded-lg transition-colors disabled:opacity-30"
-        >
-          <svg aria-hidden="true" className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
-          </svg>
-        </button>
+      <div className="max-w-3xl mx-auto rounded-[10px] border border-[var(--border)] bg-[var(--bg-surface)] focus-within:border-[var(--border-light)] transition-colors">
+        <div className="flex items-end gap-2 px-4 py-3">
+          <label htmlFor="chat-input" className="sr-only">Chat message</label>
+          <textarea
+            id="chat-input"
+            ref={inputRef}
+            rows={1}
+            placeholder="Ask anything…"
+            onKeyDown={handleKeyDown}
+            onInput={handleInput}
+            disabled={disabled}
+            style={{ resize: 'none', overflow: 'hidden' }}
+            className="flex-1 bg-transparent text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none text-sm leading-6"
+            autoFocus
+          />
+          <button
+            onClick={handleSend}
+            disabled={disabled || !hasText}
+            aria-label="Send message"
+            tabIndex={hasText ? 0 : -1}
+            className={`shrink-0 w-7 h-7 mb-0.5 flex items-center justify-center rounded-md text-[var(--text-muted)] hover:text-[var(--accent)] transition-opacity duration-150 ${hasText && !disabled ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+          >
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12" />
+              <polyline points="12 5 19 12 12 19" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   );

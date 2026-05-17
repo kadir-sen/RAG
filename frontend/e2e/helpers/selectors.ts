@@ -36,25 +36,27 @@ export const S = {
   fileInput: 'input[type="file"]',
   renameButton: '[title="Rename"]',
   deleteButton: '[title="Delete"]',
-  sidebarChatsHeading: 'p:has-text("Chat history")',
+  sidebarChatsHeading: 'p:has-text("Recent Queries")',
 
-  // ── Sidebar primary action buttons (the five "big" rows) ───
-  sidebarNewChat: 'button:has-text("New Chat")',
-  sidebarSearchChats: 'button[aria-pressed]:has-text("Search")',
+  // ── Sidebar primary action buttons (Knowledge Base section) ───
+  sidebarNewChat: 'button:has-text("AI Assistant")',
+  sidebarSearchChats: 'button[aria-label="Search recent queries"], button[aria-label="Close search"]',
 
-  // ── Sidebar Folders (Documents / Correspondence / Spreadsheet) ──
+  // ── Sidebar Folders (Documents / Communications / Spreadsheets) ──
   folderDocuments: 'button[aria-expanded]:has-text("Documents")',
-  folderCorrespondence: 'button[aria-expanded]:has-text("Correspondence")',
-  folderSpreadsheet: 'button[aria-expanded]:has-text("Spreadsheet")',
+  folderCorrespondence: 'button[aria-expanded]:has-text("Communications")',
+  folderSpreadsheet: 'button[aria-expanded]:has-text("Spreadsheets")',
   folderHeader: (name: string) =>
     `button[aria-expanded]:has-text("${name}")`,
 
-  // ── Chat Action Chips ──────────────────────────────────
-  actionChipsStrip: 'div:has(> span:has-text("Programs"))',
-  chipCorrespondence: 'button[aria-pressed]:has-text("Correspondence")',
-  chipDocumentAnalysis: 'button[aria-pressed]:has-text("Document Analysis")',
+  // ── Mode toggle (moved into sidebar; chat thread is clean) ───
+  modeToggle: '[data-testid="sidebar-mode-toggle"]',
+  chipCorrespondence: '[data-testid="sidebar-mode-toggle"] [data-mode="correspondence"]',
+  chipDocumentAnalysis: '[data-testid="sidebar-mode-toggle"] [data-mode="document_analysis"]',
   chipByLabel: (label: string) =>
-    `button[aria-pressed]:has-text("${label}")`,
+    `[data-testid="sidebar-mode-toggle"] button:has-text("${label}")`,
+  // Legacy alias (deprecated; kept so the action-chips spec can still target a strip)
+  actionChipsStrip: '[data-testid="sidebar-mode-toggle"]',
 
   // ── Usage Badge ────────────────────────────────────────
   usageBadge: '[aria-label="Usage budget"]',

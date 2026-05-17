@@ -6,25 +6,34 @@ interface Props {
   onClick: () => void;
 }
 
+function iconForExt(name: string): string {
+  const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
+  if (ext === '.msg' || ext === '.eml') return '✉';
+  if (ext === '.xlsx' || ext === '.xls' || ext === '.csv') return '▦';
+  return '▣';
+}
+
+/**
+ * Inline citation chip rendered at the end of an assistant paragraph:
+ *   "… Governing law: English law, London jurisdiction  📄 NDA.pdf"
+ *
+ * No bracket number, no percentage — just the file icon + name. Hover lifts
+ * to accent colour.
+ */
 function CitationChip({ citation, onClick }: Props) {
   const name =
-    citation.doc_name.length > 25
-      ? citation.doc_name.slice(0, 22) + '...'
+    citation.doc_name.length > 38
+      ? citation.doc_name.slice(0, 35) + '…'
       : citation.doc_name;
 
   return (
     <button
       onClick={onClick}
       title={`${citation.doc_name} — ${citation.anchor}`}
-      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[var(--accent)]/10 border border-[var(--accent)]/30 text-xs text-[var(--accent)] hover:bg-[var(--accent)]/20 hover:border-[var(--accent)] hover:shadow-md transition-all cursor-pointer"
+      className="inline-flex items-center gap-1.5 align-baseline ml-2 px-2 py-0.5 rounded-md font-mono text-[11px] leading-tight border border-[var(--border)] bg-[rgba(255,255,255,0.02)] text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
     >
-      <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />
-      <span className="underline decoration-dotted underline-offset-2">{name}</span>
-      {citation.score != null && (
-        <span className="text-[var(--text-secondary)]">
-          {Math.round(citation.score * 100)}%
-        </span>
-      )}
+      <span aria-hidden="true" className="text-[var(--text-muted)]">{iconForExt(citation.doc_name)}</span>
+      <span className="truncate max-w-[18rem]">{name}</span>
     </button>
   );
 }

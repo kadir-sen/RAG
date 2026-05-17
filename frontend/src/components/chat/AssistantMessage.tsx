@@ -5,7 +5,8 @@ import type { ChatResponse } from '../../types/api';
 import type { ViewerDoc } from '../../stores/uiStore';
 import { useChatStore } from '../../stores/chatStore';
 import Badge from '../shared/Badge';
-import CitationChipRow from './CitationChipRow';
+import Avatar from './Avatar';
+import InlineCitations from './InlineCitations';
 import RelatedDocsList from './RelatedDocsList';
 import DocListResponse from './DocListResponse';
 import SqlArtifact from './SqlArtifact';
@@ -39,7 +40,7 @@ const markdownComponents: Components = {
     </tr>
   ),
   strong: ({ children, ...props }) => (
-    <strong className="text-[var(--accent)] font-semibold" {...props}>{children}</strong>
+    <strong className="text-[var(--text-primary)] font-semibold" {...props}>{children}</strong>
   ),
 };
 
@@ -65,7 +66,6 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
     activeMode === 'document_analysis' &&
     intent === 'doc_list' &&
     !!response?.related_docs?.length;
-  const intentLabel = showTimeline ? 'timeline' : intent;
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
 
@@ -76,92 +76,104 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
     });
   }, [text]);
 
+  // Inline citations are only meaningful for plain answer responses where the
+  // text itself is the primary content. Doc-list / timeline / email-trace /
+  // sql_result intents render their own structured sources.
+  const showInlineCitations =
+    intent === 'answer' && !!response?.citations?.length;
+
   return (
     <div className="mb-6 px-4 animate-fade-in-up group">
-      <div className="max-w-4xl min-w-0">
-        {/* Intent label row — mono "CIQ · {kind}" + low confidence + copy */}
-        <div className="mb-1.5 flex flex-wrap items-center gap-1.5 md:gap-2">
-          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--accent)]">
-            CO · {intentLabel}{time && ` · ${time}`}
-          </span>
+      <div className="max-w-4xl min-w-0 flex items-start gap-3">
+        <Avatar variant="assistant" />
+        <div className="min-w-0 flex-1">
+          {/* Hover-only metadata strip */}
           {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
-            <Badge label="low confidence" />
+            <div className="mb-1.5 flex items-center gap-2">
+              <Badge label="low confidence" />
+            </div>
           )}
-          {/* Copy button — visible on hover */}
-          <button
-            onClick={handleCopy}
-            aria-label={copied ? 'Response copied' : 'Copy response'}
-            className="ml-auto opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity px-2 py-0.5 rounded text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-          >
-            {copied ? 'copied!' : 'copy'}
-          </button>
-        </div>
 
-        {/* Main content card — column layout, hairline border, no avatar */}
-        <div className="px-4 py-4 md:px-5 md:py-4 rounded-md border border-[var(--border)] bg-[rgba(255,255,255,0.02)] text-sm leading-relaxed">
-          {/* Provider tabs are hidden — always render the single primary answer. */}
-          <div className="prose prose-invert prose-sm max-w-none text-[var(--text-primary)]">
-            <ReactMarkdown components={markdownComponents}>{text}</ReactMarkdown>
+          {/* Main content card — dark surface, soft border, larger radius */}
+          <div className="px-4 py-4 md:px-5 md:py-4 assistant-card text-sm leading-relaxed">
+            <div className="prose prose-invert prose-sm max-w-none text-[var(--text-primary)]">
+              <ReactMarkdown components={markdownComponents}>{text}</ReactMarkdown>
+              {showInlineCitations && (
+                <p className="!mt-2 !mb-0">
+                  <InlineCitations
+                    citations={response?.citations}
+                    onChipClick={onDocClick}
+                  />
+                </p>
+              )}
+            </div>
+
+            {/* Intent-specific rendering */}
+            {response && (
+              <>
+                {intent === 'doc_list' && !showTimeline && (
+                  <DocListResponse
+                    docs={response.related_docs}
+                    onDocClick={onDocClick}
+                  />
+                )}
+
+                {showTimeline && (
+                  <div className="mt-3">
+                    <DocumentAnalysisTimeline
+                      events={mapRelatedDocsToTimeline(response.related_docs)}
+                      onEventClick={(e) => {
+                        if (!e.id) return;
+                        onDocClick({ docId: e.id, fileName: e.title });
+                      }}
+                    />
+                  </div>
+                )}
+
+                {intent === 'email_trace' && (
+                  <EmailTraceResponse
+                    docs={response.related_docs}
+                    onDocClick={onDocClick}
+                  />
+                )}
+
+                {/* SQL artifact (provider tabs are hidden — always render). */}
+                {intent === 'sql_result' && response.sql_artifact && (
+                  <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
+                )}
+
+                {response.cta && <CtaButton cta={response.cta} />}
+
+                {intent !== 'doc_list' && intent !== 'email_trace' && !showTimeline && (
+                  <RelatedDocsList
+                    docs={response.related_docs}
+                    onDocClick={onDocClick}
+                  />
+                )}
+              </>
+            )}
+
+            {failedText && onRetry && (
+              <button
+                onClick={() => onRetry(failedText)}
+                className="mt-2 px-3 py-1.5 text-xs bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors"
+              >
+                Retry
+              </button>
+            )}
           </div>
 
-          {/* Intent-specific rendering */}
-          {response && (
-            <>
-              {intent === 'doc_list' && !showTimeline && (
-                <DocListResponse
-                  docs={response.related_docs}
-                  onDocClick={onDocClick}
-                />
-              )}
-
-              {showTimeline && (
-                <div className="mt-3">
-                  <DocumentAnalysisTimeline
-                    events={mapRelatedDocsToTimeline(response.related_docs)}
-                    onEventClick={(e) => {
-                      if (!e.id) return;
-                      onDocClick({ docId: e.id, fileName: e.title });
-                    }}
-                  />
-                </div>
-              )}
-
-              {intent === 'email_trace' && (
-                <EmailTraceResponse
-                  docs={response.related_docs}
-                  onDocClick={onDocClick}
-                />
-              )}
-
-              {/* SQL artifact (provider tabs are hidden — always render). */}
-              {intent === 'sql_result' && response.sql_artifact && (
-                <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
-              )}
-
-              {response.cta && <CtaButton cta={response.cta} />}
-
-              <CitationChipRow
-                citations={response.citations}
-                onChipClick={onDocClick}
-              />
-
-              {intent !== 'doc_list' && intent !== 'email_trace' && !showTimeline && (
-                <RelatedDocsList
-                  docs={response.related_docs}
-                  onDocClick={onDocClick}
-                />
-              )}
-            </>
-          )}
-
-          {failedText && onRetry && (
+          {/* Footer: timestamp + copy (hover-only) */}
+          <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-[var(--text-muted)] opacity-0 group-hover:opacity-100 transition-opacity">
+            {time && <span>{time}</span>}
             <button
-              onClick={() => onRetry(failedText)}
-              className="mt-2 px-3 py-1.5 text-xs bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors"
+              onClick={handleCopy}
+              aria-label={copied ? 'Response copied' : 'Copy response'}
+              className="ml-auto px-2 py-0.5 rounded hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
             >
-              Retry
+              {copied ? 'copied!' : 'copy'}
             </button>
-          )}
+          </div>
         </div>
       </div>
     </div>

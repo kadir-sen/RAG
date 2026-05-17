@@ -45,7 +45,6 @@ export default function DocumentAnalysisIntro({ onSend }: Props) {
 
         <EngineeringInputBar
           placeholder='Topic — e.g. "FASTA", "Vingcard", "delay penalties"…'
-          ctaLabel="build timeline"
           ariaLabel="Topic"
           inputId="doc-analysis-topic"
           autoFocus

@@ -11,6 +11,8 @@ import type { ConversationMeta, LibraryDocument } from '../../types/api';
 import type { Message } from '../../types/chat';
 import { groupEmailsByParticipantPair } from '../../utils/emailGrouping';
 import FileTypeBadge from '../ui/FileTypeBadge';
+import SidebarSection from './SidebarSection';
+import ModeToggle from './ModeToggle';
 
 const ACCEPTED = '.pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.eml,.msg';
 
@@ -87,17 +89,9 @@ function SidebarItem({
 }
 
 // ── Icons (inline SVG, 20px) ───────────────────────────────────
-const IconNewChat = (
+const IconAIAssistant = (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M16 4l4 4-9 9H7v-4z" />
-    <path d="M14 6l4 4" />
-    <path d="M21 13v7a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1h7" />
-  </svg>
-);
-const IconSearch = (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="11" cy="11" r="7" />
-    <path d="M20 20l-3.5-3.5" />
+    <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z" />
   </svg>
 );
 const IconDocuments = (
@@ -140,7 +134,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
     archiveConversation,
   } = useConversations({ archived: viewingArchived });
   const { files, uploadMultiple, uploading, isUploading } = useFiles();
-  const { activeConversationId, setConversation, activeMode, selectedEmailIds, toggleEmailSelection, setSelectedEmails } = useChatStore();
+  const { activeConversationId, setConversation, activeMode, setMode, selectedEmailIds, toggleEmailSelection, setSelectedEmails } = useChatStore();
   const { openDocument } = useUIStore();
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
 
@@ -322,33 +316,15 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           sidebarOpen ? 'w-72' : 'w-0 border-r-0'
         }`}
       >
-        {/* ── Top primary actions (the five "big" buttons) ─────────── */}
-        <div className="px-2 pt-3 pb-2 shrink-0 space-y-0.5">
+        {/* ── KNOWLEDGE BASE ─────────────────────────────────────── */}
+        <SidebarSection title="Knowledge Base" />
+        <div className="px-2 pt-1 pb-1 shrink-0 space-y-0.5">
           <SidebarItem
-            icon={IconNewChat}
-            label="New Chat"
+            icon={IconAIAssistant}
+            label="AI Assistant"
+            active={activeMode !== null}
             onClick={handleNewChat}
           />
-          <SidebarItem
-            icon={IconSearch}
-            label="Search"
-            onClick={handleSearchToggle}
-            ariaPressed={searchOpen}
-          />
-          {searchOpen && (
-            <div className="px-3 pt-1 pb-1">
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') handleSearchToggle(); }}
-                placeholder={viewingArchived ? 'Search archive…' : 'Search chats…'}
-                aria-label="Search chats"
-                className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-md px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
-              />
-            </div>
-          )}
           <SidebarItem
             icon={IconDocuments}
             label="Documents"
@@ -380,7 +356,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           )}
           <SidebarItem
             icon={IconCorrespondence}
-            label="Correspondence"
+            label="Communications"
             count={emailDocs.length}
             expandable
             ariaExpanded={openSections.correspondence}
@@ -468,7 +444,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           )}
           <SidebarItem
             icon={IconSpreadsheet}
-            label="Spreadsheet"
+            label="Spreadsheets"
             count={spreadsheetFiles.length}
             expandable
             ariaExpanded={openSections.spreadsheet}
@@ -497,6 +473,12 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           )}
         </div>
 
+        {/* ── Mode toggle (replaces in-chat ChatActionChips) ───────── */}
+        <ModeToggle
+          activeMode={activeMode}
+          onSelect={(m) => setMode(m)}
+        />
+
         {/* ── Email quick prompts (only in correspondence mode w/ selection) ── */}
         {activeMode === 'correspondence' && selectedEmailIds.length > 0 && (
           <div className="mx-3 mt-1 mb-2 space-y-1 pt-2 border-t border-[var(--border)] shrink-0">
@@ -513,19 +495,47 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           </div>
         )}
 
-        {/* ── Section divider ──────────────────────────────────────── */}
-        <div className="px-5 pt-3 pb-1 shrink-0 flex items-center justify-between">
-          <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
-            {viewingArchived ? 'Archive' : 'Chat history'}
-          </p>
-          <button
-            type="button"
-            onClick={() => { setViewingArchived((v) => !v); setSearchQuery(''); }}
-            className="font-mono text-[10px] tracking-wider text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-          >
-            {viewingArchived ? '← back' : 'archive'}
-          </button>
-        </div>
+        {/* ── Recent queries header (with inline search + archive toggle) ── */}
+        <SidebarSection
+          title={viewingArchived ? 'Archive' : 'Recent Queries'}
+          trailing={
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSearchToggle}
+                aria-label={searchOpen ? 'Close search' : 'Search recent queries'}
+                aria-pressed={searchOpen}
+                className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M20 20l-3.5-3.5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setViewingArchived((v) => !v); setSearchQuery(''); }}
+                className="font-mono text-[10px] tracking-wider text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                {viewingArchived ? '← back' : 'archive'}
+              </button>
+            </div>
+          }
+        />
+        {searchOpen && (
+          <div className="px-3 pt-1 pb-1">
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') handleSearchToggle(); }}
+              placeholder={viewingArchived ? 'Search archive…' : 'Search chats…'}
+              aria-label="Search chats"
+              className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-md px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--border-light)]"
+            />
+          </div>
+        )}
 
         {/* ── Recent chats (scrollable, fills remaining height) ─────── */}
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
@@ -682,27 +692,26 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           </div>
         )}
 
-        {/* ── Bottom actions: drop hint + Add Files + Export ───────── */}
-        <div className="px-3 py-3 border-t border-[var(--border)] shrink-0 space-y-2">
+        {/* ── Bottom actions: minimal Add + Export ─────────────────── */}
+        <div className="px-3 py-2 border-t border-[var(--border)] shrink-0 flex items-center justify-between gap-2">
           <button
             onClick={handleFileUpload}
             disabled={isUploading}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black font-semibold text-sm transition-colors disabled:opacity-50"
+            aria-label="Add document"
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors text-[12px] font-mono disabled:opacity-50"
           >
             {IconUpload}
             <span>{isUploading ? 'Uploading…' : 'Add document'}</span>
           </button>
           {files.length > 0 && (
-            <div className="flex justify-center">
-              <a
-                href={getExportUrl()}
-                download
-                aria-label="Export file list as CSV"
-                className="font-mono text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors flex items-center gap-1"
-              >
-                ↓ Export CSV
-              </a>
-            </div>
+            <a
+              href={getExportUrl()}
+              download
+              aria-label="Export file list as CSV"
+              className="font-mono text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors px-2 py-1"
+            >
+              ↓ CSV
+            </a>
           )}
           <input
             ref={fileInputRef}

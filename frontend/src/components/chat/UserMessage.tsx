@@ -1,18 +1,35 @@
 import { memo } from 'react';
+import Avatar from './Avatar';
 
-function UserMessage({ text }: { text: string }) {
+interface Props {
+  text: string;
+  timestamp?: number;
+}
+
+function formatTime(ts?: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function UserMessage({ text, timestamp }: Props) {
+  const time = formatTime(timestamp);
   return (
-    <div className="flex justify-end mb-6 px-4 animate-fade-in-up gap-3">
-      <div className="max-w-[85%] md:max-w-3xl flex items-start">
-        <div className="user-bubble text-white px-4 py-3 md:px-5 rounded-2xl rounded-tr-sm text-sm leading-relaxed break-words whitespace-pre-wrap ring-1 ring-white/5">
-          {text}
+    <div className="mb-6 px-4 animate-fade-in-up group">
+      <div className="max-w-3xl ml-auto flex items-start gap-3 justify-end">
+        <div className="min-w-0 flex flex-col items-end">
+          <div
+            className="inline-block px-4 py-3 md:px-5 user-bubble text-sm leading-relaxed text-[var(--text-primary)] break-words whitespace-pre-wrap text-left"
+          >
+            {text}
+          </div>
+          {time && (
+            <span className="mt-1 text-[10px] font-mono text-[var(--text-muted)] opacity-0 group-hover:opacity-100 transition-opacity">
+              {time}
+            </span>
+          )}
         </div>
-      </div>
-      <div
-        aria-hidden="true"
-        className="flex-shrink-0 w-7 h-7 md:w-8 md:h-8 rounded-full bg-[var(--user-bubble)] text-white flex items-center justify-center mt-1 text-[11px] font-semibold ring-1 ring-white/10"
-      >
-        You
+        <Avatar variant="user" />
       </div>
     </div>
   );

@@ -7,7 +7,6 @@ import { getConversation } from '../api/conversationApi';
 import ConversationSidebar from '../components/sidebar/ConversationSidebar';
 import ChatStream from '../components/chat/ChatStream';
 import ChatInput from '../components/chat/ChatInput';
-import ChatActionChips from '../components/chat/ChatActionChips';
 import WelcomeScreen from '../components/chat/WelcomeScreen';
 import DocumentAnalysisIntro from '../components/chat/DocumentAnalysisIntro';
 import CorrespondenceCenter from '../components/chat/CorrespondenceCenter';
@@ -149,7 +148,6 @@ export default function ChatPage() {
               onRetry={sendMessage}
             />
           )}
-          <ChatActionChips activeMode={activeMode} onModeSelect={handleModeSelect} />
           <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
         </div>
       </div>
