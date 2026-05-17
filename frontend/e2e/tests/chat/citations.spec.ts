@@ -38,6 +38,11 @@ test.describe('Citation Chips', () => {
         await viewerPage.waitForOpen(10_000);
         await expect(page.locator(S.viewerClose)).toBeVisible();
 
+        // The viewer must not surface a "preview not available" banner.
+        const viewerText = await page.locator(S.mainContent).innerText();
+        expect(viewerText).not.toMatch(/preview not available/i);
+        expect(viewerText).not.toMatch(/Document not found/i);
+
         // Close it
         await viewerPage.close();
       } catch {

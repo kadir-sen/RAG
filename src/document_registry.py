@@ -203,10 +203,15 @@ class DocumentRegistry:
 
     def hydrate_from_existing(self, rag_registry: dict, catalog_entries: dict) -> int:
         """Populate registry from existing RAG file_registry + catalog entries.
-        Called once at startup to backfill for files indexed before the registry existed.
-        Returns number of new records added.
+
+        One registry record per source file. Catalog entries that share a
+        source_file (e.g. an .xlsx indexed once schema-matched and once raw)
+        are collapsed: tables merged, the richest metadata wins.
+
+        Returns number of new records added or merged into.
         """
         added = 0
+        merged = 0
         with self._file_lock:
             # From RAG file_registry: {file_name: {file_path, file_type, doc_id, ...}}
             for file_name, info in rag_registry.items():
@@ -230,20 +235,39 @@ class DocumentRegistry:
                     )
                     added += 1
 
-            # From catalog entries: {hash_key: CatalogEntry}
+            # Group catalog entries by source_file so multiple tables for the
+            # same Excel collapse into a single registry record.
+            grouped: Dict[str, List[Any]] = {}
             for _key, entry in catalog_entries.items():
                 source_file = getattr(entry, "source_file", "") or ""
                 if not source_file:
                     continue
+                grouped.setdefault(source_file, []).append(entry)
+
+            for source_file, entries in grouped.items():
                 doc_id = generate_doc_id(source_file)
+                ext = Path(source_file).suffix.lower()
+                try:
+                    size_kb = Path(source_file).stat().st_size // 1024 if Path(source_file).exists() else 0
+                except OSError:
+                    size_kb = 0
+
+                # Aggregate across all entries for this file
+                all_table_names: List[str] = []
+                notice_extracted = False
+                ingested_at = ""
+                for entry in entries:
+                    for t in getattr(entry, "tables", []) or []:
+                        tn = getattr(t, "table_name", "")
+                        if tn and tn not in all_table_names:
+                            all_table_names.append(tn)
+                    if getattr(entry, "notice_extracted", False):
+                        notice_extracted = True
+                    ia = getattr(entry, "ingested_at", "") or ""
+                    if ia and (not ingested_at or ia < ingested_at):
+                        ingested_at = ia
+
                 if doc_id not in self._records:
-                    tables = getattr(entry, "tables", []) or []
-                    table_names = [getattr(t, "table_name", "") for t in tables]
-                    ext = Path(source_file).suffix.lower()
-                    try:
-                        size_kb = Path(source_file).stat().st_size // 1024 if Path(source_file).exists() else 0
-                    except OSError:
-                        size_kb = 0
                     self._records[doc_id] = DocumentRecord(
                         doc_id=doc_id,
                         file_name=Path(source_file).name,
@@ -252,25 +276,71 @@ class DocumentRegistry:
                         file_type="data" if ext in (".xlsx", ".xls", ".csv") else "document",
                         extension=ext,
                         status="completed",
-                        table_names=table_names,
-                        notice_extracted=getattr(entry, "notice_extracted", False),
-                        created_at=getattr(entry, "ingested_at", datetime.now().isoformat()),
+                        table_names=all_table_names,
+                        notice_extracted=notice_extracted,
+                        created_at=ingested_at or datetime.now().isoformat(),
                         completed_at=datetime.now().isoformat(),
                     )
                     added += 1
                 else:
-                    # Merge table_names from catalog into existing record
                     existing = self._records[doc_id]
-                    tables = getattr(entry, "tables", []) or []
-                    for t in tables:
-                        tn = getattr(t, "table_name", "")
+                    for tn in all_table_names:
                         if tn and tn not in existing.table_names:
                             existing.table_names.append(tn)
+                    # Prefer the richer file_size_kb when the existing record is empty
+                    if not existing.file_size_kb and size_kb:
+                        existing.file_size_kb = size_kb
+                    if notice_extracted and not existing.notice_extracted:
+                        existing.notice_extracted = True
+                    merged += 1
 
-            if added:
+            # Final pass: collapse any legacy records that share the same
+            # (file_name, file_path) but live under different doc_ids
+            # (the pre-fix data leaves Excel files duplicated this way).
+            collapsed = self._collapse_legacy_duplicates_locked()
+
+            if added or merged or collapsed:
                 self._save()
-                logger.info(f"[Registry] Hydrated {added} records from existing data")
+                logger.info(
+                    f"[Registry] Hydrated: {added} new, {merged} merged, "
+                    f"{collapsed} legacy duplicates collapsed"
+                )
         return added
+
+    def _collapse_legacy_duplicates_locked(self) -> int:
+        """Merge any records that share (file_name, file_path) under different doc_ids.
+
+        Must be called while holding ``_file_lock``. Keeps the record whose
+        ``doc_id`` matches ``generate_doc_id(file_path)`` (the canonical one),
+        merging tables and richer metadata from the others before deleting them.
+        """
+        groups: Dict[tuple, List[str]] = {}
+        for doc_id, rec in self._records.items():
+            key = (rec.file_name, rec.file_path)
+            groups.setdefault(key, []).append(doc_id)
+
+        collapsed = 0
+        for (file_name, file_path), ids in groups.items():
+            if len(ids) < 2:
+                continue
+            canonical_id = generate_doc_id(file_path) if file_path else ids[0]
+            keeper_id = canonical_id if canonical_id in ids else ids[0]
+            keeper = self._records[keeper_id]
+            for dup_id in ids:
+                if dup_id == keeper_id:
+                    continue
+                dup = self._records.pop(dup_id, None)
+                if dup is None:
+                    continue
+                for tn in dup.table_names:
+                    if tn and tn not in keeper.table_names:
+                        keeper.table_names.append(tn)
+                if not keeper.file_size_kb and dup.file_size_kb:
+                    keeper.file_size_kb = dup.file_size_kb
+                if dup.notice_extracted and not keeper.notice_extracted:
+                    keeper.notice_extracted = True
+                collapsed += 1
+        return collapsed
 
 
 def get_document_registry() -> DocumentRegistry:

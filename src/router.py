@@ -1684,7 +1684,10 @@ class QueryRouter:
                 "sources": [],
             }
 
-        # 3. Default: list all files from DocumentRegistry
+        # 3. Default: list files from DocumentRegistry.
+        #    By default this returns a grouped summary
+        #    (Correspondence: X, Documents: Y, Spreadsheets: Z).
+        #    Verbose flat list is available via "verbose" / "all files" / "full list".
         from .document_registry import get_document_registry
         registry = get_document_registry()
 
@@ -1704,7 +1707,108 @@ class QueryRouter:
                 "sources": [],
             }
 
-        # Build formatted answer
+        # Dedupe by (file_name, file_path) so the same Excel file indexed
+        # under two doc_ids (schema-matched + raw) only counts once.
+        deduped = self._dedupe_records(completed)
+
+        verbose = bool(re.search(r'\bverbose\b|\bfull\s+list\b|\ball\s+files\b|\beach\s+file\b|\bdetail(?:ed|s)?\b', q))
+
+        if verbose:
+            answer = self._render_verbose_file_list(deduped)
+        else:
+            answer = self._render_grouped_file_summary(deduped)
+
+        return {
+            "query": query,
+            "query_type": QueryType.FILE_LIST.value,
+            "answer": answer,
+            "sources": [],
+        }
+
+    # ── Helpers for file list rendering ─────────────────────────────────────
+
+    @staticmethod
+    def _dedupe_records(records: List[Any]) -> List[Any]:
+        """Collapse records sharing (file_name, file_path). Keeps the entry
+        with the most metadata (largest file_size_kb, then more table_names).
+        """
+        groups: Dict[tuple, List[Any]] = {}
+        for r in records:
+            groups.setdefault((r.file_name, r.file_path), []).append(r)
+        result = []
+        for entries in groups.values():
+            entries.sort(
+                key=lambda x: (x.file_size_kb or 0, len(x.table_names or [])),
+                reverse=True,
+            )
+            result.append(entries[0])
+        return result
+
+    @staticmethod
+    def _categorize_record(rec: Any) -> str:
+        """Return 'correspondence' | 'documents' | 'spreadsheets' | 'other'."""
+        ext = (rec.extension or "").lower()
+        if ext in (".msg", ".eml"):
+            return "correspondence"
+        if ext in (".pdf", ".docx", ".doc", ".txt"):
+            return "documents"
+        if ext in (".xlsx", ".xls", ".csv"):
+            return "spreadsheets"
+        # Fall back to file_type when extension is missing
+        ft = (rec.file_type or "").lower()
+        if ft == "email":
+            return "correspondence"
+        if ft == "data":
+            return "spreadsheets"
+        if ft == "document":
+            return "documents"
+        return "other"
+
+    def _render_grouped_file_summary(self, records: List[Any]) -> str:
+        """Render a short summary grouped by category, with sub-format counts."""
+        from collections import Counter
+
+        buckets: Dict[str, List[Any]] = {
+            "correspondence": [],
+            "documents": [],
+            "spreadsheets": [],
+            "other": [],
+        }
+        for rec in records:
+            buckets[self._categorize_record(rec)].append(rec)
+
+        lines: List[str] = [f"**Found {len(records)} unique file(s):**\n"]
+
+        category_labels = [
+            ("correspondence", "Correspondence (emails)"),
+            ("documents", "Documents"),
+            ("spreadsheets", "Spreadsheets"),
+            ("other", "Other"),
+        ]
+
+        ext_label = {
+            ".pdf": "PDF", ".docx": "Word", ".doc": "Word", ".txt": "Text",
+            ".xlsx": "Excel", ".xls": "Excel", ".csv": "CSV",
+            ".msg": "Outlook .msg", ".eml": ".eml",
+        }
+
+        for key, label in category_labels:
+            recs = buckets[key]
+            if not recs:
+                continue
+            sub = Counter((ext_label.get((r.extension or "").lower(), r.extension or "?") for r in recs))
+            sub_str = ", ".join(f"{count} {name}" for name, count in sub.most_common())
+            lines.append(f"- **{label}:** {len(recs)} ({sub_str})")
+
+        lines.append("")
+        lines.append(
+            "_Type `list all files verbose` to see every file by name, "
+            "or ask about a topic (e.g. \"emails about access cards\")._"
+        )
+        return "\n".join(lines)
+
+    def _render_verbose_file_list(self, records: List[Any]) -> str:
+        """Full flat list (deduplicated). Grouped by category internally."""
         ext_icons = {
             ".pdf": "PDF", ".xlsx": "Excel", ".xls": "Excel",
             ".csv": "CSV", ".docx": "Word", ".doc": "Word",
@@ -1712,25 +1816,42 @@ class QueryRouter:
         }
         type_icons = {"document": "PDF", "email": "Email", "data": "Excel"}
 
-        lines = [f"**Found {len(completed)} file(s):**\n"]
-        for i, rec in enumerate(completed, 1):
-            meta_parts = []
-            if rec.table_names:
-                meta_parts.append(f"{len(rec.table_names)} tables")
-            if rec.notice_extracted:
-                meta_parts.append("notice extracted")
-            if rec.file_size_kb:
-                meta_parts.append(f"{rec.file_size_kb} KB")
-            meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
-            icon = ext_icons.get(rec.extension, type_icons.get(rec.file_type, "File"))
-            lines.append(f"{i}. **[{icon}]** {rec.file_name}{meta}")
-
-        return {
-            "query": query,
-            "query_type": QueryType.FILE_LIST.value,
-            "answer": "\n".join(lines),
-            "sources": [],
+        buckets: Dict[str, List[Any]] = {
+            "correspondence": [],
+            "documents": [],
+            "spreadsheets": [],
+            "other": [],
         }
+        for rec in records:
+            buckets[self._categorize_record(rec)].append(rec)
+
+        category_labels = [
+            ("correspondence", "Correspondence"),
+            ("documents", "Documents"),
+            ("spreadsheets", "Spreadsheets"),
+            ("other", "Other"),
+        ]
+
+        lines: List[str] = [f"**Found {len(records)} unique file(s):**\n"]
+        running = 0
+        for key, label in category_labels:
+            recs = sorted(buckets[key], key=lambda r: r.file_name.lower())
+            if not recs:
+                continue
+            lines.append(f"\n**{label} ({len(recs)}):**")
+            for rec in recs:
+                running += 1
+                meta_parts = []
+                if rec.table_names:
+                    meta_parts.append(f"{len(rec.table_names)} tables")
+                if rec.notice_extracted:
+                    meta_parts.append("notice extracted")
+                if rec.file_size_kb:
+                    meta_parts.append(f"{rec.file_size_kb} KB")
+                meta = f" ({', '.join(meta_parts)})" if meta_parts else ""
+                icon = ext_icons.get(rec.extension, type_icons.get(rec.file_type, "File"))
+                lines.append(f"{running}. **[{icon}]** {rec.file_name}{meta}")
+        return "\n".join(lines)
 
     def _handle_delete_query(self, file_hint: str, original_query: str) -> Dict[str, Any]:
         """Handle file deletion requests from chat."""
