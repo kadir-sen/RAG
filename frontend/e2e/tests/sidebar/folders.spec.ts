@@ -10,14 +10,14 @@ test.describe('Sidebar library folders', () => {
     await sidebarPage.createNewChat();
   });
 
-  test('"Sohbetler" section header is rendered above the recent chat list', async ({ page }) => {
+  test('"Chat history" section header is rendered above the recent chat list', async ({ page }) => {
     await expect(page.locator(S.sidebarChatsHeading)).toBeVisible();
   });
 
   test('top primary action buttons render in the expected order', async ({ page }) => {
     // The five rail entries (in order):
-    //   Yeni sohbet → Sohbetlerde ara → Documents → Correspondence → Spreadsheet
-    const labels = ['Yeni sohbet', 'Sohbetlerde ara', 'Documents', 'Correspondence', 'Spreadsheet'];
+    //   New Chat → Search → Documents → Correspondence → Spreadsheet
+    const labels = ['New Chat', 'Search', 'Documents', 'Correspondence', 'Spreadsheet'];
     const tops: number[] = [];
     for (const label of labels) {
       const btn = page.locator(`aside button:has-text("${label}")`).first();
@@ -32,7 +32,7 @@ test.describe('Sidebar library folders', () => {
     }
   });
 
-  test('"Sohbetlerde ara" toggles an inline search input', async ({ page }) => {
+  test('Search toggles an inline search input', async ({ page }) => {
     await expect(page.locator('input[aria-label="Search chats"]')).toHaveCount(0);
     await page.locator(S.sidebarSearchChats).click();
     await expect(page.locator('input[aria-label="Search chats"]')).toBeVisible();

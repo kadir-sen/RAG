@@ -187,13 +187,13 @@ export default function LeftDrawer() {
             <button
               onClick={() => setKnowledgeOpen(true)}
               className="w-full py-1.5 text-[11px] font-medium text-[var(--text-secondary)] hover:text-white border border-[var(--border)] rounded-lg hover:bg-[var(--bg-hover)] transition-all flex items-center justify-center gap-1.5"
-              title="Knowledge koleksiyonlarını yönet"
+              title="Manage knowledge collections"
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z" />
                 <path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z" />
               </svg>
-              Knowledge Koleksiyonları
+              Knowledge Collections
             </button>
           </div>
 

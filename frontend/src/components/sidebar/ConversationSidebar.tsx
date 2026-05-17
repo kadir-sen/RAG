@@ -326,12 +326,12 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
         <div className="px-2 pt-3 pb-2 shrink-0 space-y-0.5">
           <SidebarItem
             icon={IconNewChat}
-            label="Yeni sohbet"
+            label="New Chat"
             onClick={handleNewChat}
           />
           <SidebarItem
             icon={IconSearch}
-            label="Sohbetlerde ara"
+            label="Search"
             onClick={handleSearchToggle}
             ariaPressed={searchOpen}
           />
@@ -360,7 +360,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           {openSections.documents && (
             <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1">
               {documentFiles.length === 0 ? (
-                <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">Boş</p>
+                <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">Empty</p>
               ) : (
                 documentFiles.map((f) => (
                   <button
@@ -390,7 +390,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-1">
               {emailDocs.length === 0 ? (
                 <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">
-                  {libraryQuery.isLoading ? 'Yükleniyor…' : 'Boş'}
+                  {libraryQuery.isLoading ? 'Loading…' : 'Empty'}
                 </p>
               ) : (
                 emailGroups.map((g) => {
@@ -477,7 +477,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           {openSections.spreadsheet && (
             <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1">
               {spreadsheetFiles.length === 0 ? (
-                <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">Boş</p>
+                <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">Empty</p>
               ) : (
                 spreadsheetFiles.map((f) => (
                   <button
@@ -516,14 +516,14 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
         {/* ── Section divider ──────────────────────────────────────── */}
         <div className="px-5 pt-3 pb-1 shrink-0 flex items-center justify-between">
           <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
-            {viewingArchived ? 'Arşiv' : 'Sohbetler'}
+            {viewingArchived ? 'Archive' : 'Chat history'}
           </p>
           <button
             type="button"
             onClick={() => { setViewingArchived((v) => !v); setSearchQuery(''); }}
             className="font-mono text-[10px] tracking-wider text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
           >
-            {viewingArchived ? '← çık' : 'arşiv'}
+            {viewingArchived ? '← back' : 'archive'}
           </button>
         </div>
 
@@ -531,7 +531,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
         <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
           {filtered.length === 0 ? (
             <p className="text-[11px] text-[var(--text-muted)] py-4 px-3 text-center">
-              {trimmedQuery ? 'Eşleşen sohbet yok' : viewingArchived ? 'Arşivde sohbet yok' : 'Henüz sohbet yok'}
+              {trimmedQuery ? 'No matching chats' : viewingArchived ? 'No archived chats' : 'No chats yet'}
             </p>
           ) : (
             filtered.map((c) => {
@@ -568,18 +568,18 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                     />
                   ) : pendingDeleteId === c.conversation_id ? (
                     <div className="flex items-center gap-1 flex-1">
-                      <span className="text-xs text-[var(--danger)]">Sil?</span>
+                      <span className="text-xs text-[var(--danger)]">Delete?</span>
                       <button
                         onClick={(e) => { e.stopPropagation(); confirmDelete(); }}
                         className="text-[10px] px-1.5 py-0.5 bg-[var(--danger)] text-white rounded"
                       >
-                        Evet
+                        Yes
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); cancelDelete(); }}
                         className="text-[10px] px-1.5 py-0.5 text-[var(--text-muted)] hover:text-white"
                       >
-                        Hayır
+                        No
                       </button>
                     </div>
                   ) : (
@@ -609,7 +609,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                           <button
                             onClick={(e) => { e.stopPropagation(); pinConversation({ id: c.conversation_id, pinned: !c.pinned }); }}
                             className={`p-0.5 hover:text-white ${c.pinned ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}
-                            title={c.pinned ? 'Sabitlemeyi kaldır' : 'Sabitle'}
+                            title={c.pinned ? 'Unpin' : 'Pin'}
                           >
                             <svg width="10" height="10" viewBox="0 0 24 24" fill={c.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                               <path d="M12 2L9 8H4l4 4-2 8 6-4 6 4-2-8 4-4h-5z" />
@@ -618,7 +618,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                           <button
                             onClick={(e) => { e.stopPropagation(); startRename(c); }}
                             className="p-0.5 text-[var(--text-muted)] hover:text-white"
-                            title="Yeniden adlandır"
+                            title="Rename"
                           >
                             <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                               <path d="M7 2l3 3-6 6H1V8z" />
@@ -627,7 +627,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                           <button
                             onClick={(e) => { e.stopPropagation(); archiveConversation({ id: c.conversation_id, archived: true }); }}
                             className="p-0.5 text-[var(--text-muted)] hover:text-white"
-                            title="Arşivle"
+                            title="Archive"
                           >
                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <rect x="2" y="4" width="20" height="5" rx="1" />
@@ -641,7 +641,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                         <button
                           onClick={(e) => { e.stopPropagation(); archiveConversation({ id: c.conversation_id, archived: false }); }}
                           className="p-0.5 text-[var(--text-muted)] hover:text-white"
-                          title="Arşivden çıkar"
+                          title="Unarchive"
                         >
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M21 8v13H3V8" />
@@ -690,7 +690,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-black font-semibold text-sm transition-colors disabled:opacity-50"
           >
             {IconUpload}
-            <span>{isUploading ? 'Yükleniyor…' : 'Dosya ekle'}</span>
+            <span>{isUploading ? 'Uploading…' : 'Add document'}</span>
           </button>
           {files.length > 0 && (
             <div className="flex justify-center">
@@ -700,7 +700,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                 aria-label="Export file list as CSV"
                 className="font-mono text-[11px] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors flex items-center gap-1"
               >
-                ↓ CSV dışa aktar
+                ↓ Export CSV
               </a>
             </div>
           )}

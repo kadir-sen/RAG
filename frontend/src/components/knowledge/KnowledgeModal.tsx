@@ -110,23 +110,23 @@ export default function KnowledgeModal({
           <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
             <div>
               <h3 id="knowledge-modal-title" className="text-[var(--text-primary)] font-medium">
-                Knowledge Koleksiyonları
+                Knowledge Collections
               </h3>
               <p className="text-[10px] text-[var(--text-muted)] mt-0.5">
-                Dokümanları gruplara ayırın, sohbete tek tıkla ekleyin
+                Group documents and apply them to a chat with one click
               </p>
             </div>
             <button
               onClick={onClose}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-lg"
-              aria-label="Kapat"
+              aria-label="Close"
             >
               &times;
             </button>
           </div>
 
           <div className="flex flex-1 overflow-hidden">
-            {/* Sol: koleksiyon listesi */}
+            {/* Left: collection list */}
             <div className="w-1/3 border-r border-[var(--border)] flex flex-col">
               <div className="p-3 border-b border-[var(--border)]">
                 {creating ? (
@@ -134,7 +134,7 @@ export default function KnowledgeModal({
                     <input
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
-                      placeholder="Koleksiyon adı"
+                      placeholder="Collection name"
                       autoFocus
                       className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[var(--accent)]"
                       onKeyDown={(e) => {
@@ -145,7 +145,7 @@ export default function KnowledgeModal({
                     <input
                       value={newDesc}
                       onChange={(e) => setNewDesc(e.target.value)}
-                      placeholder="Açıklama (opsiyonel)"
+                      placeholder="Description (optional)"
                       className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[var(--accent)]"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') handleCreate();
@@ -158,13 +158,13 @@ export default function KnowledgeModal({
                         disabled={!newName.trim()}
                         className="flex-1 text-[11px] px-2 py-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded disabled:opacity-40"
                       >
-                        Oluştur
+                        Create
                       </button>
                       <button
                         onClick={() => setCreating(false)}
                         className="text-[11px] px-2 py-1 text-[var(--text-muted)] hover:text-white"
                       >
-                        İptal
+                        Cancel
                       </button>
                     </div>
                   </div>
@@ -173,7 +173,7 @@ export default function KnowledgeModal({
                     onClick={() => setCreating(true)}
                     className="w-full text-xs font-medium text-[var(--accent)] glass rounded-md py-1.5 hover:bg-[var(--accent-glow)] hover:border-[var(--accent)] transition-all"
                   >
-                    + Yeni Koleksiyon
+                    + New Collection
                   </button>
                 )}
               </div>
@@ -181,11 +181,11 @@ export default function KnowledgeModal({
               <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
                 {isLoading ? (
                   <p className="text-xs text-[var(--text-muted)] p-3 text-center">
-                    Yükleniyor...
+                    Loading...
                   </p>
                 ) : collections.length === 0 ? (
                   <p className="text-xs text-[var(--text-muted)] p-3 text-center">
-                    Henüz koleksiyon yok
+                    No collections yet
                   </p>
                 ) : (
                   collections.map((c: KnowledgeCollection) => {
@@ -219,7 +219,7 @@ export default function KnowledgeModal({
                           />
                         ) : isPending ? (
                           <div className="flex items-center gap-1 flex-1">
-                            <span className="text-[10px] text-[var(--danger)]">Sil?</span>
+                            <span className="text-[10px] text-[var(--danger)]">Delete?</span>
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -227,7 +227,7 @@ export default function KnowledgeModal({
                               }}
                               className="text-[9px] px-1.5 py-0.5 bg-[var(--danger)] text-white rounded"
                             >
-                              Evet
+                              Yes
                             </button>
                             <button
                               onClick={(e) => {
@@ -236,7 +236,7 @@ export default function KnowledgeModal({
                               }}
                               className="text-[9px] px-1.5 py-0.5 text-[var(--text-muted)]"
                             >
-                              Hayır
+                              No
                             </button>
                           </div>
                         ) : (
@@ -244,7 +244,7 @@ export default function KnowledgeModal({
                             <div className="flex-1 min-w-0">
                               <p className="truncate">{c.name}</p>
                               <p className="text-[9px] text-[var(--text-muted)]">
-                                {c.document_count} doküman
+                                {c.document_count} document{c.document_count === 1 ? '' : 's'}
                               </p>
                             </div>
                             <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
@@ -255,7 +255,7 @@ export default function KnowledgeModal({
                                   setEditName(c.name);
                                 }}
                                 className="p-0.5 text-[var(--text-muted)] hover:text-white"
-                                title="Yeniden adlandır"
+                                title="Rename"
                               >
                                 <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                                   <path d="M7 2l3 3-6 6H1V8z" />
@@ -267,7 +267,7 @@ export default function KnowledgeModal({
                                   setPendingDeleteId(c.collection_id);
                                 }}
                                 className="p-0.5 text-[var(--text-muted)] hover:text-[var(--danger)]"
-                                title="Sil"
+                                title="Delete"
                               >
                                 <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                                   <path d="M2 3h8M4 3V2h4v1M5 5v4M7 5v4M3 3l.5 7h5l.5-7" />
@@ -283,11 +283,11 @@ export default function KnowledgeModal({
               </div>
             </div>
 
-            {/* Sağ: koleksiyon detayı */}
+            {/* Right: collection detail */}
             <div className="flex-1 flex flex-col overflow-hidden">
               {!selectedId ? (
                 <div className="flex-1 flex items-center justify-center text-xs text-[var(--text-muted)] p-6 text-center">
-                  Soldan bir koleksiyon seçin veya yeni bir koleksiyon oluşturun.
+                  Pick a collection on the left or create a new one.
                 </div>
               ) : (
                 <>
@@ -316,20 +316,20 @@ export default function KnowledgeModal({
                         detail.data.document_ids.length === 0
                       }
                       className="shrink-0 text-[11px] px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded disabled:opacity-40"
-                      title="Bu koleksiyonun dokümanlarını aktif sohbete ekle"
+                      title="Apply this collection's documents to the active chat"
                     >
-                      Sohbete Uygula
+                      Apply to chat
                     </button>
                   </div>
 
                   <div className="flex-1 overflow-y-auto p-3">
                     {detail.isLoading ? (
                       <p className="text-xs text-[var(--text-muted)] text-center py-6">
-                        Yükleniyor...
+                        Loading...
                       </p>
                     ) : (detail.data?.documents ?? []).length === 0 ? (
                       <p className="text-xs text-[var(--text-muted)] text-center py-6">
-                        Bu koleksiyonda henüz doküman yok.
+                        No documents in this collection yet.
                       </p>
                     ) : (
                       (detail.data?.documents ?? []).map((d) => (
@@ -356,7 +356,7 @@ export default function KnowledgeModal({
                               selectedId && removeDocument({ id: selectedId, docId: d.doc_id })
                             }
                             className="opacity-0 group-hover:opacity-100 p-1 text-[var(--text-muted)] hover:text-[var(--danger)]"
-                            title="Koleksiyondan çıkar"
+                            title="Remove from collection"
                           >
                             <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
                               <line x1="2" y1="2" x2="10" y2="10" />
@@ -373,7 +373,7 @@ export default function KnowledgeModal({
                       onClick={() => setPickerOpen(true)}
                       className="w-full text-xs font-medium text-[var(--accent)] glass rounded-md py-1.5 hover:bg-[var(--accent-glow)] hover:border-[var(--accent)] transition-all"
                     >
-                      + Doküman Ekle
+                      + Add document
                     </button>
                   </div>
                 </>
