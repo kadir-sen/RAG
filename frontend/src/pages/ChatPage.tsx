@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useCallback, useRef } from 'react';
+import { lazy, Suspense, useEffect, useCallback, useRef, useState } from 'react';
 import { useChat } from '../hooks/useChat';
 import { useConversations } from '../hooks/useConversations';
 import { useUIStore } from '../stores/uiStore';
@@ -26,17 +26,24 @@ const RightDocViewer = lazy(
 
 export default function ChatPage() {
   const { messages, isLoading, isPending, sendMessage } = useChat();
-  const { conversations, createConversation } = useConversations();
+  const { createConversation } = useConversations();
   const { rightPanelOpen, openDocument } = useUIStore();
   const { activeConversationId, setConversation, activeMode, setMode, selectedEmailIds } = useChatStore();
   const pendingMessageRef = useRef<string | null>(null);
   const restoredRef = useRef(false);
+  // True between page load and the first restore-from-storage finishing.
+  // While this is true we render a neutral placeholder instead of the empty
+  // ChatStream — that mid-load flash is what makes a fresh tab look like
+  // "the chat is already half-filled" before the API responds.
+  const [isRestoring, setIsRestoring] = useState(
+    () => Boolean(activeConversationId) && messages.length === 0,
+  );
 
-  // Restore persisted conversation on page load
   useEffect(() => {
     if (restoredRef.current) return;
     if (activeConversationId && messages.length === 0 && !isLoading) {
       restoredRef.current = true;
+      setIsRestoring(true);
       getConversation(activeConversationId)
         .then((conv) => {
           if (conv?.messages?.length) {
@@ -48,22 +55,28 @@ export default function ChatPage() {
               response: m.response ?? undefined,
             }));
             setConversation(activeConversationId, restored, conv.document_ids ?? []);
+          } else {
+            // The persisted id refers to an empty/missing record. Drop it
+            // so the next paint shows the WelcomeScreen, not a blank stream.
+            setConversation('');
           }
         })
         .catch(() => {
           // Conversation may have been deleted — reset
           setConversation('');
-        });
+        })
+        .finally(() => setIsRestoring(false));
     } else {
       restoredRef.current = true;
+      setIsRestoring(false);
     }
   }, [activeConversationId, messages.length, isLoading, setConversation]);
 
-  useEffect(() => {
-    if (!activeConversationId && conversations.length > 0) {
-      setConversation(conversations[0].conversation_id);
-    }
-  }, [activeConversationId, conversations, setConversation]);
+  // No auto-select on first load. Dropping a brand-new visitor (or a fresh
+  // tab in a different user agent) straight into the most recent stored
+  // conversation surfaced someone else's chat content for a heartbeat, and
+  // skipped the WelcomeScreen / mode picker entirely. The user explicitly
+  // clicks a row in the sidebar when they want to open a previous chat.
 
   useEffect(() => {
     if (activeConversationId && pendingMessageRef.current) {
@@ -154,7 +167,14 @@ export default function ChatPage() {
 
         {/* Content area */}
         <div className="flex-1 flex flex-col min-h-0 relative">
-          {showWelcome ? (
+          {isRestoring ? (
+            <div
+              className="flex-1 flex items-center justify-center text-[var(--text-muted)] font-mono text-[11px] tracking-wider"
+              aria-live="polite"
+            >
+              loading conversation…
+            </div>
+          ) : showWelcome ? (
             <WelcomeScreen onModeSelect={handleModeSelect} />
           ) : showCorrespondenceCenter ? (
             <Suspense fallback={<div className="flex-1" />}>
@@ -172,7 +192,14 @@ export default function ChatPage() {
               onRetry={sendMessage}
             />
           )}
-          <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
+          {/* The standard composer sits at the bottom only once the user is
+              actually in a chat thread. Welcome + the two mode intros each
+              own their own composer (or, in WelcomeScreen's case, expect
+              the user to pick a mode first), so stacking another input here
+              produced two bars on top of each other. */}
+          {!isRestoring && !showWelcome && !showCorrespondenceCenter && !showDocAnalysisIntro && (
+            <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
+          )}
         </div>
       </div>
 
