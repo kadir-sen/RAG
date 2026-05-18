@@ -12,7 +12,6 @@ import type { Message } from '../../types/chat';
 import { groupEmailsByParticipantPair } from '../../utils/emailGrouping';
 import FileTypeBadge from '../ui/FileTypeBadge';
 import SidebarSection from './SidebarSection';
-import ModeToggle from './ModeToggle';
 
 const ACCEPTED = '.pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.eml,.msg';
 
@@ -338,6 +337,35 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             active={activeMode !== null}
             onClick={handleNewChat}
           />
+          {/* AI Assistant sub-modes — always visible, indented like folder
+              children so the mode picker reads as a property of AI Assistant
+              rather than a stand-alone strip below the folders. */}
+          <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-0.5">
+            {(['document_analysis', 'correspondence'] as const).map((mode) => {
+              const isActive = activeMode === mode;
+              const label = mode === 'document_analysis' ? 'Document Analysis' : 'Correspondence';
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  data-testid={`sidebar-mode-${mode}`}
+                  aria-pressed={isActive}
+                  onClick={() => setMode(mode)}
+                  className={`w-full flex items-center gap-2 px-2 py-1 rounded text-left text-[12px] transition-colors ${
+                    isActive
+                      ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+                  }`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-[var(--accent)]' : 'bg-[var(--text-muted)]'}`}
+                  />
+                  <span className="flex-1 truncate">{label}</span>
+                </button>
+              );
+            })}
+          </div>
           <SidebarItem
             icon={IconDocuments}
             label="Documents"
@@ -486,11 +514,9 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           )}
         </div>
 
-        {/* ── Mode toggle (replaces in-chat ChatActionChips) ───────── */}
-        <ModeToggle
-          activeMode={activeMode}
-          onSelect={(m) => setMode(m)}
-        />
+        {/* Document Analysis / Correspondence mode rows now live inline
+            beneath the AI Assistant entry above, so the bottom toggle bar
+            is no longer needed. */}
 
         {/* ── Email quick prompts (only in correspondence mode w/ selection) ── */}
         {activeMode === 'correspondence' && selectedEmailIds.length > 0 && (

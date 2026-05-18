@@ -53,14 +53,14 @@ export const S = {
   folderHeader: (name: string) =>
     `button[aria-expanded]:has-text("${name}")`,
 
-  // ── Mode toggle (moved into sidebar; chat thread is clean) ───
-  modeToggle: '[data-testid="sidebar-mode-toggle"]',
-  chipCorrespondence: '[data-testid="sidebar-mode-toggle"] [data-mode="correspondence"]',
-  chipDocumentAnalysis: '[data-testid="sidebar-mode-toggle"] [data-mode="document_analysis"]',
+  // ── Mode rows (nested under AI Assistant in the sidebar) ───
+  modeToggle: '[data-testid="sidebar-mode-document_analysis"], [data-testid="sidebar-mode-correspondence"]',
+  chipCorrespondence: '[data-testid="sidebar-mode-correspondence"]',
+  chipDocumentAnalysis: '[data-testid="sidebar-mode-document_analysis"]',
   chipByLabel: (label: string) =>
-    `[data-testid="sidebar-mode-toggle"] button:has-text("${label}")`,
-  // Legacy alias (deprecated; kept so the action-chips spec can still target a strip)
-  actionChipsStrip: '[data-testid="sidebar-mode-toggle"]',
+    `button[data-testid^="sidebar-mode-"]:has-text("${label}")`,
+  // Legacy alias kept so older specs still resolve to the new rows.
+  actionChipsStrip: '[data-testid="sidebar-mode-document_analysis"]',
 
   // ── Usage Badge ────────────────────────────────────────
   usageBadge: '[aria-label="Usage budget"]',

@@ -192,12 +192,11 @@ export default function ChatPage() {
               onRetry={sendMessage}
             />
           )}
-          {/* The standard composer sits at the bottom only once the user is
-              actually in a chat thread. Welcome + the two mode intros each
-              own their own composer (or, in WelcomeScreen's case, expect
-              the user to pick a mode first), so stacking another input here
-              produced two bars on top of each other. */}
-          {!isRestoring && !showWelcome && !showCorrespondenceCenter && !showDocAnalysisIntro && (
+          {/* Composer lives at the bottom of every chat surface — Welcome
+              included — so a user can start a conversation without first
+              picking a mode. The two mode intros own their own composers,
+              so we suppress this one there to avoid stacking. */}
+          {!isRestoring && !showCorrespondenceCenter && !showDocAnalysisIntro && (
             <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
           )}
         </div>
