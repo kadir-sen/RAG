@@ -12,7 +12,10 @@ export class SidebarPage {
   constructor(page: Page) {
     this.page = page;
     this.sidebar = page.locator(S.sidebar);
-    this.newChatButton = page.locator(S.newChatButton);
+    // After the UI refresh the primary action lives in the Knowledge Base
+    // section labelled "AI Assistant" (S.sidebarNewChat). Fall back to the
+    // legacy "New Chat" pill if a future revert brings it back.
+    this.newChatButton = page.locator(`${S.sidebarNewChat}, ${S.newChatButton}`).first();
     this.addFilesButton = page.locator(S.addFilesButton);
     this.exportLink = page.locator(S.exportLink);
     this.fileInput = page.locator(S.fileInput);
