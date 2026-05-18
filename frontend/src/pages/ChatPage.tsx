@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { lazy, Suspense, useEffect, useCallback, useRef } from 'react';
 import { useChat } from '../hooks/useChat';
 import { useConversations } from '../hooks/useConversations';
 import { useUIStore } from '../stores/uiStore';
@@ -8,10 +8,21 @@ import ConversationSidebar from '../components/sidebar/ConversationSidebar';
 import ChatStream from '../components/chat/ChatStream';
 import ChatInput from '../components/chat/ChatInput';
 import WelcomeScreen from '../components/chat/WelcomeScreen';
-import DocumentAnalysisIntro from '../components/chat/DocumentAnalysisIntro';
-import CorrespondenceCenter from '../components/chat/CorrespondenceCenter';
-import RightDocViewer from '../components/viewer/RightDocViewer';
 import MonoTag from '../components/ui/MonoTag';
+
+// Mode-specific intros are heavy (CorrespondenceCenter pulls in the email
+// trace UI; DocumentAnalysisIntro carries timeline sample data) — both are
+// only needed once the user explicitly chooses that mode, so lazy-loading
+// keeps them out of the first-paint bundle.
+const DocumentAnalysisIntro = lazy(
+  () => import('../components/chat/DocumentAnalysisIntro'),
+);
+const CorrespondenceCenter = lazy(
+  () => import('../components/chat/CorrespondenceCenter'),
+);
+const RightDocViewer = lazy(
+  () => import('../components/viewer/RightDocViewer'),
+);
 
 export default function ChatPage() {
   const { messages, isLoading, isPending, sendMessage } = useChat();
@@ -146,9 +157,13 @@ export default function ChatPage() {
           {showWelcome ? (
             <WelcomeScreen onModeSelect={handleModeSelect} />
           ) : showCorrespondenceCenter ? (
-            <CorrespondenceCenter onSend={handleSend} />
+            <Suspense fallback={<div className="flex-1" />}>
+              <CorrespondenceCenter onSend={handleSend} />
+            </Suspense>
           ) : showDocAnalysisIntro ? (
-            <DocumentAnalysisIntro onSend={handleSend} />
+            <Suspense fallback={<div className="flex-1" />}>
+              <DocumentAnalysisIntro onSend={handleSend} />
+            </Suspense>
           ) : (
             <ChatStream
               messages={messages}
@@ -164,7 +179,9 @@ export default function ChatPage() {
       {/* Right viewer */}
       {rightPanelOpen && (
         <div className="w-[340px] lg:w-[420px] flex-shrink-0 h-full">
-          <RightDocViewer />
+          <Suspense fallback={null}>
+            <RightDocViewer />
+          </Suspense>
         </div>
       )}
     </div>

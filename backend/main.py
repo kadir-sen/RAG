@@ -14,8 +14,10 @@ load_dotenv(Path(_project_root) / ".env")
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.core.config import CORS_ORIGINS
 from backend.core.lifespan import lifespan
@@ -40,6 +42,31 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Compress every response > 500 B (JS bundle 462 KB → ~126 KB; CSS 47 KB
+    # → ~8 KB). Big LCP win on cold loads. minimum_size avoids overhead on
+    # tiny JSON payloads.
+    app.add_middleware(GZipMiddleware, minimum_size=500)
+
+    # Hashed Vite assets are content-addressable, so we can mark them as
+    # immutable for a year. Browsers skip the network entirely on revisits.
+    class _AssetCacheHeaders(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            path = request.url.path
+            if path.startswith("/assets/") and "." in path.rsplit("/", 1)[-1]:
+                # Hashed Vite output → safe to cache forever.
+                response.headers["Cache-Control"] = (
+                    "public, max-age=31536000, immutable"
+                )
+            elif path.endswith(".svg") or path == "/vite.svg":
+                response.headers["Cache-Control"] = "public, max-age=604800"
+            elif path in ("/", "/index.html"):
+                # SPA shell must not be cached (otherwise stale bundle hashes).
+                response.headers["Cache-Control"] = "no-cache, must-revalidate"
+            return response
+
+    app.add_middleware(_AssetCacheHeaders)
 
     app.include_router(chat.router, prefix="/api", tags=["chat"])
     app.include_router(conversations.router, prefix="/api", tags=["conversations"])
