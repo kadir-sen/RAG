@@ -139,23 +139,65 @@ def _build_from_dual(raw: Dict[str, Any]) -> ChatResponse:
     )
 
 
+def _resolve_canonical_doc_id(file_name: str, fallback: str) -> str:
+    """Return the DocumentRegistry's canonical doc_id for ``file_name``.
+
+    Pinecone often holds two ingestions of the same source file (e.g. one
+    with a Windows path and one with a Linux container path). Each carries
+    its own LlamaIndex UUID, so naive forwarding would surface both as
+    separate citations and one of them — the one whose path no longer
+    exists on disk — would 404 in the viewer. Remapping every reference to
+    the canonical registry id eliminates that mismatch.
+
+    Falls back to ``fallback`` (typically the raw ``doc_id`` from the
+    source) when no registry record matches the filename.
+    """
+    if not file_name:
+        return fallback
+    try:
+        from src.document_registry import get_document_registry
+        registry = get_document_registry()
+        for rec in registry.get_all():
+            if rec.file_name == file_name:
+                return rec.doc_id
+    except Exception:
+        pass
+    return fallback
+
+
 def _extract_citations_and_related(
     sources: List[Dict[str, Any]], query_type: str
 ) -> tuple:
-    citations = []
-    related_docs = []
+    """Deduplicate references by filename and remap every doc_id to the
+    canonical registry id.
+
+    Guarantees:
+      * No two citations or related_docs share the same ``file_name``.
+      * Every ``doc_id`` resolves through DocumentRegistry when a matching
+        record exists, so the right-panel viewer can find the file.
+    """
+    citations: list[Citation] = []
+    related_docs: list[RelatedDoc] = []
+    seen_citation_names: set[str] = set()
+    seen_related_names: set[str] = set()
 
     for src in sources:
         src_type = src.get("type", "")
+        file_name = src.get("file_name") or ""
 
         if src_type == "structured_data":
             # Data sources handled by sql_artifact, skip
             continue
         elif src_type in ("notice", "thread_message", "search_result"):
-            safe_id = _safe_doc_id(src)
+            if file_name and file_name in seen_related_names:
+                continue
+            if file_name:
+                seen_related_names.add(file_name)
+            raw_id = _safe_doc_id(src)
+            safe_id = _resolve_canonical_doc_id(file_name, raw_id)
             related_docs.append(RelatedDoc(
                 doc_id=safe_id,
-                doc_name=src.get("file_name") or "",
+                doc_name=file_name,
                 date=src.get("date") or "",
                 doc_type=src.get("doc_type") or "",
                 reason=src.get("subject") or "",
@@ -165,11 +207,16 @@ def _extract_citations_and_related(
             ))
         else:
             # Document source → citation
-            safe_id = _safe_doc_id(src)
+            if file_name and file_name in seen_citation_names:
+                continue
+            if file_name:
+                seen_citation_names.add(file_name)
+            raw_id = _safe_doc_id(src)
+            safe_id = _resolve_canonical_doc_id(file_name, raw_id)
             page = src.get("page_number", 1)
             citations.append(Citation(
                 doc_id=safe_id,
-                doc_name=src.get("file_name") or "",
+                doc_name=file_name,
                 anchor=f"page_{page}",
                 snippet=(
                     src.get("highlight_text", "")
