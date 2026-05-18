@@ -137,7 +137,18 @@ class ConversationStore:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            messages = [Message(**m) for m in data.get("messages", [])]
+            raw_msgs = data.get("messages", [])
+            messages = [Message(**m) for m in raw_msgs]
+            # Loud warning when a conversation file claims to belong to a
+            # non-empty history but actually persists no messages. This is the
+            # signature of the "clicking an old chat opens WelcomeScreen" bug;
+            # surfacing it here makes the broken records discoverable from logs.
+            if not messages and (data.get("message_count") or 0) > 0:
+                logger.warning(
+                    f"[ConvStore] {conv_id} has empty messages array but "
+                    f"message_count={data.get('message_count')} — file may be "
+                    f"corrupt or partially synced"
+                )
             return Conversation(
                 conversation_id=data["conversation_id"],
                 title=data["title"],

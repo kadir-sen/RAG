@@ -188,11 +188,17 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
       return next;
     });
   };
+  // Track the most recently requested conversation so a slow earlier fetch
+  // can't stomp the state for a newer click. We compare ids before applying.
+  const selectionTokenRef = useRef<string | null>(null);
   const handleSelect = async (id: string) => {
-    if (editingId || switchingId) return;
+    if (editingId) return;
+    selectionTokenRef.current = id;
     setSwitchingId(id);
     try {
       const conv = await getConversation(id);
+      // A later click already moved on — drop this stale result.
+      if (selectionTokenRef.current !== id) return;
       const msgs: Message[] = (conv.messages || []).map(
         (m: { role: string; content: string; timestamp: string; response?: unknown }, i: number) => ({
           id: `h_${i}`,
@@ -204,10 +210,17 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
       );
       setConversation(id, msgs, conv.document_ids || []);
       if (typeof window !== 'undefined' && window.innerWidth < 768) toggleSidebar();
-    } catch {
-      setConversation(id);
+    } catch (err) {
+      // Don't silently fall back to setConversation(id) with no messages —
+      // that produces the "click opens WelcomeScreen" bug. Surface the error
+      // and keep the previous conversation visible so the user can retry.
+      if (selectionTokenRef.current === id) {
+        console.error('[Sidebar] Failed to load conversation', id, err);
+      }
     } finally {
-      setSwitchingId(null);
+      if (selectionTokenRef.current === id) {
+        setSwitchingId(null);
+      }
     }
   };
   const startRename = (c: ConversationMeta) => { setEditingId(c.conversation_id); setEditTitle(c.title); };
@@ -551,6 +564,8 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
               return (
                 <div
                   key={c.conversation_id}
+                  data-conv-id={c.conversation_id}
+                  data-testid="conv-row"
                   className={`flex items-center px-3 py-2 rounded-lg text-[13px] cursor-pointer transition-colors mb-0.5 ${
                     isActive
                       ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'

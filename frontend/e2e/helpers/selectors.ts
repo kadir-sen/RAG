@@ -30,6 +30,10 @@ export const S = {
   sidebar: '[aria-label="Sidebar"]',
   newChatButton: 'button:has-text("New Chat")',
   recentChats: '.truncate',
+  // Conversation row in the Recent Queries list. Use data-conv-id={id} or
+  // data-testid="conv-row" to target a specific or first row reliably.
+  convRow: '[data-testid="conv-row"]',
+  convRowById: (id: string) => `[data-conv-id="${id}"]`,
   addFilesButton: 'button:has-text("Add Files")',
   uploadingButton: 'button:has-text("Uploading...")',
   exportLink: '[aria-label="Export file list as CSV"]',

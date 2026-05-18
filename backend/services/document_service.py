@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from backend.models.responses import DocContent
 
@@ -11,6 +11,17 @@ _DATA_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 
 # Pattern to strip deduplication suffixes: "name_3.ext" -> "name.ext"
 _DEDUP_SUFFIX_RE = re.compile(r'_\d+(\.[^.]+)$')
+
+# Candidate roots searched by file_name when the stored file_path is stale
+# (typical with vectors indexed on a different host: Windows or container
+# paths that don't exist on the current disk).
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DATA_FALLBACK_ROOTS = (
+    _PROJECT_ROOT / "data" / "documents",
+    _PROJECT_ROOT / "data" / "emails",
+    _PROJECT_ROOT / "data" / "tables",
+    _PROJECT_ROOT / "data",
+)
 
 
 class DocumentService:
@@ -23,19 +34,61 @@ class DocumentService:
 
     @staticmethod
     def _resolve_path(file_path: str) -> str:
-        """Return an existing file path, trying dedup-suffix removal as fallback.
+        """Return an existing file path, with progressively forgiving fallbacks.
 
-        Registry may store 'letter-_3.docx' but the actual GCS file is 'letter-.docx'.
+        1. exact path on disk
+        2. dedup-suffix removal ('letter-_3.docx' -> 'letter-.docx') in the
+           same directory
+        3. search by file_name across the project's data subdirs — this rescues
+           vectors whose metadata was indexed on a different host (e.g.
+           ``C:\\projects\\ML_project\\data\\…`` or ``/app/data/…``) but whose
+           files now live in the local ``data/`` tree.
+
+        Returns the original path when nothing matches so the caller can surface
+        a meaningful error.
         """
+        if not file_path:
+            return file_path
         p = Path(file_path)
         if p.exists():
             return file_path
-        # Try stripping deduplication suffix: name_3.ext -> name.ext
-        alt = _DEDUP_SUFFIX_RE.sub(r'\1', p.name)
-        if alt != p.name:
-            alt_path = p.parent / alt
+
+        # Extract the basename robustly: backslashes in a path string mean we
+        # are looking at a Windows-style path that POSIX ``Path`` won't split.
+        if "\\" in file_path and "/" not in file_path:
+            base_name = PureWindowsPath(file_path).name
+        else:
+            base_name = p.name
+
+        # 2) Strip dedup suffix in the same dir
+        alt_name = _DEDUP_SUFFIX_RE.sub(r'\1', base_name)
+        if alt_name != base_name and p.parent != Path(file_path):
+            alt_path = p.parent / alt_name
             if alt_path.exists():
                 return str(alt_path)
+
+        # 3) Search the local data tree by file name. Try both the original
+        # name and the dedup-stripped variant.
+        candidates = {base_name}
+        if alt_name != base_name:
+            candidates.add(alt_name)
+        for name in candidates:
+            for root in _DATA_FALLBACK_ROOTS:
+                hit = root / name
+                if hit.exists():
+                    return str(hit)
+        # Deep search as a last resort (only the configured data subdirs, so
+        # this stays O(small)).
+        for name in candidates:
+            for root in _DATA_FALLBACK_ROOTS:
+                if not root.exists():
+                    continue
+                try:
+                    for found in root.rglob(name):
+                        if found.is_file():
+                            return str(found)
+                except OSError:
+                    continue
         return file_path  # return original — caller will handle the error
 
     def _get_content_sync(self, doc_id: str, anchor: str) -> DocContent:

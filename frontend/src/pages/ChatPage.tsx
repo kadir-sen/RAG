@@ -90,7 +90,16 @@ export default function ChatPage() {
   const handleModeSelect = useCallback((mode: AppMode) => setMode(mode), [setMode]);
   const handleBack = useCallback(() => setMode(null), [setMode]);
 
-  const showWelcome = activeMode === null && messages.length === 0 && !isLoading;
+  // Only show the WelcomeScreen when the app is on a truly clean slate:
+  // no active conversation AND no mode picked. If a conversation ID is set
+  // (the user clicked a row in the sidebar), keep the chat surface visible
+  // even if the backend hasn't returned messages yet — otherwise an empty
+  // load looks identical to "new chat".
+  const showWelcome =
+    activeMode === null &&
+    !activeConversationId &&
+    messages.length === 0 &&
+    !isLoading;
   const showDocAnalysisIntro =
     activeMode === 'document_analysis' && messages.length === 0 && !isLoading;
   const showCorrespondenceCenter =

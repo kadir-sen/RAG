@@ -36,7 +36,12 @@ export const useChatStore = create<ChatState>()(
           activeConversationId: id,
           messages,
           documentIds,
-          activeMode: messages.length > 0 ? 'chat' : null,
+          // An ID means the user explicitly opened a conversation — switch to
+          // the chat surface even if the loaded messages array is empty (the
+          // backend file could be temporarily empty, the fetch could still be
+          // mid-flight, etc.). Falling back to `null` here would render the
+          // WelcomeScreen and make it look like the conversation never loaded.
+          activeMode: id ? 'chat' : null,
           selectedEmailIds: [],
         }),
 
