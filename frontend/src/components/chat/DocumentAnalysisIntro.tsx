@@ -1,5 +1,4 @@
 import EngineeringInputBar from '../ui/EngineeringInputBar';
-import MonoTag from '../ui/MonoTag';
 import DocumentAnalysisTimeline, { type TimelineEvent } from './DocumentAnalysisTimeline';
 import { getFileTypeBadge } from '../../styles/tokens';
 
@@ -27,12 +26,9 @@ export default function DocumentAnalysisIntro({ onSend }: Props) {
   return (
     <div className="flex-1 overflow-y-auto welcome-blueprint">
       <div className="max-w-5xl mx-auto px-6 md:px-10 py-8 md:py-10 flex flex-col gap-5 animate-fade-in-up">
-        <div className="flex items-center gap-3">
-          <MonoTag tone="accent" uppercase>Document Analysis</MonoTag>
-          <span className="font-mono text-[11px] text-[var(--text-secondary)] tracking-wide">
-            topic → chronological roadmap
-          </span>
-        </div>
+        {/* The mode label + sublabel are already rendered by the global
+            mode header above the content area (see ChatPage.tsx), so we
+            skip them here to avoid a duplicate "DOCUMENT ANALYSIS" line. */}
         <div>
           <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-white">
             Trace a topic across the project, in time order.
