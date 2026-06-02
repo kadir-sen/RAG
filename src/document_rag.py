@@ -31,6 +31,10 @@ from .config import (
     EMBEDDING_DIMENSION,
     PINECONE_INDEX_NAME,
     PINECONE_DIMENSION,
+    VECTOR_STORE_BACKEND,
+    QDRANT_URL,
+    QDRANT_API_KEY,
+    QDRANT_COLLECTION,
     CHUNK_SIZE,
     CHUNK_OVERLAP,
     OCR_MODE,
@@ -55,12 +59,16 @@ class DocumentRAG:
     def __init__(self):
         """Initialize the Document RAG system."""
         log_separator("Initializing Document RAG")
+        # Backend handle attributes (one of the two will remain None depending on backend).
+        self.backend: str = VECTOR_STORE_BACKEND
+        self.pinecone_index = None
+        self.qdrant_client = None
         self._setup_llm()
-        self._setup_pinecone()
+        self._setup_vector_store()
         self.index: Optional[VectorStoreIndex] = None
         self.documents: List[Document] = []
         self.file_registry: Dict[str, Dict[str, Any]] = {}  # Track indexed files
-        logger.info("✅ Document RAG initialized successfully")
+        logger.info(f"✅ Document RAG initialized successfully (backend={self.backend})")
 
     DOCUMENT_SYSTEM_PROMPT = (
         "You are a construction project document analyst for a project management intelligence system. "
@@ -98,6 +106,15 @@ class DocumentRAG:
         )
         logger.info(f"   Chunk size: {CHUNK_SIZE}, Overlap: {CHUNK_OVERLAP}")
 
+    def _setup_vector_store(self):
+        """Dispatch to the configured backend. Pinecone path is unchanged."""
+        if self.backend == "qdrant":
+            self._setup_qdrant()
+        else:
+            # Default + safety net: any unknown value falls back to Pinecone
+            # so existing deployments keep working.
+            self._setup_pinecone()
+
     def _setup_pinecone(self):
         """Initialize Pinecone vector store."""
         log_pinecone("Connecting to Pinecone...")
@@ -124,15 +141,76 @@ class DocumentRAG:
         stats = self.pinecone_index.describe_index_stats()
         logger.info(f"   Total vectors: {stats.get('total_vector_count', 0)}")
 
+    def _setup_qdrant(self):
+        """Initialize Qdrant vector store. Lazy imports so the package is only
+        required when this backend is actually selected."""
+        try:
+            from qdrant_client import QdrantClient
+            from qdrant_client.http import models as qmodels
+            from llama_index.vector_stores.qdrant import QdrantVectorStore
+        except ImportError as e:
+            raise RuntimeError(
+                "VECTOR_STORE_BACKEND=qdrant requires `qdrant-client` and "
+                "`llama-index-vector-stores-qdrant`. Install via "
+                "`pip install -r requirements.txt`."
+            ) from e
+
+        logger.info(f"[Qdrant] Connecting to {QDRANT_URL} ...")
+        self.qdrant_client = QdrantClient(
+            url=QDRANT_URL,
+            api_key=QDRANT_API_KEY or None,
+            prefer_grpc=False,
+            timeout=30.0,
+        )
+
+        existing = {c.name for c in self.qdrant_client.get_collections().collections}
+        logger.info(f"   Existing collections: {sorted(existing)}")
+
+        if QDRANT_COLLECTION not in existing:
+            logger.info(f"[Qdrant] Creating collection: {QDRANT_COLLECTION}")
+            self.qdrant_client.create_collection(
+                collection_name=QDRANT_COLLECTION,
+                vectors_config=qmodels.VectorParams(
+                    size=EMBEDDING_DIMENSION,
+                    distance=qmodels.Distance.COSINE,
+                ),
+            )
+            logger.info(f"   Dimension: {EMBEDDING_DIMENSION}, Metric: cosine")
+        else:
+            logger.info(f"[Qdrant] Using existing collection: {QDRANT_COLLECTION}")
+
+        self.vector_store = QdrantVectorStore(
+            client=self.qdrant_client,
+            collection_name=QDRANT_COLLECTION,
+        )
+
+        try:
+            info = self.qdrant_client.get_collection(QDRANT_COLLECTION)
+            logger.info(f"   Total vectors: {info.points_count or 0}")
+        except Exception as e:
+            logger.warning(f"   Could not read collection info: {e}")
+
     def _delete_file_vectors(self, file_name: str):
         """Delete existing vectors for a file before re-indexing."""
         doc_id = generate_doc_id(file_name)
         try:
-            # Delete vectors with matching doc_id metadata
-            # Note: This requires Pinecone metadata filtering
-            self.pinecone_index.delete(
-                filter={"doc_id": {"$eq": doc_id}}
-            )
+            if self.backend == "qdrant":
+                from qdrant_client.http import models as qmodels
+                flt = qmodels.Filter(must=[
+                    qmodels.FieldCondition(
+                        key="doc_id",
+                        match=qmodels.MatchValue(value=doc_id),
+                    )
+                ])
+                self.qdrant_client.delete(
+                    collection_name=QDRANT_COLLECTION,
+                    points_selector=qmodels.FilterSelector(filter=flt),
+                )
+            else:
+                # Pinecone metadata filter delete (unchanged behavior).
+                self.pinecone_index.delete(
+                    filter={"doc_id": {"$eq": doc_id}}
+                )
             logger.info(f"   Cleared existing vectors for: {file_name}")
         except Exception as e:
             # Pinecone free tier might not support metadata filtering for delete
@@ -568,24 +646,56 @@ class DocumentRAG:
             return False
 
     def load_index(self) -> bool:
-        """Load existing index from Pinecone."""
+        """Load existing index from the configured vector store backend."""
         try:
-            log_pinecone("Loading existing index...")
-            self.vector_store = PineconeVectorStore(pinecone_index=self.pinecone_index)
+            logger.info(f"[{self.backend}] Loading existing index...")
+            # self.vector_store is already initialised by _setup_vector_store().
+            # Re-creating it would be a no-op for Pinecone but break for Qdrant.
             self.index = VectorStoreIndex.from_vector_store(self.vector_store)
-            stats = self.pinecone_index.describe_index_stats()
-            logger.info(f"   Loaded {stats.get('total_vector_count', 0)} vectors")
+            if self.backend == "qdrant":
+                try:
+                    info = self.qdrant_client.get_collection(QDRANT_COLLECTION)
+                    logger.info(f"   Loaded {info.points_count or 0} vectors")
+                except Exception:
+                    pass
+            else:
+                stats = self.pinecone_index.describe_index_stats()
+                logger.info(f"   Loaded {stats.get('total_vector_count', 0)} vectors")
             return True
         except Exception as e:
             logger.error(f"Could not load index: {e}")
             return False
 
-    def query(self, question: str, top_k: int = 5, doc_ids: Optional[List[str]] = None) -> dict:
+    def query(
+        self,
+        question: str,
+        top_k: int = 10,
+        doc_ids: Optional[List[str]] = None,
+        file_names: Optional[List[str]] = None,
+    ) -> dict:
         """Query documents with proper page-level citations.
         If doc_ids is provided, only search within those documents.
         """
         log_separator("Document Query")
         logger.info(f"🔍 Question: {question[:100]}...")
+
+        original_question = question
+        try:
+            from .jargon_manager import get_jargon_manager
+            jm = get_jargon_manager()
+            semantic_query = jm.replace_query_terms_with_meanings(question)
+            if semantic_query and semantic_query != question:
+                logger.info(f"   Jargon semantic query: {semantic_query[:100]}")
+                question = semantic_query
+
+            concept_terms = jm.expand_domain_concepts(question)
+            if concept_terms:
+                terms_to_add = [t for t in concept_terms if t.lower() not in question.lower()][:6]
+                if terms_to_add:
+                    question = f"{question} (related: {', '.join(terms_to_add)})"
+                    logger.info(f"   Concept-boosted retrieval with {len(terms_to_add)} synonyms")
+        except Exception as e:
+            logger.debug(f"   Jargon normalization skipped: {e}")
 
         if not self.index:
             if not self.load_index():
@@ -595,17 +705,40 @@ class DocumentRAG:
                 }
 
         logger.info(f"   Retrieving top {top_k} matches...")
+        filter_specs = []
         if doc_ids:
             from llama_index.core.vector_stores.types import (
                 MetadataFilters, MetadataFilter, FilterOperator,
             )
-            filters = MetadataFilters(filters=[
+            filter_specs.append(
                 MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
-            ])
+            )
+        if file_names:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, MetadataFilter, FilterOperator,
+            )
+            filter_specs.append(
+                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN)
+            )
+        if filter_specs:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, FilterCondition,
+            )
+            # Multiple filters combined with OR — either explicit doc_ids OR
+            # filename-resolved files match.
+            filters = MetadataFilters(
+                filters=filter_specs,
+                condition=FilterCondition.OR if len(filter_specs) > 1 else None,
+            )
             query_engine = self.index.as_query_engine(
                 similarity_top_k=top_k, filters=filters,
             )
-            logger.info(f"   Scoped to {len(doc_ids)} documents")
+            scope_desc = []
+            if doc_ids:
+                scope_desc.append(f"{len(doc_ids)} doc_ids")
+            if file_names:
+                scope_desc.append(f"{len(file_names)} file_names")
+            logger.info(f"   Scoped to {' + '.join(scope_desc)}")
         else:
             query_engine = self.index.as_query_engine(similarity_top_k=top_k)
         response = query_engine.query(question)
@@ -708,12 +841,22 @@ class DocumentRAG:
 
         return sources
 
-    def query_with_provider(self, question: str, provider: str, top_k: int = 5,
-                            doc_ids: Optional[List[str]] = None) -> dict:
+    def query_with_provider(self, question: str, provider: str, top_k: int = 10,
+                            doc_ids: Optional[List[str]] = None,
+                            file_names: Optional[List[str]] = None) -> dict:
         """Query documents using a specific LLM provider for answer synthesis."""
         from .llm_client import create_llm
 
         logger.info(f"[DocumentRAG] Query with provider={provider}: {question[:80]}...")
+
+        try:
+            from .jargon_manager import get_jargon_manager
+            semantic_query = get_jargon_manager().replace_query_terms_with_meanings(question)
+            if semantic_query and semantic_query != question:
+                logger.info(f"   Jargon semantic query: {semantic_query[:100]}")
+                question = semantic_query
+        except Exception:
+            pass
 
         if not self.index:
             if not self.load_index():
@@ -728,16 +871,32 @@ class DocumentRAG:
         # For Claude: LlamaIndex query_engine doesn't support custom wrappers,
         # so we retrieve chunks via default engine and synthesize with Claude directly.
         if provider == "claude":
-            return self._query_with_direct_synthesis(question, llm, top_k, doc_ids)
+            return self._query_with_direct_synthesis(question, llm, top_k, doc_ids, file_names)
 
         kwargs = {"similarity_top_k": top_k, "llm": llm}
+        filter_specs = []
         if doc_ids:
             from llama_index.core.vector_stores.types import (
                 MetadataFilters, MetadataFilter, FilterOperator,
             )
-            kwargs["filters"] = MetadataFilters(filters=[
+            filter_specs.append(
                 MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
-            ])
+            )
+        if file_names:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, MetadataFilter, FilterOperator,
+            )
+            filter_specs.append(
+                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN)
+            )
+        if filter_specs:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, FilterCondition,
+            )
+            kwargs["filters"] = MetadataFilters(
+                filters=filter_specs,
+                condition=FilterCondition.OR if len(filter_specs) > 1 else None,
+            )
         query_engine = self.index.as_query_engine(**kwargs)
         response = query_engine.query(question)
         sources = self._extract_sources(response)
@@ -745,20 +904,37 @@ class DocumentRAG:
         logger.info(f"   [{provider}] Found {len(sources)} sources")
         return {"answer": str(response), "sources": sources}
 
-    def _query_with_direct_synthesis(self, question: str, llm, top_k: int = 5,
-                                     doc_ids: Optional[List[str]] = None) -> dict:
+    def _query_with_direct_synthesis(self, question: str, llm, top_k: int = 10,
+                                     doc_ids: Optional[List[str]] = None,
+                                     file_names: Optional[List[str]] = None) -> dict:
         """Retrieve chunks via Pinecone, then synthesize answer with a non-LlamaIndex LLM."""
         from llama_index.core import VectorStoreIndex
 
         # Step 1: Retrieve relevant chunks
         retriever_kwargs = {"similarity_top_k": top_k}
+        filter_specs = []
         if doc_ids:
             from llama_index.core.vector_stores.types import (
                 MetadataFilters, MetadataFilter, FilterOperator,
             )
-            retriever_kwargs["filters"] = MetadataFilters(filters=[
+            filter_specs.append(
                 MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
-            ])
+            )
+        if file_names:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, MetadataFilter, FilterOperator,
+            )
+            filter_specs.append(
+                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN)
+            )
+        if filter_specs:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, FilterCondition,
+            )
+            retriever_kwargs["filters"] = MetadataFilters(
+                filters=filter_specs,
+                condition=FilterCondition.OR if len(filter_specs) > 1 else None,
+            )
         retriever = self.index.as_retriever(**retriever_kwargs)
         nodes = retriever.retrieve(question)
 
@@ -813,8 +989,237 @@ class DocumentRAG:
         logger.info(f"   [direct] Found {len(sources)} sources, answer len={len(answer)}")
         return {"answer": answer, "sources": sources}
 
-    def query_dual(self, question: str, top_k: int = 5,
-                   doc_ids: Optional[List[str]] = None) -> dict:
+    # ── Named-doc retrieval (filename-resolved queries) ──────────────────
+    #
+    # When the user names a specific document by file name, we bypass the
+    # LlamaIndex query engine entirely and fetch chunks directly via the
+    # Pinecone API with a metadata filter. This avoids two failure modes
+    # observed in the LlamaIndex path: (a) doc_id IN filter never matches
+    # because Pinecone's doc_id is a per-chunk UUID, not a doc-level handle;
+    # (b) MetadataFilter on file_name occasionally returns empty source_nodes
+    # even when the chunks exist. Direct fetch + manual synthesis is more
+    # deterministic and lets us combine named-doc chunks with semantic
+    # neighbours in a single context.
+
+    def _fetch_named_doc_chunks(
+        self, question: str, file_names: List[str], top_k: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Fetch top-k chunks for the given file_names, ranked by query similarity.
+
+        Uses the Pinecone API directly (no LlamaIndex). Returns a list of
+        {text, metadata, score} dicts ordered by descending similarity.
+        """
+        if not file_names or self.pinecone_index is None:
+            return []
+        try:
+            from llama_index.core import Settings
+            embed_model = Settings.embed_model
+            qvec = embed_model.get_query_embedding(question)
+        except Exception as e:
+            logger.warning(f"[NamedDoc] embed failed: {e}")
+            return []
+
+        try:
+            res = self.pinecone_index.query(
+                vector=qvec,
+                top_k=top_k,
+                include_metadata=True,
+                filter={"file_name": {"$in": list(file_names)}},
+                namespace="__default__",
+            )
+        except Exception as e:
+            logger.warning(f"[NamedDoc] pinecone query failed: {e}")
+            return []
+
+        chunks: List[Dict[str, Any]] = []
+        matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
+        for m in matches or []:
+            md = m.get("metadata") if isinstance(m, dict) else getattr(m, "metadata", {}) or {}
+            # llama-index stores chunk text under _node_content as JSON
+            text = ""
+            node_content = md.get("_node_content")
+            if node_content:
+                try:
+                    import json as _json
+                    parsed = _json.loads(node_content)
+                    text = parsed.get("text", "")
+                except Exception:
+                    text = node_content if isinstance(node_content, str) else ""
+            score = m.get("score") if isinstance(m, dict) else getattr(m, "score", None)
+            chunks.append({"text": text, "metadata": md, "score": score})
+        return chunks
+
+    def query_named_docs_with_provider(
+        self, question: str, provider: str, file_names: List[str],
+        top_k_named: int = 10, top_k_semantic: int = 5,
+    ) -> dict:
+        """Generate an answer for a named-document query.
+
+        Pipeline:
+          1) direct Pinecone fetch of top-N chunks within file_names (named context)
+          2) unfiltered semantic top-M chunks (for context that the named doc
+             may not contain on its own — e.g. cross-references in mail threads)
+          3) merge, dedup by file+page, build LLM prompt
+          4) synthesize via the requested provider
+          5) return {answer, sources}
+
+        Sources order: named-doc chunks first (PDF cited as the user expects),
+        semantic chunks after.
+        """
+        from .llm_client import create_llm
+
+        logger.info(
+            f"[NamedDoc] provider={provider} files={file_names} "
+            f"top_k_named={top_k_named} top_k_semantic={top_k_semantic}"
+        )
+
+        # Jargon normalization (mirror query_with_provider behaviour)
+        try:
+            from .jargon_manager import get_jargon_manager
+            semantic_query = get_jargon_manager().replace_query_terms_with_meanings(question)
+            if semantic_query and semantic_query != question:
+                logger.info(f"[NamedDoc] jargon semantic query: {semantic_query[:100]}")
+                question = semantic_query
+        except Exception:
+            pass
+
+        named_chunks = self._fetch_named_doc_chunks(
+            question, file_names, top_k=top_k_named,
+        )
+
+        # Semantic neighbours (no scope) — keep small to leave room for named.
+        semantic_chunks: List[Dict[str, Any]] = []
+        if top_k_semantic > 0:
+            try:
+                from llama_index.core import Settings
+                qvec = Settings.embed_model.get_query_embedding(question)
+                sres = self.pinecone_index.query(
+                    vector=qvec, top_k=top_k_semantic,
+                    include_metadata=True, namespace="__default__",
+                )
+                smatches = (sres.get("matches") if isinstance(sres, dict)
+                            else getattr(sres, "matches", [])) or []
+                for m in smatches:
+                    md = (m.get("metadata") if isinstance(m, dict)
+                          else getattr(m, "metadata", {}) or {})
+                    text = ""
+                    nc = md.get("_node_content")
+                    if nc:
+                        try:
+                            import json as _json
+                            text = _json.loads(nc).get("text", "")
+                        except Exception:
+                            text = nc if isinstance(nc, str) else ""
+                    score = m.get("score") if isinstance(m, dict) else getattr(m, "score", None)
+                    semantic_chunks.append({"text": text, "metadata": md, "score": score})
+            except Exception as e:
+                logger.warning(f"[NamedDoc] semantic fetch failed: {e}")
+
+        # Merge: named first, then semantic that aren't already in named (dedup
+        # by file+page so we don't duplicate the same page from both lanes).
+        seen_keys: set = set()
+        merged: List[Dict[str, Any]] = []
+        for src in (named_chunks + semantic_chunks):
+            md = src.get("metadata") or {}
+            key = (md.get("file_name", ""), md.get("page_number", -1))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            merged.append(src)
+
+        if not merged:
+            return {
+                "answer": "No relevant content found for the named document.",
+                "sources": [],
+            }
+
+        # Build LLM prompt
+        context_parts = []
+        for i, c in enumerate(merged, 1):
+            md = c.get("metadata") or {}
+            fname = md.get("file_name", "Unknown")
+            page = md.get("page_number", "?")
+            text = (c.get("text") or "")[:1500]
+            context_parts.append(f"[Source {i}: {fname}, p.{page}]\n{text}")
+        context = "\n\n---\n\n".join(context_parts)
+        prompt = (
+            "Based on the following document excerpts, answer the user's question. "
+            "Use information from the provided sources. Cite the relevant filename "
+            "and page number naturally where appropriate.\n\n"
+            f"SOURCES:\n{context}\n\n"
+            f"QUESTION: {question}\n\n"
+            "ANSWER:"
+        )
+
+        try:
+            llm, _ = create_llm(provider)
+            response = llm.complete(prompt)
+            answer = getattr(response, "text", str(response))
+        except Exception as e:
+            logger.error(f"[NamedDoc] {provider} synthesis failed: {e}")
+            answer = ""
+
+        # Build sources list (named first, then semantic)
+        sources: List[Dict[str, Any]] = []
+        for c in merged:
+            md = c.get("metadata") or {}
+            text = (c.get("text") or "").strip()
+            sentences = text.replace("\n", " ").split(". ")
+            highlight = ". ".join(sentences[:3])[:300]
+            try:
+                page = int(md.get("page_number", 1))
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                total = int(md.get("total_pages", 1))
+            except (TypeError, ValueError):
+                total = 1
+            sources.append({
+                "doc_id": md.get("doc_id", ""),
+                "file_name": md.get("file_name", ""),
+                "file_path": md.get("file_path", ""),
+                "page_number": page,
+                "total_pages": total,
+                "score": round(c.get("score") or 0.0, 3),
+                "text_snippet": text[:500],
+                "highlight_text": highlight,
+            })
+        return {"answer": answer, "sources": sources}
+
+    def query_named_docs_dual(
+        self, question: str, file_names: List[str],
+        top_k_named: int = 10, top_k_semantic: int = 5,
+    ) -> dict:
+        """Multi-provider variant of query_named_docs_with_provider."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .config import LLM_PROVIDERS
+
+        results: Dict[str, Any] = {}
+
+        def _q(prov: str):
+            return prov, self.query_named_docs_with_provider(
+                question, prov, file_names,
+                top_k_named=top_k_named, top_k_semantic=top_k_semantic,
+            )
+
+        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as ex:
+            futs = {ex.submit(_q, p): p for p in LLM_PROVIDERS}
+            for fut in as_completed(futs):
+                try:
+                    prov, res = fut.result()
+                    results[prov] = res
+                except Exception as e:
+                    prov = futs[fut]
+                    logger.error(f"[NamedDoc] {prov} thread failed: {e}")
+                    results[prov] = {
+                        "answer": "Provider failed.", "sources": [],
+                        "_error": str(e),
+                    }
+        return results
+
+    def query_dual(self, question: str, top_k: int = 10,
+                   doc_ids: Optional[List[str]] = None,
+                   file_names: Optional[List[str]] = None) -> dict:
         """Query with both OpenAI and Claude in parallel."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
@@ -822,7 +1227,9 @@ class DocumentRAG:
         results = {}
 
         def _query_provider(prov):
-            return prov, self.query_with_provider(question, prov, top_k, doc_ids=doc_ids)
+            return prov, self.query_with_provider(
+                question, prov, top_k, doc_ids=doc_ids, file_names=file_names
+            )
 
         with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
             futures = {executor.submit(_query_provider, p): p for p in LLM_PROVIDERS}
@@ -869,8 +1276,21 @@ class DocumentRAG:
     def clear_index(self):
         """Clear all vectors from the index."""
         try:
-            log_pinecone("Clearing entire index...")
-            self.pinecone_index.delete(delete_all=True)
+            if self.backend == "qdrant":
+                from qdrant_client.http import models as qmodels
+                logger.info("[Qdrant] Clearing entire collection...")
+                # Recreate is the simplest way to truly empty a collection.
+                self.qdrant_client.delete_collection(QDRANT_COLLECTION)
+                self.qdrant_client.create_collection(
+                    collection_name=QDRANT_COLLECTION,
+                    vectors_config=qmodels.VectorParams(
+                        size=EMBEDDING_DIMENSION,
+                        distance=qmodels.Distance.COSINE,
+                    ),
+                )
+            else:
+                log_pinecone("Clearing entire index...")
+                self.pinecone_index.delete(delete_all=True)
             self.documents = []
             self.file_registry = {}
             self.index = None
@@ -882,7 +1302,20 @@ class DocumentRAG:
         """Clear vectors for a specific file."""
         doc_id = generate_doc_id(file_name)
         try:
-            self.pinecone_index.delete(filter={"doc_id": {"$eq": doc_id}})
+            if self.backend == "qdrant":
+                from qdrant_client.http import models as qmodels
+                flt = qmodels.Filter(must=[
+                    qmodels.FieldCondition(
+                        key="doc_id",
+                        match=qmodels.MatchValue(value=doc_id),
+                    )
+                ])
+                self.qdrant_client.delete(
+                    collection_name=QDRANT_COLLECTION,
+                    points_selector=qmodels.FilterSelector(filter=flt),
+                )
+            else:
+                self.pinecone_index.delete(filter={"doc_id": {"$eq": doc_id}})
             if file_name in self.file_registry:
                 del self.file_registry[file_name]
             self.documents = [d for d in self.documents if d.metadata.get("file_name") != file_name]
@@ -892,11 +1325,20 @@ class DocumentRAG:
 
     def get_index_stats(self) -> Dict[str, Any]:
         """Get index statistics."""
-        stats = self.pinecone_index.describe_index_stats()
+        if self.backend == "qdrant":
+            try:
+                info = self.qdrant_client.get_collection(QDRANT_COLLECTION)
+                total = info.points_count or 0
+            except Exception:
+                total = 0
+        else:
+            stats = self.pinecone_index.describe_index_stats()
+            total = stats.get("total_vector_count", 0)
         return {
-            "total_vectors": stats.get("total_vector_count", 0),
+            "total_vectors": total,
             "files_indexed": len(self.file_registry),
             "files": list(self.file_registry.keys()),
+            "backend": self.backend,
         }
 
 

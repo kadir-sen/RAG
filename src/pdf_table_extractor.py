@@ -285,6 +285,18 @@ class PDFTableExtractor:
 
             logger.info(f"[PDFExtractor] Saved parquet: {parquet_path.name}")
 
+            # Per-table jargon glossary (col -> expanded meaning)
+            try:
+                from .jargon_manager import get_jargon_manager
+                jm = get_jargon_manager()
+                col_jargon = {}
+                for col in table.df.columns:
+                    _, expanded = jm.normalize_column_name(str(col))
+                    if expanded:
+                        col_jargon[str(col)] = expanded
+            except Exception:
+                col_jargon = {}
+
             # Create metadata
             meta = TableMetadata(
                 table_id=table_id,
@@ -299,6 +311,7 @@ class PDFTableExtractor:
                 columns=list(table.df.columns),
                 extraction_method=table.extraction_method,
                 file_hash=self.catalog.compute_file_hash(source_file),
+                column_jargon=col_jargon,
             )
 
             return meta

@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import Avatar from './Avatar';
+import { prettifyUserQuery } from '../../utils/query';
 
 interface Props {
   text: string;
@@ -14,6 +15,7 @@ function formatTime(ts?: number): string {
 
 function UserMessage({ text, timestamp }: Props) {
   const time = formatTime(timestamp);
+  const display = prettifyUserQuery(text);
   return (
     <div className="mb-6 px-4 animate-fade-in-up group">
       <div className="max-w-3xl ml-auto flex items-start gap-3 justify-end">
@@ -21,7 +23,7 @@ function UserMessage({ text, timestamp }: Props) {
           <div
             className="inline-block px-4 py-3 md:px-5 user-bubble text-sm leading-relaxed text-[var(--text-primary)] break-words whitespace-pre-wrap text-left"
           >
-            {text}
+            {display}
           </div>
           {time && (
             <span className="mt-1 text-[10px] font-mono text-[var(--text-muted)] opacity-0 group-hover:opacity-100 transition-opacity">

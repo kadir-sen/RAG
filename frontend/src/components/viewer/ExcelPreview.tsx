@@ -4,27 +4,32 @@ interface Props {
   content: DocContent;
 }
 
+// Mono engineering table — wireframes ViewerExcel: dense rows, zebra striping,
+// border-bottom dashed dividers, sticky header, horizontal scroll for wide
+// data. Filename + row/col counts are shown in the toolbar's chip bar.
 export default function ExcelPreview({ content }: Props) {
   if (!content.rows.length) {
     return (
-      <div className="p-4 text-sm text-[var(--text-secondary)]">
+      <div className="p-6 text-center text-sm text-[var(--text-secondary)] font-mono">
         No data available
       </div>
     );
   }
 
+  const columns = content.columns?.length
+    ? content.columns
+    : Object.keys(content.rows[0] as Record<string, unknown>);
+
   return (
-    <div className="flex-1 overflow-auto p-2">
-      <p className="text-xs text-[var(--text-secondary)] mb-2">
-        {content.file_name} ({content.total_rows} rows)
-      </p>
-      <table className="w-full text-xs">
+    <div className="flex-1 overflow-auto">
+      <table className="min-w-full font-mono text-[11px] tabular-nums border-collapse">
         <thead>
-          <tr className="border-b border-[var(--border)]">
-            {content.columns.map((col) => (
+          <tr>
+            {columns.map((col) => (
               <th
                 key={col}
-                className="text-left px-2 py-1 text-[var(--text-secondary)] font-medium sticky top-0 bg-[var(--bg-surface)]"
+                scope="col"
+                className="text-left px-3 py-2 font-semibold text-[var(--text-primary)] bg-[var(--bg-surface)] border-b border-[var(--border)] sticky top-0 whitespace-nowrap"
               >
                 {col}
               </th>
@@ -35,12 +40,16 @@ export default function ExcelPreview({ content }: Props) {
           {content.rows.map((row, i) => (
             <tr
               key={i}
-              className="border-b border-[var(--border)] last:border-0"
+              className={
+                i % 2
+                  ? 'bg-[rgba(255,255,255,0.02)]'
+                  : 'bg-transparent'
+              }
             >
-              {content.columns.map((col) => (
+              {columns.map((col) => (
                 <td
                   key={col}
-                  className="px-2 py-1 text-[var(--text-primary)]"
+                  className="px-3 py-1.5 text-[var(--text-secondary)] border-b border-dashed border-[var(--border)]/60 whitespace-nowrap"
                 >
                   {String((row as Record<string, unknown>)[col] ?? '')}
                 </td>

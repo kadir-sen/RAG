@@ -1,0 +1,77 @@
+import { useEffect, useRef, useState } from 'react';
+import { useAuthStore } from '../../stores/authStore';
+
+function initial(name: string): string {
+  const trimmed = (name || '').trim();
+  return trimmed ? trimmed[0].toUpperCase() : 'U';
+}
+
+export default function UserMenu() {
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!wrapperRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  if (!user) {
+    return (
+      <div
+        className="w-7 h-7 rounded-full bg-[var(--bg-surface)] grid place-items-center text-[var(--text-muted)] text-[11px]"
+        aria-label="No user"
+      >
+        ?
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative" ref={wrapperRef}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Account menu for ${user.display_name}`}
+        className="w-7 h-7 rounded-full bg-gradient-to-br from-[#6366F1] to-[#8B5CF6] flex items-center justify-center text-white text-[11px] font-semibold hover:opacity-90 transition-opacity"
+      >
+        {initial(user.display_name || user.username)}
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 mt-2 w-56 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md shadow-xl z-50 overflow-hidden"
+        >
+          <div className="px-3 py-3 border-b border-[var(--border)]">
+            <div className="text-[13px] text-white font-medium truncate">
+              {user.display_name || user.username}
+            </div>
+            <div className="font-mono text-[10px] text-[var(--text-muted)] tracking-wide truncate mt-0.5">
+              {user.username} · {user.role}
+            </div>
+          </div>
+          <button
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              logout();
+              window.location.assign('/login');
+            }}
+            className="w-full text-left px-3 py-2.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-white font-mono tracking-wide transition-colors"
+          >
+            Sign out →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

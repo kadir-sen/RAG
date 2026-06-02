@@ -289,6 +289,70 @@ class TestDualLLMMode:
         assert resp.routing_confidence == 0.0
 
 
+class TestNoDocumentConsistency:
+    def test_no_document_answer_suppresses_sources(self):
+        response = build_chat_response({
+            "query_type": "document",
+            "answer": "No documents are related to FASTA.",
+            "sources": [{
+                "doc_id": "doc-1",
+                "file_name": "fasta-related.msg",
+                "page_number": 1,
+                "text_snippet": "candidate text",
+            }],
+        })
+
+        assert response.citations == []
+        assert response.related_docs == []
+
+    def test_provided_context_negative_answer_suppresses_sources(self):
+        response = build_chat_response({
+            "query_type": "document",
+            "answer": (
+                'The provided context does not contain information related to '
+                '"ZXQ_NOT_A_REAL_TOPIC_987654".'
+            ),
+            "sources": [{
+                "doc_id": "doc-1",
+                "file_name": "unrelated.msg",
+                "page_number": 1,
+                "text_snippet": "candidate text",
+            }],
+        })
+
+        assert response.citations == []
+        assert response.related_docs == []
+
+    def test_cannot_provide_information_suppresses_sources(self):
+        response = build_chat_response({
+            "query_type": "document",
+            "answer": "I'm sorry, but I cannot provide information on that topic.",
+            "sources": [{
+                "doc_id": "doc-1",
+                "file_name": "unrelated.msg",
+                "page_number": 1,
+                "text_snippet": "candidate text",
+            }],
+        })
+
+        assert response.citations == []
+        assert response.related_docs == []
+
+    def test_found_document_answer_keeps_sources(self):
+        response = build_chat_response({
+            "query_type": "document",
+            "answer": "Found **1** related document(s).",
+            "sources": [{
+                "doc_id": "doc-1",
+                "file_name": "fasta-related.msg",
+                "page_number": 1,
+                "text_snippet": "candidate text",
+            }],
+        })
+
+        assert len(response.citations) == 1
+
+
 # ── Response Contract Shape ────────────────────────────────
 
 class TestResponseShape:

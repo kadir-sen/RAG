@@ -61,6 +61,15 @@ class CallToAction(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 
+class QuotaInfo(BaseModel):
+    """Per-user token quota snapshot. Returned after each chat call so the UI
+    can update its progress bar without a separate poll."""
+
+    used_tokens: int = 0
+    token_limit: int = 0
+    percent_remaining: float = 100.0  # 0–100
+
+
 class ChatResponse(BaseModel):
     ui_intent: str       # "answer" | "doc_list" | "email_trace" | "sql_result"
     assistant_text: str
@@ -70,6 +79,7 @@ class ChatResponse(BaseModel):
     provider_answers: List[ProviderAnswer] = Field(default_factory=list)
     routing_confidence: Optional[float] = None  # 0.0-1.0, shown to user when low
     cta: Optional[CallToAction] = None
+    quota: Optional[QuotaInfo] = None
 
 
 class ConversationMeta(BaseModel):
@@ -141,6 +151,16 @@ class LibraryDocument(BaseModel):
     notice_extracted: bool = False
     created_at: str = ""
     notice_metadata: Optional[NoticeMetadataOut] = None
+    cluster_id: Optional[str] = None
+    cluster_label: Optional[str] = None
+
+
+class LibraryClusterSummary(BaseModel):
+    cluster_id: str
+    label: str
+    doc_count: int = 0
+    file_types: List[str] = Field(default_factory=list)
+    sample_doc_names: List[str] = Field(default_factory=list)
 
 
 class KnowledgeCollectionOut(BaseModel):

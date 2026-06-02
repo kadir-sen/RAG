@@ -46,17 +46,25 @@ def _startup_sync():
     except Exception as e:
         print(f"[Startup] Registry load: {e}")
 
-    # ── Step 3: Load Pinecone vectors ──
+    # ── Step 3: Load vector store (Pinecone or Qdrant) ──
     try:
         from src.document_rag import get_document_rag
         rag = get_document_rag()
-        stats = rag.pinecone_index.describe_index_stats()
-        vec_count = stats.get("total_vector_count", 0)
+        if rag.backend == "qdrant":
+            from src.config import QDRANT_COLLECTION
+            try:
+                info = rag.qdrant_client.get_collection(QDRANT_COLLECTION)
+                vec_count = info.points_count or 0
+            except Exception:
+                vec_count = 0
+        else:
+            stats = rag.pinecone_index.describe_index_stats()
+            vec_count = stats.get("total_vector_count", 0)
         if vec_count > 0 and not rag.index:
             rag.load_index()
-            print(f"[Startup] Loaded {vec_count} vectors from Pinecone")
+            print(f"[Startup] Loaded {vec_count} vectors from {rag.backend}")
     except Exception as e:
-        print(f"[Startup] Pinecone sync: {e}")
+        print(f"[Startup] Vector store sync: {e}")
 
     # ── Step 4: Reload DuckDB tables from catalog (freshly synced parquets) ──
     try:

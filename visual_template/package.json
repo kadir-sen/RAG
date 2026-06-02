@@ -1,0 +1,20 @@
+{
+  "name": "aria-landing",
+  "version": "2.0.0",
+  "private": true,
+  "description": "ARIA — AI-Powered Enterprise Intelligence. Static landing page (Aria_v2).",
+  "scripts": {
+    "dev": "npx -y serve . -l 3000",
+    "start": "npx -y http-server . -p 8080 -c-1",
+    "deploy:vercel": "npx -y vercel --prod",
+    "deploy:netlify": "npx -y netlify-cli deploy --prod --dir ."
+  },
+  "keywords": [
+    "landing-page",
+    "ai",
+    "enterprise",
+    "static",
+    "html"
+  ],
+  "license": "UNLICENSED"
+}

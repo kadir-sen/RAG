@@ -6,10 +6,10 @@ from typing import List, Optional
 
 from src.router import QueryRouter
 from src.conversation_store import ConversationStore, Message, format_chat_context
-from src.config import LLM_PROVIDERS, CHAT_MEMORY_MESSAGES, CHAT_MEMORY_MAX_CHARS
+from src.config import LLM_PROVIDERS, ENABLE_DUAL_PROVIDER, CHAT_MEMORY_MESSAGES, CHAT_MEMORY_MAX_CHARS
 
 from backend.services.response_builder import build_chat_response
-from backend.models.responses import ChatResponse
+from backend.models.responses import ChatResponse, QuotaInfo
 
 
 class ChatOrchestrator:
@@ -63,6 +63,7 @@ class ChatOrchestrator:
         doc_ids: list | None = None,
         email_ids: list | None = None,
         mode: str | None = None,
+        username: str | None = None,
     ) -> ChatResponse:
         now = datetime.now().isoformat()
 
@@ -91,15 +92,15 @@ class ChatOrchestrator:
         if not doc_ids:
             doc_ids = store.get_document_ids(conversation_id) or None
 
-        is_dual = len(LLM_PROVIDERS) >= 2
+        is_dual = ENABLE_DUAL_PROVIDER and len(LLM_PROVIDERS) >= 2
         try:
             if is_dual:
                 raw_result = await asyncio.to_thread(
-                    router.route_and_execute_dual, augmented, doc_ids, mode
+                    router.route_and_execute_dual, augmented, doc_ids, mode, email_ids
                 )
             else:
                 raw_result = await asyncio.to_thread(
-                    router.route_and_execute, augmented, doc_ids, mode
+                    router.route_and_execute, augmented, doc_ids, mode, email_ids
                 )
         except Exception as e:
             import logging
@@ -164,6 +165,20 @@ class ChatOrchestrator:
         )
         if conv_meta and conv_meta.title == "New Chat":
             store.auto_title(conversation_id, query)
+
+        # 8. Attach per-user quota snapshot so the UI bar updates instantly.
+        if username:
+            try:
+                from src.user_store import get_user_store
+
+                snap = get_user_store().get_usage(username)
+                response.quota = QuotaInfo(
+                    used_tokens=snap["used_tokens"],
+                    token_limit=snap["token_limit"],
+                    percent_remaining=snap["percent_remaining"],
+                )
+            except Exception:
+                pass
 
         return response
 
@@ -278,9 +293,14 @@ class ChatOrchestrator:
             # Add instruction for the LLM
             last = emails[-1]
             parts.append(
-                f"\nCONTEXT: The user has selected these {len(emails)} emails for analysis. "
-                f"The most recent email is from {last['sender']} to {last['recipient']}. "
-                f"If asked to draft a reply, respond on behalf of {last['recipient']} to {last['sender']}."
+                f"\nINSTRUCTIONS:\n"
+                f"- The user has selected the {len(emails)} email(s) above. Treat them as the sole source of truth.\n"
+                f"- If the user asks to draft / write / prepare / compose a reply or response, generate a formal "
+                f"reply on behalf of {last['recipient']} addressed to {last['sender']}, "
+                f"referencing the latest message dated {last['date']} (subject: \"{last['subject']}\"). "
+                f"Use construction-correspondence tone with reference / subject / salutation / body / closing.\n"
+                f"- Otherwise, answer the user's question using only the content of these emails. "
+                f"If the answer is not present, say so explicitly."
             )
 
             return "\n".join(parts)

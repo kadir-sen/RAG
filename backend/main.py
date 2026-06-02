@@ -12,7 +12,7 @@ if _project_root not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(Path(_project_root) / ".env")
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -21,8 +21,23 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.core.config import CORS_ORIGINS
 from backend.core.lifespan import lifespan
-from backend.api import admin, admin_jargon, chat, conversations, files, documents, indexing, library, knowledge, usage
+from backend.api import (
+    admin,
+    admin_jargon,
+    admin_users,
+    auth,
+    chat,
+    conversations,
+    files,
+    documents,
+    indexing,
+    library,
+    knowledge,
+    usage,
+)
+from backend.core.security import get_current_user, require_admin
 from src.usage_tracker import BudgetExceededError
+from src.user_store import UserQuotaExceededError, get_user_store
 
 # Frontend build directory (exists only in Docker / after npm run build)
 _frontend_dist = Path(_project_root) / "frontend" / "dist"
@@ -68,22 +83,62 @@ def create_app() -> FastAPI:
 
     app.add_middleware(_AssetCacheHeaders)
 
-    app.include_router(chat.router, prefix="/api", tags=["chat"])
-    app.include_router(conversations.router, prefix="/api", tags=["conversations"])
-    app.include_router(files.router, prefix="/api", tags=["files"])
-    app.include_router(documents.router, prefix="/api", tags=["documents"])
-    app.include_router(indexing.router, prefix="/api", tags=["indexing"])
-    app.include_router(library.router, prefix="/api", tags=["library"])
-    app.include_router(knowledge.router, prefix="/api", tags=["knowledge"])
-    app.include_router(admin.router, prefix="/api", tags=["admin"])
-    app.include_router(admin_jargon.router, prefix="/api", tags=["admin"])
-    app.include_router(usage.router, prefix="/api", tags=["usage"])
+    auth_dep = [Depends(get_current_user)]
+    admin_dep = [Depends(require_admin)]
+
+    # Public — login lives here, no auth required.
+    app.include_router(auth.router, prefix="/api", tags=["auth"])
+
+    # Admin-only routers.
+    app.include_router(
+        admin_users.router, prefix="/api", tags=["admin"], dependencies=admin_dep,
+    )
+    app.include_router(admin.router, prefix="/api", tags=["admin"], dependencies=admin_dep)
+    app.include_router(
+        admin_jargon.router, prefix="/api", tags=["admin"], dependencies=admin_dep,
+    )
+
+    # Authenticated routers (chat already injects user explicitly; the router-
+    # level dep is a belt-and-suspenders gate).
+    app.include_router(chat.router, prefix="/api", tags=["chat"], dependencies=auth_dep)
+    app.include_router(
+        conversations.router, prefix="/api", tags=["conversations"], dependencies=auth_dep,
+    )
+    app.include_router(files.router, prefix="/api", tags=["files"], dependencies=auth_dep)
+    app.include_router(
+        documents.router, prefix="/api", tags=["documents"], dependencies=auth_dep,
+    )
+    app.include_router(
+        indexing.router, prefix="/api", tags=["indexing"], dependencies=auth_dep,
+    )
+    app.include_router(library.router, prefix="/api", tags=["library"], dependencies=auth_dep)
+    app.include_router(
+        knowledge.router, prefix="/api", tags=["knowledge"], dependencies=auth_dep,
+    )
+    # Global usage (cost across the whole tenant) is operational data — admin-only.
+    app.include_router(usage.router, prefix="/api", tags=["usage"], dependencies=admin_dep)
+
+    # Pre-warm UserStore so the SQLite schema is created at startup.
+    get_user_store()
 
     @app.exception_handler(BudgetExceededError)
     async def _budget_exceeded_handler(_req: Request, exc: BudgetExceededError):
         # HTTP 402 — payment required: signals to the UI that the global LLM
         # budget for this application has been spent.
         return JSONResponse(status_code=402, content={"detail": str(exc), "error": "budget_exceeded"})
+
+    @app.exception_handler(UserQuotaExceededError)
+    async def _user_quota_handler(_req: Request, exc: UserQuotaExceededError):
+        return JSONResponse(
+            status_code=402,
+            content={
+                "detail": str(exc),
+                "error": "token_quota_exceeded",
+                "used_tokens": exc.used,
+                "token_limit": exc.limit,
+                "percent_remaining": 0.0,
+            },
+        )
 
     @app.get("/api/health", tags=["health"])
     async def health():

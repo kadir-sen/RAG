@@ -48,6 +48,26 @@ def build_chat_response(raw: Dict[str, Any], is_dual: bool = False) -> ChatRespo
     return _build_from_single(raw)
 
 
+def _looks_like_no_document_answer(answer: str) -> bool:
+    text = (answer or "").strip().lower()
+    if not text:
+        return False
+    patterns = [
+        r"\bno\s+(?:relevant\s+)?(?:documents?|files?|sources?)\b",
+        r"\bno\s+documents?\s+(?:are\s+)?related\b",
+        r"\bnot\s+found\b",
+        r"\bwas\s+not\s+found\b",
+        r"\bwere\s+not\s+found\b",
+        r"\bcould\s+not\s+find\b",
+        r"\bprovided\s+(?:context|information)\s+does\s+not\s+contain\b",
+        r"\bdoes\s+not\s+contain\s+(?:information|details)\b",
+        r"\bno\s+information\s+(?:related\s+to|about|regarding)\b",
+        r"\bcannot\s+provide\s+information\b",
+        r"\bcan't\s+provide\s+information\b",
+    ]
+    return any(re.search(p, text) for p in patterns)
+
+
 def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     query_type = raw.get("query_type", "document")
     answer_text = raw.get("answer", "")
@@ -56,6 +76,8 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     result_data = raw.get("result_data")
 
     ui_intent = INTENT_MAP.get(query_type, "answer")
+    if query_type in ("document", "file_list") and _looks_like_no_document_answer(answer_text):
+        sources = []
     citations, related_docs = _extract_citations_and_related(sources, query_type)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
     cta = _extract_cta(result_data)
@@ -123,6 +145,8 @@ def _build_from_dual(raw: Dict[str, Any]) -> ChatResponse:
     sql = first_answer.get("sql")
     result_data = first_answer.get("result_data")
 
+    if query_type in ("document", "file_list") and _looks_like_no_document_answer(answer_text):
+        sources = []
     citations, related_docs = _extract_citations_and_related(sources, query_type)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
     cta = _extract_cta(result_data)
@@ -195,11 +219,17 @@ def _extract_citations_and_related(
                 seen_related_names.add(file_name)
             raw_id = _safe_doc_id(src)
             safe_id = _resolve_canonical_doc_id(file_name, raw_id)
+            # doc_type cascade: notice doc_type → extension (".pdf"→"pdf") →
+            # file_type. Keeps the timeline chip populated for non-notice PDFs.
+            doc_type = src.get("doc_type") or ""
+            if not doc_type:
+                ext = (src.get("extension") or "").lstrip(".")
+                doc_type = ext or src.get("file_type") or ""
             related_docs.append(RelatedDoc(
                 doc_id=safe_id,
                 doc_name=file_name,
                 date=src.get("date") or "",
-                doc_type=src.get("doc_type") or "",
+                doc_type=doc_type,
                 reason=src.get("subject") or "",
                 score=src.get("score"),
                 sender=src.get("sender") or "",

@@ -20,6 +20,46 @@ from .types import LLMUsage, LLMResponse, DualLLMResponse
 from .logger import logger
 from .usage_tracker import enforce_budget, record_usage
 
+
+def _attribute_to_current_user(prompt_tok: int, comp_tok: int) -> None:
+    """Mirror an LLM call to the active user's per-user counter.
+
+    The active user (if any) is read from a contextvar populated by the FastAPI
+    auth dependency. Background jobs and CLI runs leave it unset, in which case
+    we only update the global tracker.
+    """
+    try:
+        from backend.core.security import get_current_username
+    except Exception:
+        return
+    username = get_current_username()
+    if not username:
+        return
+    try:
+        from .user_store import get_user_store
+
+        get_user_store().increment_usage(username, prompt_tok, comp_tok)
+    except Exception as exc:  # pragma: no cover — never break the request path
+        logger.warning(f"[LLMClient] per-user usage record failed: {exc}")
+
+
+def _enforce_user_quota() -> None:
+    """If a user context is active, raise UserQuotaExceededError when capped."""
+    try:
+        from backend.core.security import get_current_username
+    except Exception:
+        return
+    username = get_current_username()
+    if not username:
+        return
+    try:
+        from .user_store import get_user_store
+
+        get_user_store().enforce_quota(username)
+    except Exception:
+        # enforce_quota raises UserQuotaExceededError on real cap hits — let it bubble
+        raise
+
 # ── Cache Backend ────────────────────────────────────────────
 
 _cache = None
@@ -252,8 +292,9 @@ def generate_text(
         key_data = f"{provider}:{model}:{system[:200]}:{prompt}"
         cache_key = "llm:" + hashlib.sha256(key_data.encode()).hexdigest()[:32]
 
-    # ── Enforce global usage budget (cache hits still allowed below) ──
+    # ── Enforce global + per-user usage caps (cache hits still allowed below) ──
     enforce_budget()
+    _enforce_user_quota()
 
     # ── Check cache ──
     cached = _cache_get(cache_key)
@@ -323,11 +364,12 @@ def generate_text(
             # ── Cache result ──
             _cache_set(cache_key, text, ttl_s)
 
-            # ── Record into global usage tracker ──
+            # ── Record into global + per-user usage trackers ──
             try:
                 record_usage(prompt_tok, comp_tok, cost)
             except Exception as track_err:
                 logger.warning(f"[LLMClient] usage tracker failed: {track_err}")
+            _attribute_to_current_user(prompt_tok, comp_tok)
 
             return LLMResponse(text=text, usage=usage, raw=response)
 
@@ -457,8 +499,13 @@ def generate_text_dual(
             logger.error(f"[LLMClient] {prov} failed in dual call: {e}")
             return prov, None, str(e)
 
+    # Propagate the caller's contextvars (active user) into worker threads
+    # so per-user usage attribution and quota enforcement still apply.
+    import contextvars as _ctxvars
+    _ctx = _ctxvars.copy_context()
+
     with ThreadPoolExecutor(max_workers=len(providers)) as executor:
-        futures = [executor.submit(_call_provider, p) for p in providers]
+        futures = [executor.submit(_ctx.run, _call_provider, p) for p in providers]
         for future in as_completed(futures):
             prov, resp, error = future.result()
             if prov == "gemini":

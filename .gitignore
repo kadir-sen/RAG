@@ -2,6 +2,12 @@
 .env
 .env.local
 .env.*.local
+.env.production
+.env.staging
+
+# SSH keys / certificates (never commit)
+*.pem
+*.key
 
 # Python
 __pycache__/

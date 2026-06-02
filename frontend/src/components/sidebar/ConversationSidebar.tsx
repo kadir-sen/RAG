@@ -9,9 +9,9 @@ import { getLibrary } from '../../api/libraryApi';
 import { getConversation } from '../../api/conversationApi';
 import type { ConversationMeta, LibraryDocument } from '../../types/api';
 import type { Message } from '../../types/chat';
-import { groupEmailsByParticipantPair } from '../../utils/emailGrouping';
 import FileTypeBadge from '../ui/FileTypeBadge';
 import SidebarSection from './SidebarSection';
+import UsageRing from '../shared/UsageRing';
 
 const ACCEPTED = '.pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.eml,.msg';
 
@@ -32,6 +32,7 @@ interface SidebarItemProps {
   icon: ReactNode;
   label: string;
   count?: number;
+  trailing?: ReactNode;
   ariaPressed?: boolean;
   ariaExpanded?: boolean;
   expandable?: boolean;
@@ -43,6 +44,7 @@ function SidebarItem({
   icon,
   label,
   count,
+  trailing,
   ariaPressed,
   ariaExpanded,
   expandable,
@@ -65,9 +67,9 @@ function SidebarItem({
         {icon}
       </span>
       <span className="text-[14px] font-medium flex-1 truncate">{label}</span>
-      {typeof count === 'number' && (
+      {trailing ?? (typeof count === 'number' && (
         <span className="text-[11px] tabular-nums text-[var(--text-muted)]">{count}</span>
-      )}
+      ))}
       {expandable && (
         <svg
           width="10"
@@ -126,14 +128,13 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const [viewingArchived, setViewingArchived] = useState(false);
   const {
     conversations,
-    createConversation,
     deleteConversation,
     renameConversation,
     pinConversation,
     archiveConversation,
   } = useConversations({ archived: viewingArchived });
   const { files, uploadMultiple, uploading, isUploading } = useFiles();
-  const { activeConversationId, setConversation, activeMode, setMode, selectedEmailIds, toggleEmailSelection, setSelectedEmails } = useChatStore();
+  const { activeConversationId, setConversation, activeMode, setMode, selectedEmailIds, toggleEmailSelection } = useChatStore();
   const { openDocument } = useUIStore();
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
 
@@ -169,7 +170,6 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
     if (searchOpen) searchInputRef.current?.focus();
   }, [searchOpen]);
 
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [emailActionLoading, setEmailActionLoading] = useState(false);
 
   const trimmedQuery = searchQuery.trim().toLowerCase();
@@ -179,7 +179,11 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
     return true;
   });
 
-  const handleNewChat = () => createConversation('New Chat');
+  // Reset to welcome state instead of eagerly creating a backend conversation.
+  // The actual conversation gets created lazily in ChatPage.handleSend when
+  // the user submits the first message — so the New Chat surface matches the
+  // fresh-page-load welcome screen exactly (mode cards + intro composer).
+  const handleNewChat = () => setConversation('');
   const handleSearchToggle = () => {
     setSearchOpen((v) => {
       const next = !v;
@@ -247,26 +251,9 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
 
   const emailDocs: LibraryDocument[] = (libraryQuery.data ?? [])
     .filter((d) => d.file_type === 'email' || d.extension === '.eml' || d.extension === '.msg');
-  const emailGroups = groupEmailsByParticipantPair(emailDocs);
-
-  const toggleGroupExpanded = (key: string) => {
-    setExpandedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
-  const toggleGroupSelection = (emailIds: string[], allSelected: boolean) => {
-    if (allSelected) {
-      setSelectedEmails(selectedEmailIds.filter((id) => !emailIds.includes(id)));
-    } else {
-      const merged = new Set(selectedEmailIds);
-      emailIds.forEach((id) => merged.add(id));
-      setSelectedEmails(Array.from(merged));
-    }
-  };
+  const emailDocsSorted = [...emailDocs].sort((a, b) =>
+    (b.notice_metadata?.date || '').localeCompare(a.notice_metadata?.date || ''),
+  );
 
   const handleEmailAction = async (prompt: string) => {
     if (selectedEmailIds.length === 0 || !onSend || emailActionLoading) return;
@@ -316,6 +303,15 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
     return t === 'data' || t === 'excel' || t === 'xls' || t === 'xlsx' || t === 'csv';
   });
 
+  // Flat list of document-type LibraryDocuments (excludes emails and data
+  // files). Sorted alphabetically for deterministic UI.
+  const documentLibraryDocs: LibraryDocument[] = (libraryQuery.data ?? [])
+    .filter((d) => {
+      const t = (d.file_type || '').toLowerCase();
+      return t === 'document' || (t !== 'email' && t !== 'data');
+    })
+    .sort((a, b) => a.file_name.localeCompare(b.file_name));
+
   return (
     <>
       {sidebarOpen && (
@@ -336,6 +332,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             label="AI Assistant"
             active={activeMode !== null}
             onClick={handleNewChat}
+            trailing={<UsageRing size={18} showLabel />}
           />
           {/* AI Assistant sub-modes — always visible, indented like folder
               children so the mode picker reads as a property of AI Assistant
@@ -375,20 +372,22 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             onClick={() => toggleSection('documents')}
           />
           {openSections.documents && (
-            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1">
-              {documentFiles.length === 0 ? (
-                <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">Empty</p>
+            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-0.5">
+              {documentLibraryDocs.length === 0 ? (
+                <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">
+                  {libraryQuery.isLoading ? 'Loading…' : 'Empty'}
+                </p>
               ) : (
-                documentFiles.map((f) => (
+                documentLibraryDocs.map((d) => (
                   <button
-                    key={f.id}
+                    key={d.doc_id}
                     type="button"
-                    onClick={() => openDocument({ docId: f.id, fileName: f.name })}
+                    onClick={() => openDocument({ docId: d.doc_id, fileName: d.file_name })}
                     className="w-full flex items-center gap-2 px-1.5 py-1 rounded text-left hover:bg-[var(--bg-hover)] transition-colors group"
                   >
-                    <FileTypeBadge fileType={f.file_type} />
+                    <FileTypeBadge fileType={d.file_type} />
                     <span className="text-[11px] truncate text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] flex-1">
-                      {f.name}
+                      {d.file_name}
                     </span>
                   </button>
                 ))
@@ -404,79 +403,40 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             onClick={() => toggleSection('correspondence')}
           />
           {openSections.correspondence && (
-            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-1">
+            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-0.5">
               {emailDocs.length === 0 ? (
                 <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">
                   {libraryQuery.isLoading ? 'Loading…' : 'Empty'}
                 </p>
               ) : (
-                emailGroups.map((g) => {
-                  const ids = g.emails.map((e) => e.doc_id);
-                  const allSelected = ids.every((id) => selectedEmailIds.includes(id));
-                  const someSelected = !allSelected && ids.some((id) => selectedEmailIds.includes(id));
-                  const isExpanded = expandedGroups.has(g.key);
+                emailDocsSorted.map((doc) => {
+                  const isSelected = selectedEmailIds.includes(doc.doc_id);
+                  const meta = doc.notice_metadata;
                   return (
-                    <div key={g.key} className="rounded-md border border-[var(--border)] bg-[rgba(255,255,255,0.02)]">
-                      <div className="flex items-center gap-2 px-2 py-1.5">
-                        <button
-                          type="button"
-                          onClick={() => toggleGroupExpanded(g.key)}
-                          aria-label={isExpanded ? 'Collapse' : 'Expand'}
-                          className="text-[var(--text-muted)] hover:text-white shrink-0"
-                        >
-                          <svg width="10" height="10" viewBox="0 0 12 12" fill="none"
-                            className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}>
-                            <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => toggleGroupSelection(ids, allSelected)}
-                          className="flex-1 text-left min-w-0"
-                        >
-                          <p className="text-[11px] text-[var(--text-primary)] truncate capitalize">{g.displayLabel}</p>
-                          <p className="text-[10px] text-[var(--text-muted)]">
-                            {g.emails.length} mail · {g.latestDate || '—'}
-                          </p>
-                        </button>
-                        <input
-                          type="checkbox"
-                          checked={allSelected}
-                          ref={(el) => { if (el) el.indeterminate = someSelected; }}
-                          onChange={() => toggleGroupSelection(ids, allSelected)}
-                          className="shrink-0"
-                          aria-label="Select all emails in thread"
-                        />
-                      </div>
-                      {isExpanded && (
-                        <div className="px-2 pb-1.5 space-y-0.5 border-t border-[var(--border)]">
-                          {g.emails.map((doc) => {
-                            const isSelected = selectedEmailIds.includes(doc.doc_id);
-                            const meta = doc.notice_metadata;
-                            return (
-                              <label
-                                key={doc.doc_id}
-                                className={`flex items-start gap-2 p-1.5 rounded cursor-pointer transition-colors ${
-                                  isSelected ? 'bg-[var(--accent-glow)]' : 'hover:bg-[rgba(255,255,255,0.04)]'
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={isSelected}
-                                  onChange={() => toggleEmailSelection(doc.doc_id)}
-                                  className="mt-0.5"
-                                />
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-[11px] text-[var(--text-secondary)] truncate">{meta?.subject || doc.file_name}</p>
-                                  <p className="text-[10px] text-[var(--text-muted)]">
-                                    {meta?.date?.split('T')[0] || '—'} · {(meta?.sender || '').slice(0, 20)}
-                                  </p>
-                                </div>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      )}
+                    <div
+                      key={doc.doc_id}
+                      className={`flex items-start gap-2 p-1.5 rounded transition-colors ${
+                        isSelected ? 'bg-[var(--accent-glow)]' : 'hover:bg-[rgba(255,255,255,0.04)]'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleEmailSelection(doc.doc_id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="mt-0.5 shrink-0"
+                        aria-label="Select email for actions"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => openDocument({ docId: doc.doc_id, fileName: meta?.subject || doc.file_name })}
+                        className="min-w-0 flex-1 text-left cursor-pointer"
+                      >
+                        <p className="text-[11px] text-[var(--text-secondary)] truncate">{meta?.subject || doc.file_name}</p>
+                        <p className="text-[10px] text-[var(--text-muted)]">
+                          {meta?.date?.split('T')[0] || '—'} · {(meta?.sender || '').slice(0, 20)}
+                        </p>
+                      </button>
                     </div>
                   );
                 })

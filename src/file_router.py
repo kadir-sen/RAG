@@ -107,6 +107,20 @@ def route_file(file_path: str) -> ProcessingResult:
             table_names=table_names,
             notice_extracted=result.notice_extracted,
         )
+        # Topic clustering assignment — fire-and-forget; needs the freshly
+        # upserted chunks in Pinecone, which is why we run it after
+        # mark_completed and off the request thread. Data-only files don't
+        # produce embeddings so we skip them.
+        if file_type in ("document", "email"):
+            try:
+                import threading as _t
+                from .document_clusterer import get_clusterer
+                _t.Thread(
+                    target=lambda: get_clusterer().assign_new_doc(doc_id),
+                    daemon=True,
+                ).start()
+            except Exception as ce:
+                logger.warning(f"[FileRouter] Clusterer hook failed: {ce}")
     elif result.error:
         registry.mark_error(doc_id, result.error)
 
@@ -369,6 +383,22 @@ def _enrich_table_metadata(
     table_meta.semantic_tags = tags
     table_meta.header_metadata = header_meta
 
+    # --- 7. Column jargon expansions (per-table glossary) ---
+    try:
+        from .jargon_manager import get_jargon_manager
+        jm = get_jargon_manager()
+        col_jargon = dict(table_meta.column_jargon or {})
+        for col in table_meta.columns:
+            if col in col_jargon:
+                continue
+            _, expanded = jm.normalize_column_name(col)
+            if expanded:
+                col_jargon[col] = expanded
+        if col_jargon:
+            table_meta.column_jargon = col_jargon
+    except Exception as je:
+        logger.debug(f"[FileRouter] column_jargon enrichment skipped: {je}")
+
     logger.info(
         f"[FileRouter] Enriched metadata: {table_meta.description}, "
         f"tags={len(tags)}"
@@ -601,7 +631,15 @@ def delete_document(doc_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"[Delete] Disk cleanup failed: {e}")
 
-    # 6. Registry record (last — after all cleanup)
+    # 6. Cluster bookkeeping
+    try:
+        from .document_clusterer import get_clusterer
+        get_clusterer().forget_doc(doc_id)
+        result["cluster_cleaned"] = True
+    except Exception as e:
+        logger.warning(f"[Delete] Cluster cleanup failed: {e}")
+
+    # 7. Registry record (last — after all cleanup)
     registry.delete(doc_id)
     result["registry_cleaned"] = True
 

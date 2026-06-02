@@ -101,6 +101,9 @@ _DOCUMENT_INTENT_PATTERNS = [
     "what does", "what did", "explain", "describe", "content of",
     "according to", "mentioned in", "stated in", "says about",
     "terms of", "clause", "section", "article",
+    "which documents", "which document", "what documents", "what document",
+    "documents related", "document related", "documents are related",
+    "related document", "related documents",
     # Document-type cues: when the user names a specific document/letter/notice
     # the answer must come from PDF prose, not the data tables.
     "letter", "rfi", "noc", "memo", "minutes",
@@ -109,6 +112,11 @@ _DOCUMENT_INTENT_PATTERNS = [
     "update letter", "undertaking letter",
     "summarize the", "summarise the", "tell me about", "show me the",
     ".pdf", ".docx", ".doc",
+]
+
+_DOCUMENT_CONTENT_SEARCH_PATTERNS = [
+    r"\b(?:which|what|show|list|find|bring|get)\s+(?:the\s+)?(?:documents?|files?|reports?|letters?|notices?)\s+(?:are\s+)?(?:related\s+to|about|mention|mentioning|regarding|on)\b",
+    r"\b(?:documents?|files?|reports?|letters?|notices?)\s+(?:related\s+to|about|mention|mentioning|regarding|on)\b",
 ]
 
 
@@ -548,6 +556,19 @@ class QueryRouter:
                         f"(conf={thread_decision.confidence:.2f})")
             return thread_decision
 
+        content_search_decision = self._classify_document_content_search(query_lower)
+        if content_search_decision is not None:
+            logger.info(f"   -> Pattern: {content_search_decision.query_type.value.upper()} "
+                        f"(conf={content_search_decision.confidence:.2f})")
+            return content_search_decision
+
+        schema_decision = self._classify_schema_semantic(expanded_query)
+        if schema_decision is not None:
+            schema_decision = self._apply_mode_bias(schema_decision, mode)
+            logger.info(f"   -> Schema semantic: {schema_decision.query_type.value.upper()} "
+                        f"(conf={schema_decision.confidence:.2f})")
+            return schema_decision
+
         # ── Tier 1: Heuristic keyword scoring (no LLM) ──
         heuristic_decision = self._classify_heuristic(query_lower)
         if heuristic_decision is not None:
@@ -651,6 +672,64 @@ class QueryRouter:
                     confidence=0.95,
                     reasons=[f"Draft pattern matched: {pattern}"],
                 )
+        return None
+
+    def _classify_document_content_search(self, query_lower: str) -> Optional[RouterDecision]:
+        """Force content-search document queries into RAG, never SQL."""
+        for pattern in _DOCUMENT_CONTENT_SEARCH_PATTERNS:
+            if re.search(pattern, query_lower):
+                return RouterDecision(
+                    query_type=QueryType.DOCUMENT,
+                    confidence=0.96,
+                    reasons=[f"Document content-search pattern matched: {pattern}"],
+                )
+        return None
+
+    def _classify_schema_semantic(self, query: str) -> Optional[RouterDecision]:
+        """Conservative schema-aware DATA gate before keyword routing."""
+        try:
+            from .schema_context import analyze_schema_intent
+            schema_signal = analyze_schema_intent(query, jargon=self.jargon)
+        except Exception as e:
+            logger.warning(f"   Schema semantic routing skipped: {e}")
+            return None
+
+        logger.info(
+            "   Schema semantic signal - "
+            f"data={schema_signal.is_data_intent} score={schema_signal.score:.2f} "
+            f"conf={schema_signal.confidence:.2f} schemas={schema_signal.matched_schemas}"
+        )
+
+        has_doc_intent = self._has_document_intent(query)
+
+        if schema_signal.is_data_intent:
+            # If the user is clearly asking to read document prose, require a
+            # very strong schema match before sending to SQL.
+            if has_doc_intent and schema_signal.score < 5.0:
+                return RouterDecision(
+                    query_type=QueryType.DOCUMENT,
+                    confidence=0.84,
+                    reasons=[
+                        "Document intent outweighs weak schema signal",
+                        *schema_signal.reasons,
+                    ],
+                )
+            return RouterDecision(
+                query_type=QueryType.DATA,
+                confidence=max(0.76, schema_signal.confidence),
+                reasons=["Schema semantic match", *schema_signal.reasons],
+            )
+
+        if has_doc_intent:
+            return RouterDecision(
+                query_type=QueryType.DOCUMENT,
+                confidence=0.82,
+                reasons=[
+                    "Document intent with no strong schema match",
+                    *schema_signal.reasons,
+                ],
+            )
+
         return None
 
     def _classify_heuristic(self, query_lower: str) -> Optional[RouterDecision]:
@@ -935,7 +1014,11 @@ class QueryRouter:
 
             resp = llm_client.generate_text(
                 prompt, system=system, max_tokens=16,
-                cache_key=None,  # Don't cache — context changes with uploads
+                # cache_key=None auto-derives the key from the full prompt, which
+                # already embeds file_inventory + table_inventory. So identical
+                # queries against the same corpus hit cache, while any upload that
+                # changes the inventory changes the prompt and invalidates it.
+                cache_key=None,
             )
             result = resp.text.strip().upper()
 
@@ -1225,17 +1308,86 @@ class QueryRouter:
 
     # ── Query handlers ────────────────────────────────────────
 
+    @staticmethod
+    def _looks_like_no_document_answer(answer: str) -> bool:
+        """Detect synthesized answers that deny document matches."""
+        text = (answer or "").strip().lower()
+        if not text:
+            return True
+        negative_patterns = [
+            r"\bno\s+(?:relevant\s+)?(?:documents?|files?|sources?)\b",
+            r"\bno\s+documents?\s+(?:are\s+)?related\b",
+            r"\bnot\s+found\b",
+            r"\bwas\s+not\s+found\b",
+            r"\bwere\s+not\s+found\b",
+            r"\bnot\s+available\b",
+            r"\bnot\s+mentioned\b",
+            r"\bdoes\s+not\s+appear\b",
+            r"\bcould\s+not\s+find\b",
+        ]
+        return any(re.search(p, text) for p in negative_patterns)
+
+    @staticmethod
+    def _count_document_sources(sources: List[Dict[str, Any]]) -> int:
+        names = {
+            s.get("file_name")
+            for s in sources
+            if s.get("type") != "structured_data" and s.get("file_name")
+        }
+        return len(names)
+
+    def _found_documents_answer(self, sources: List[Dict[str, Any]]) -> str:
+        doc_count = self._count_document_sources(sources)
+        data_count = sum(1 for s in sources if s.get("type") == "structured_data")
+        parts = []
+        if doc_count:
+            parts.append(f"**{doc_count}** related document(s)")
+        if data_count:
+            parts.append(f"**{data_count}** related Excel data source(s)")
+        if not parts:
+            return "No related documents were found."
+        return f"Found {' and '.join(parts)}."
+
+    @staticmethod
+    def _extract_document_search_topic(query: str) -> str:
+        """Extract the actual topic from document-search phrasing.
+
+        Using the whole sentence ("which documents are related to X") makes
+        metadata search match generic words like "documents" and "related".
+        This keeps search focused on X, and also strips chat-history wrappers.
+        """
+        q = (query or "").strip()
+        if "Current question:" in q:
+            q = q.rsplit("Current question:", 1)[-1].strip()
+        q = re.sub(r"</?CONVERSATION_HISTORY>", " ", q, flags=re.IGNORECASE)
+        q = re.sub(r"\s+", " ", q).strip()
+
+        patterns = [
+            r"(?:related\s+to|about|mention(?:ing)?|regarding|on)\s+(.+?)(?:\?|$)",
+            r"(?:hakkında|ilgili|konulu|konusunda|ile\s+ilgili)\s+(.+?)(?:\?|$)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, q, re.IGNORECASE)
+            if match:
+                topic = match.group(1).strip(" \t\r\n\"'“”‘’.,;:!?")
+                if topic:
+                    return topic
+        return q
+
     def _handle_document_query(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         """Handle document-based query with metadata pre-filter."""
-        # Jargon expansion for better RAG matching
+        # Jargon replacement for semantic RAG matching. If the user asks for an
+        # abbreviation that exists in the jargon dictionary, embed the full
+        # meaning rather than running SQL/string search on the raw acronym.
         try:
-            expanded = self.jargon.expand_query(query)
-            if expanded != query:
-                logger.info(f"[DocQuery] Jargon expanded: {query} → {expanded}")
-                query = expanded
+            semantic_query = self.jargon.replace_query_terms_with_meanings(query)
+            if semantic_query != query:
+                logger.info(f"[DocQuery] Jargon semantic query: {query} -> {semantic_query}")
+                query = semantic_query
         except Exception as e:
-            logger.warning(f"[DocQuery] Jargon expansion failed: {e}")
+            logger.warning(f"[DocQuery] Jargon replacement failed: {e}")
         logger.info("Routing to Document RAG...")
+        search_topic = self._extract_document_search_topic(query)
 
         # 0. Filename resolver — strongest signal when user names a specific doc.
         # Returns file_name strings (not doc_ids) — used for re-rank, not for
@@ -1243,7 +1395,7 @@ class QueryRouter:
         # never matches doc-level intent).
         filename_hints: List[str] = []
         try:
-            filename_hints = self._resolve_filename_hints(query)
+            filename_hints = self._resolve_filename_hints(search_topic)
         except Exception as e:
             logger.warning(f"[FilenameResolve] failed: {e}")
 
@@ -1253,7 +1405,7 @@ class QueryRouter:
         try:
             from src.light_graph import get_light_graph
             graph = get_light_graph()
-            meta_results = graph.search_by_topic(query, limit=20)
+            meta_results = graph.search_by_topic(search_topic, limit=20)
             if meta_results:
                 metadata_doc_ids = [r["doc_id"] for r in meta_results if r.get("doc_id")]
                 for r in meta_results:
@@ -1296,7 +1448,7 @@ class QueryRouter:
             top_k = 10
 
         result = self.document_rag.query(
-            query,
+            search_topic,
             top_k=top_k,
             doc_ids=doc_ids if doc_ids else None,
             file_names=filename_hints if filename_hints else None,
@@ -1326,7 +1478,7 @@ class QueryRouter:
         # 3b. Find related Excel/data tables for this topic (scoped)
         try:
             _allowed = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
-            related_tables = self.data_analyzer.select_tables(query, max_tables=3, allowed_tables=_allowed)
+            related_tables = self.data_analyzer.select_tables(search_topic, max_tables=3, allowed_tables=_allowed)
             for tname in related_tables:
                 tinfo = self.data_analyzer.tables.get(tname, {})
                 fname = tinfo.get("file_name", tname)
@@ -1347,17 +1499,11 @@ class QueryRouter:
         except Exception as e:
             logger.warning(f"Excel enrichment for doc query failed: {e}")
 
-        # 4. If RAG answer is empty but we have metadata matches, generate summary
+        # 4. If RAG answer is empty/negative but we have sources, generate a
+        # deterministic summary so the answer and citations cannot contradict.
         answer = result.get("answer", "")
-        if (not answer or "not found" in answer.lower() or "empty" in answer.lower()) and final_sources:
-            doc_count = sum(1 for s in final_sources if s.get("type") != "structured_data")
-            data_count = sum(1 for s in final_sources if s.get("type") == "structured_data")
-            parts = []
-            if doc_count:
-                parts.append(f"**{doc_count}** related document(s)")
-            if data_count:
-                parts.append(f"**{data_count}** related Excel data source(s)")
-            answer = f"Found {' and '.join(parts)}."
+        if metadata_doc_ids and final_sources and self._looks_like_no_document_answer(answer):
+            answer = self._found_documents_answer(final_sources)
 
         return {
             "query": query,
@@ -1605,9 +1751,12 @@ class QueryRouter:
                         "extension": r.get("extension", ""),
                         "date": r.get("date", ""),
                         "sender": r.get("sender", ""),
+                        "recipient": r.get("recipient", ""),
                         "subject": r.get("subject", ""),
                         "description": r.get("description", ""),
-                        "doc_type": r.get("file_type", ""),
+                        # Prefer notice doc_type (contract/letter/...) when present;
+                        # fall back to file_type so the chip is never empty.
+                        "doc_type": r.get("doc_type") or r.get("file_type", ""),
                         "type": "search_result",
                     }
                     for r in results
@@ -2016,9 +2165,18 @@ class QueryRouter:
         except Exception as e:
             logger.warning(f"[Search] Registry search failed: {e}")
 
-        # 4. RAG semantic fallback for non-notice documents (when few results found)
-        if len(results) < 5 and self.document_rag:
+        # 4. RAG semantic fallback for non-notice documents.
+        #    Always run so notice-less PDFs surface even when many notices already
+        #    matched. seen_doc_ids prevents duplicates with steps 1-3.
+        if self.document_rag:
             try:
+                # Lazy-load notice extractor once per call for metadata hydration.
+                try:
+                    from .notice_extractor import get_notice_extractor
+                    notice_extractor = get_notice_extractor()
+                except Exception:
+                    notice_extractor = None
+
                 rag_result = self.document_rag.query(topic, top_k=10)
                 for src in rag_result.get("sources", []):
                     file_name = src.get("file_name", "")
@@ -2026,16 +2184,32 @@ class QueryRouter:
                     if not doc_id or doc_id in seen_doc_ids:
                         continue
                     seen_doc_ids.add(doc_id)
+
+                    rec = registry.get(doc_id)
+                    snippet = src.get("text_snippet", "") or ""
+                    fallback_date = ""
+                    if rec and rec.completed_at:
+                        fallback_date = rec.completed_at[:10]
+
+                    notice = None
+                    if notice_extractor is not None:
+                        try:
+                            notice = notice_extractor.load_notice(doc_id)
+                        except Exception:
+                            notice = None
+
                     results.append({
                         "doc_id": doc_id,
                         "file_name": file_name,
-                        "file_path": src.get("file_path", ""),
+                        "file_path": src.get("file_path", "") or (rec.file_path if rec else ""),
                         "file_type": "document",
                         "extension": Path(file_name).suffix.lower() if file_name else "",
-                        "date": "",
-                        "sender": "",
-                        "subject": src.get("text_snippet", "")[:100],
-                        "description": src.get("text_snippet", "")[:200],
+                        "date": (notice.date if notice and notice.date else fallback_date),
+                        "sender": (notice.sender if notice and notice.sender else ""),
+                        "recipient": (notice.recipient if notice and notice.recipient else ""),
+                        "subject": (notice.subject if notice and notice.subject else snippet[:100]),
+                        "doc_type": (notice.doc_type if notice and notice.doc_type else ""),
+                        "description": snippet[:200],
                         "semantic_tags": [],
                         "source": "rag_semantic",
                     })
@@ -2757,27 +2931,7 @@ class QueryRouter:
         elif query_type == QueryType.DATA:
             return self.data_analyzer.query_dual(expanded, allowed_tables=allowed_tables)
         elif query_type == QueryType.DOCUMENT:
-            # When the user names a specific document by filename, route to a
-            # dedicated path that fetches chunks directly from Pinecone (with
-            # a file_name metadata filter) instead of via LlamaIndex's query
-            # engine. This bypasses two failure modes: (1) doc_id IN filter
-            # never matches because Pinecone's doc_id is a per-chunk UUID;
-            # (2) MetadataFilter on file_name occasionally returns empty
-            # source_nodes from the LlamaIndex layer.
-            try:
-                filename_hints = self._resolve_filename_hints(expanded)
-            except Exception as e:
-                logger.warning(f"[FilenameResolveDispatch] failed: {e}")
-                filename_hints = []
-            if filename_hints:
-                logger.info(
-                    f"[Dispatch] DOCUMENT named-doc path: {len(filename_hints)} "
-                    f"file_name(s) — {filename_hints[:3]}"
-                )
-                return self.document_rag.query_named_docs_dual(
-                    expanded, filename_hints,
-                )
-            return self.document_rag.query_dual(expanded, doc_ids=doc_ids)
+            return self._handle_document_query_dual(expanded, doc_ids=doc_ids)
         elif query_type == QueryType.TIMELINE:
             single = self._handle_timeline_query(query)
             return {p: single for p in LLM_PROVIDERS}
@@ -2795,10 +2949,12 @@ class QueryRouter:
         doc_id is intentionally skipped: in this index doc_id is a per-chunk
         UUID, not a doc-level handle, so an IN filter would always be empty.
         """
+        search_topic = self._extract_document_search_topic(query)
+
         # 0. Filename resolver — strongest signal when user names a doc.
         filename_hints: List[str] = []
         try:
-            filename_hints = self._resolve_filename_hints(query)
+            filename_hints = self._resolve_filename_hints(search_topic)
         except Exception as e:
             logger.warning(f"[FilenameResolveDual] failed: {e}")
 
@@ -2808,7 +2964,7 @@ class QueryRouter:
         try:
             from src.light_graph import get_light_graph
             graph = get_light_graph()
-            meta_results = graph.search_by_topic(query, limit=20)
+            meta_results = graph.search_by_topic(search_topic, limit=20)
             if meta_results:
                 metadata_doc_ids = [r["doc_id"] for r in meta_results if r.get("doc_id")]
                 for r in meta_results:
@@ -2854,7 +3010,7 @@ class QueryRouter:
 
         # 3. Fan out to providers.
         provider_results = self.document_rag.query_dual(
-            query,
+            search_topic,
             top_k=top_k,
             doc_ids=doc_ids if doc_ids else None,
             file_names=filename_hints if filename_hints else None,
@@ -2878,6 +3034,8 @@ class QueryRouter:
             if merged and (filename_hints or metadata_doc_ids):
                 merged = self._rerank_sources(merged, filename_hints, metadata_doc_ids)
             res["sources"] = merged
+            if metadata_doc_ids and merged and self._looks_like_no_document_answer(res.get("answer", "")):
+                res["answer"] = self._found_documents_answer(merged)
 
         return provider_results
 
@@ -2904,6 +3062,16 @@ class QueryRouter:
         is_error = answer.startswith("Error") or "failed" in answer.lower()
         return is_empty or is_error
 
+    @staticmethod
+    def _has_document_intent(query: str) -> bool:
+        """Return True when a query should stay on RAG even if no chunks match."""
+        q_lower = (query or "").lower()
+        return (
+            any(re.search(p, q_lower) for p in _DOCUMENT_CONTENT_SEARCH_PATTERNS)
+            or any(p in q_lower for p in _DOCUMENT_INTENT_PATTERNS)
+            or any(kw in q_lower for kw in DOCUMENT_KEYWORDS)
+        )
+
     def _dual_answers_empty_or_error(self, answers: Dict[str, Dict[str, Any]]) -> bool:
         """Return True when every provider answer is empty/error-like."""
         if not answers:
@@ -2921,11 +3089,14 @@ class QueryRouter:
 
     # ── Main entry point ──────────────────────────────────────
 
-    def route_and_execute(self, query: str, doc_ids: Optional[List[str]] = None, mode: str | None = None) -> Dict[str, Any]:
+    def route_and_execute(self, query: str, doc_ids: Optional[List[str]] = None, mode: str | None = None, email_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         """Classify and route query to appropriate handler.
         Complex queries are routed through the hybrid executor for multi-step planning.
         If doc_ids is provided, RAG and SQL queries are scoped to those documents.
         If mode is provided, applies frontend-mode-aware routing bias.
+        If mode == 'correspondence' and email_ids is non-empty, bypasses classification
+        and routes straight to DOCUMENT — the orchestrator has already injected the full
+        email bodies + drafting instruction into the prompt.
         """
         from .telemetry import start_trace, finish_trace
 
@@ -2944,6 +3115,21 @@ class QueryRouter:
             expanded = self.jargon.expand_query(query)
             if expanded != query:
                 logger.info(f"   Jargon expanded: {expanded[:100]}...")
+
+            # Correspondence mode with user-selected emails: bypass classification.
+            # The orchestrator has already injected full email bodies + drafting
+            # instruction into the augmented query, so route straight to DOCUMENT
+            # and let the LLM answer (draft, summary, or question against the
+            # selected emails).
+            if mode == "correspondence" and email_ids:
+                logger.info(
+                    f"   Correspondence mode + {len(email_ids)} selected email(s) "
+                    f"-> forcing DOCUMENT (bypass DRAFT/THREAD/TIMELINE handlers)"
+                )
+                trace.route = "DOCUMENT_CORRESPONDENCE"
+                result = self._dispatch_query(QueryType.DOCUMENT, query, expanded, doc_ids)
+                logger.info(f"Query complete (correspondence) - {len(result.get('sources', []))} sources")
+                return result
 
             # Check if this is a complex multi-step query
             if self._is_complex_query(query):
@@ -3014,10 +3200,7 @@ class QueryRouter:
                     or "no relevant" in answer_lower
                 )
                 q_lower = expanded.lower()
-                has_doc_intent = (
-                    any(p in q_lower for p in _DOCUMENT_INTENT_PATTERNS)
-                    or any(kw in q_lower for kw in DOCUMENT_KEYWORDS)
-                )
+                has_doc_intent = self._has_document_intent(q_lower)
 
                 if empty_answer and not has_doc_intent:
                     logger.info("   Document query returned empty, retrying as DATA (tables available)")
@@ -3070,12 +3253,15 @@ class QueryRouter:
 
     # ── Dual-LLM execution ───────────────────────────────────
 
-    def route_and_execute_dual(self, query: str, doc_ids: Optional[List[str]] = None, mode: str | None = None) -> Dict[str, Any]:
+    def route_and_execute_dual(self, query: str, doc_ids: Optional[List[str]] = None, mode: str | None = None, email_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Classify query and execute with both OpenAI and Claude in parallel.
         Returns dual answers keyed by provider.
         If doc_ids is provided, RAG and SQL queries are scoped to those documents.
         If mode is provided, applies frontend-mode-aware routing bias.
+        If mode == 'correspondence' and email_ids is non-empty, bypasses classification
+        and routes straight to DOCUMENT — the orchestrator has already injected the full
+        email bodies + drafting instruction into the prompt.
         """
         from .telemetry import start_trace, finish_trace
         from .config import LLM_PROVIDERS
@@ -3094,6 +3280,27 @@ class QueryRouter:
             expanded = self.jargon.expand_query(query)
             if expanded != query:
                 logger.info(f"   Jargon expanded: {expanded[:100]}...")
+
+            # Correspondence mode with user-selected emails: bypass classification.
+            # See route_and_execute for rationale.
+            if mode == "correspondence" and email_ids:
+                logger.info(
+                    f"   Correspondence mode + {len(email_ids)} selected email(s) "
+                    f"-> forcing DOCUMENT (bypass DRAFT/THREAD/TIMELINE handlers)"
+                )
+                trace.route = "DOCUMENT_CORRESPONDENCE_DUAL"
+                answers = self._dispatch_query_dual(QueryType.DOCUMENT, query, expanded, doc_ids)
+                return {
+                    "query": query,
+                    "query_type": QueryType.DOCUMENT.value,
+                    "answers": answers,
+                    "routing": {
+                        "decision": QueryType.DOCUMENT.value,
+                        "confidence": 1.0,
+                        "reasons": [f"Correspondence mode bypass with {len(email_ids)} selected email(s)"],
+                        "used_llm": False,
+                    },
+                }
 
             # Complex query -> dual hybrid executor
             if self._is_complex_query(query):
@@ -3143,17 +3350,27 @@ class QueryRouter:
                         )
                         trace.route = f"{secondary.value.upper()}_DUAL_FALLBACK"
 
-            # Fallback: if document returned empty and tables exist, retry as DATA
+            # Fallback: if document returned empty and tables exist, retry as DATA.
+            # Suppress this for explicit document-content searches such as
+            # "which documents are related to X"; those must remain RAG queries.
             if (decision.query_type == QueryType.DOCUMENT
                     and self._dual_answers_empty_or_error(answers)
                     and self.data_analyzer.list_tables()):
-                logger.info("   Document query (dual) returned empty, retrying as DATA")
-                answers = self._dispatch_query_dual(QueryType.DATA, query, expanded, doc_ids)
-                decision = RouterDecision(
-                    query_type=QueryType.DATA,
-                    confidence=decision.confidence,
-                    reasons=decision.reasons + ["fallback: doc empty, tables available"],
-                )
+                if self._has_document_intent(expanded):
+                    logger.info("   Document query (dual) empty but doc-intent signals present — keeping DOCUMENT")
+                    decision = RouterDecision(
+                        query_type=decision.query_type,
+                        confidence=decision.confidence,
+                        reasons=decision.reasons + ["fallback suppressed: doc-intent signals"],
+                    )
+                else:
+                    logger.info("   Document query (dual) returned empty, retrying as DATA")
+                    answers = self._dispatch_query_dual(QueryType.DATA, query, expanded, doc_ids)
+                    decision = RouterDecision(
+                        query_type=QueryType.DATA,
+                        confidence=decision.confidence,
+                        reasons=decision.reasons + ["fallback: doc empty, tables available"],
+                    )
 
             result = {
                 "query": query,

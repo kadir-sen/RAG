@@ -5,25 +5,8 @@ import PdfViewer from './PdfViewer';
 import TextViewer from './TextViewer';
 import ExcelPreview from './ExcelPreview';
 import Skeleton from '../shared/Skeleton';
-
-type TypeKey = 'excel' | 'pdf' | 'email' | 'text';
-
-const TYPE_STYLES: Record<TypeKey, { label: string; band: string; bgClass: string; textClass: string; dotClass: string; tint: string }> = {
-  excel: { label: 'XLS',  band: 'bg-green-500',  bgClass: 'bg-green-500/15',  textClass: 'text-green-400',  dotClass: 'bg-green-500',  tint: 'bg-[rgba(16,185,129,0.02)]' },
-  pdf:   { label: 'PDF',  band: 'bg-red-500',    bgClass: 'bg-red-500/15',    textClass: 'text-red-400',    dotClass: 'bg-red-500',    tint: '' },
-  email: { label: 'MAIL', band: 'bg-blue-500',   bgClass: 'bg-blue-500/15',   textClass: 'text-blue-400',   dotClass: 'bg-blue-500',   tint: '' },
-  text:  { label: 'DOC',  band: 'bg-gray-400',   bgClass: 'bg-gray-500/15',   textClass: 'text-gray-300',   dotClass: 'bg-gray-400',   tint: '' },
-};
-
-function resolveTypeKey(fileName: string, contentType?: string): TypeKey {
-  if (contentType === 'table') return 'excel';
-  if (contentType === 'pdf') return 'pdf';
-  const ext = fileName.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '';
-  if (['xlsx', 'xls', 'csv'].includes(ext)) return 'excel';
-  if (ext === 'pdf') return 'pdf';
-  if (['eml', 'msg'].includes(ext)) return 'email';
-  return 'text';
-}
+import { resolveFileTypeFromName } from '../../styles/tokens';
+import TypeStripe from '../ui/TypeStripe';
 
 export default function RightDocViewer() {
   const { isOpen, doc, content, isLoadingContent, closeViewer, openDocument } =
@@ -58,12 +41,11 @@ export default function RightDocViewer() {
     }
   };
 
-  const typeKey = resolveTypeKey(doc.fileName, content?.type);
-  const typeStyle = TYPE_STYLES[typeKey];
+  const badge = resolveFileTypeFromName(doc.fileName, content?.type);
 
   return (
-    <div className={`flex flex-col h-full border-l border-[var(--border)] bg-[var(--bg-secondary)] ${typeStyle.tint}`}>
-      <div className={`h-[2px] shrink-0 ${typeStyle.band}`} aria-hidden="true" />
+    <div className="flex flex-col h-full border-l border-[var(--border)] bg-[var(--bg-secondary)]">
+      <TypeStripe color={badge.dot} />
       <ViewerToolbar
         fileName={doc.fileName}
         page={content?.page}
@@ -71,7 +53,17 @@ export default function RightDocViewer() {
         onPrev={handlePrev}
         onNext={handleNext}
         onClose={closeViewer}
-        typeBadge={{ label: typeStyle.label, dotClass: typeStyle.dotClass, bgClass: typeStyle.bgClass, textClass: typeStyle.textClass }}
+        typeBadge={{ label: badge.label, color: badge.dot }}
+        meta={
+          content?.type === 'table' && content.rows?.length
+            ? [
+                { label: `${content.total_rows ?? content.rows.length} rows` },
+                ...(content.columns?.length ? [{ label: `${content.columns.length} cols` }] : []),
+              ]
+            : content?.type === 'pdf' && content.total_pages
+              ? [{ label: `${content.total_pages} pages` }]
+              : []
+        }
         onExport={content?.type === 'table' && content.rows?.length ? () => {
           const rows = content.rows;
           if (!rows.length) return;

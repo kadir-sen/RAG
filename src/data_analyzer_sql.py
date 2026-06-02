@@ -1733,7 +1733,54 @@ class DataAnalyzerSQL:
         if sql.endswith("'") or sql.endswith('"'):
             sql = sql[:-1]
 
-        return sql.strip()
+        sql_clean = sql.strip()
+
+        try:
+            self._schema_guard_warn(sql_clean, table_name)
+        except Exception as ge:
+            logger.debug(f"[DataAnalyzerSQL] schema guard skipped: {ge}")
+
+        return sql_clean
+
+    def _schema_guard_warn(self, sql: str, table_name: str) -> None:
+        """
+        Lightweight integrity check: extract quoted identifiers from SQL and warn
+        when any do not match the table's actual columns. Does not modify SQL.
+        """
+        import re as _re
+        info = self.tables.get(table_name) or {}
+        actual_cols = list(info.get("columns", []))
+        if not actual_cols:
+            return
+
+        candidates = set(_re.findall(r'"([^"]+)"', sql))
+        if not candidates:
+            return
+
+        actual_lower = {c.lower(): c for c in actual_cols}
+        unresolved = []
+        for cand in candidates:
+            if cand in actual_cols:
+                continue
+            if cand.lower() in actual_lower:
+                continue
+            unresolved.append(cand)
+
+        if unresolved:
+            logger.warning(
+                f"[SchemaGuard] LLM referenced unknown columns in {table_name}: "
+                f"{unresolved} (actual: {actual_cols[:8]}{'...' if len(actual_cols) > 8 else ''})"
+            )
+            try:
+                from .telemetry import get_current_trace
+                trace = get_current_trace()
+                if trace and hasattr(trace, "record_event"):
+                    trace.record_event("schema_guard_warn", {
+                        "table": table_name,
+                        "unresolved": unresolved[:8],
+                    })
+            except Exception:
+                pass
 
     def _retry_sql_generation(self, previous_sql: str, error: str, table_name: str,
                               provider: str = "gemini") -> Optional[str]:

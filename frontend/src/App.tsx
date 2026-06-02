@@ -1,8 +1,11 @@
 import { Component, Suspense, lazy } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import AppShell from './layout/AppShell';
 import ChatPage from './pages/ChatPage';
+import LoginPage from './pages/LoginPage';
+import ProtectedRoute from './components/auth/ProtectedRoute';
 
 const SettingsModal = lazy(() => import('./components/shared/SettingsModal'));
 
@@ -58,12 +61,25 @@ export default function App() {
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
-        <AppShell>
-          <ChatPage />
-        </AppShell>
-        <Suspense fallback={null}>
-          <SettingsModal />
-        </Suspense>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route
+              path="/*"
+              element={
+                <ProtectedRoute>
+                  <AppShell>
+                    <ChatPage />
+                  </AppShell>
+                  <Suspense fallback={null}>
+                    <SettingsModal />
+                  </Suspense>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
       </QueryClientProvider>
     </ErrorBoundary>
   );

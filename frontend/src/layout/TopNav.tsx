@@ -1,6 +1,7 @@
 import { useUIStore } from '../stores/uiStore';
-import UsageBadge from '../components/shared/UsageBadge';
+import UsageRing from '../components/shared/UsageRing';
 import BrandMark from '../components/shared/BrandMark';
+import UserMenu from '../components/auth/UserMenu';
 
 export default function TopNav() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
@@ -46,7 +47,7 @@ export default function TopNav() {
 
       {/* Right — usage badge + settings + avatar */}
       <div className="flex items-center gap-2 justify-self-end text-[var(--text-secondary)]">
-        <UsageBadge />
+        {!sidebarOpen && <UsageRing size={16} showLabel />}
         <button
           onClick={toggleSettings}
           aria-label="Open settings"
@@ -57,9 +58,7 @@ export default function TopNav() {
             <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
-        <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#6366F1] to-[#8B5CF6] flex items-center justify-center text-white text-[11px] font-semibold" aria-label="User avatar">
-          U
-        </div>
+        <UserMenu />
       </div>
     </header>
   );

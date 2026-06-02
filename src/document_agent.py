@@ -861,6 +861,12 @@ class DocumentAgent:
 
             issues_context = ", ".join(profile.key_issues) if profile.key_issues else "None identified"
 
+            try:
+                from .schema_context import get_schema_prompt_block
+                schema_context = get_schema_prompt_block(question, mode="compact", max_tables=4)
+            except Exception:
+                schema_context = ""
+
             prompt = safe_render_prompt(
                 "Answer the question about this construction project based ONLY on the data below.\n\n"
                 "PROJECT: {project_name}\n"
@@ -869,11 +875,13 @@ class DocumentAgent:
                 "TIMELINE (recent):\n{timeline}\n\n"
                 "KEY ISSUES: {issues}\n\n"
                 "INSIGHTS:\n{insights}\n\n"
+                "SCHEMA & JARGON CONTEXT:\n{schema_context}\n\n"
                 "{user_query}\n\n"
                 "RULES:\n"
                 "1. Only use information from the data above\n"
                 "2. Be specific with dates, names, and references\n"
-                "3. If the answer is not in the data, say so clearly",
+                "3. If the answer is not in the data, say so clearly\n"
+                "4. Use construction jargon and column names exactly as listed in the schema context",
                 project_name=profile.project_name,
                 doc_count=str(profile.doc_count),
                 date_range=profile.date_range or "Unknown",
@@ -881,6 +889,7 @@ class DocumentAgent:
                 timeline=timeline_context,
                 issues=issues_context,
                 insights=insight_context,
+                schema_context=schema_context,
                 user_query=question,
             )
 

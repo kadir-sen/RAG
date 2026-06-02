@@ -29,9 +29,24 @@ if OPENAI_API_KEY:
 if ANTHROPIC_API_KEY:
     LLM_PROVIDERS.append("claude")
 
+# Dual-provider fan-out (calls every provider in LLM_PROVIDERS per query) is a
+# major cost multiplier and its compare-UI is currently not surfaced to users.
+# Keep it OFF unless explicitly enabled, even when multiple keys are present.
+ENABLE_DUAL_PROVIDER = os.getenv("ENABLE_DUAL_PROVIDER", "false").lower() in ("1", "true", "yes")
+
 # Pinecone settings
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "hybrid-rag")
 PINECONE_DIMENSION = EMBEDDING_DIMENSION
+
+# ── Vector Store Backend Selection ──────────────────────────
+# "pinecone" (default, current production) | "qdrant" (self-hosted, AWS demo)
+# Pinecone path is unchanged; Qdrant is opt-in via env var only.
+VECTOR_STORE_BACKEND = os.getenv("VECTOR_STORE_BACKEND", "pinecone").lower()
+
+# Qdrant settings (only used when VECTOR_STORE_BACKEND=qdrant)
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "constructioniq")
 
 # Paths
 BASE_DIR = Path(__file__).parent.parent
@@ -213,10 +228,20 @@ def validate_config() -> tuple[bool, list[str]]:
     elif len(GOOGLE_API_KEY) < 20:
         errors.append("GOOGLE_API_KEY appears invalid (too short).")
 
-    if not PINECONE_API_KEY:
-        errors.append("PINECONE_API_KEY is not set. Add it to your .env file.")
-    elif len(PINECONE_API_KEY) < 20:
-        errors.append("PINECONE_API_KEY appears invalid (too short).")
+    # Pinecone is required only when it is the active backend.
+    if VECTOR_STORE_BACKEND == "pinecone":
+        if not PINECONE_API_KEY:
+            errors.append("PINECONE_API_KEY is not set. Add it to your .env file.")
+        elif len(PINECONE_API_KEY) < 20:
+            errors.append("PINECONE_API_KEY appears invalid (too short).")
+    elif VECTOR_STORE_BACKEND == "qdrant":
+        if not QDRANT_URL:
+            errors.append("QDRANT_URL is not set (e.g. http://qdrant:6333).")
+    else:
+        errors.append(
+            f"Unknown VECTOR_STORE_BACKEND={VECTOR_STORE_BACKEND!r} "
+            f"(expected 'pinecone' or 'qdrant')."
+        )
 
     # Optional providers – warn but don't block startup
     if not OPENAI_API_KEY:
@@ -241,7 +266,12 @@ def print_config_status():
     print(f"OpenAI Model: {OPENAI_MODEL}")
     print(f"Claude Model: {ANTHROPIC_MODEL}")
     print(f"Embedding: {EMBEDDING_MODEL}")
-    print(f"Pinecone Index: {PINECONE_INDEX_NAME}")
+    print(f"Vector Backend: {VECTOR_STORE_BACKEND}")
+    if VECTOR_STORE_BACKEND == "pinecone":
+        print(f"Pinecone Index: {PINECONE_INDEX_NAME}")
+    elif VECTOR_STORE_BACKEND == "qdrant":
+        print(f"Qdrant URL: {QDRANT_URL}")
+        print(f"Qdrant Collection: {QDRANT_COLLECTION}")
     print(f"Data Dir: {DATA_DIR}")
     print("============================\n")
 

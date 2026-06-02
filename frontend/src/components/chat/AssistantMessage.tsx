@@ -12,7 +12,8 @@ import DocListResponse from './DocListResponse';
 import SqlArtifact from './SqlArtifact';
 import EmailTraceResponse from './EmailTraceResponse';
 import CtaButton from './CtaButton';
-import DocumentAnalysisTimeline, { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
+import DocumentAnalysisTable from './DocumentAnalysisTable';
+import { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -62,10 +63,13 @@ function formatTime(ts?: number): string {
 function AssistantMessage({ response, text, timestamp, onDocClick, failedText, onRetry }: Props) {
   const intent = response?.ui_intent ?? 'answer';
   const activeMode = useChatStore((s) => s.activeMode);
-  const showTimeline =
-    activeMode === 'document_analysis' &&
-    intent === 'doc_list' &&
-    !!response?.related_docs?.length;
+  // In Document Analysis, any response that surfaced related documents is shown
+  // as a single clickable, chronological table — regardless of whether the
+  // backend tagged it doc_list or answered with a narrative. The table replaces
+  // the doc-list table, the timeline, and the related-docs chip strip so we
+  // never stack two views of the same documents.
+  const showDocAnalysisTable =
+    activeMode === 'document_analysis' && !!response?.related_docs?.length;
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
 
@@ -111,16 +115,9 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
             {/* Intent-specific rendering */}
             {response && (
               <>
-                {intent === 'doc_list' && !showTimeline && (
-                  <DocListResponse
-                    docs={response.related_docs}
-                    onDocClick={onDocClick}
-                  />
-                )}
-
-                {showTimeline && (
+                {showDocAnalysisTable ? (
                   <div className="mt-3">
-                    <DocumentAnalysisTimeline
+                    <DocumentAnalysisTable
                       events={mapRelatedDocsToTimeline(response.related_docs)}
                       onEventClick={(e) => {
                         if (!e.id) return;
@@ -128,28 +125,37 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
                       }}
                     />
                   </div>
-                )}
+                ) : (
+                  <>
+                    {intent === 'doc_list' && (
+                      <DocListResponse
+                        docs={response.related_docs}
+                        onDocClick={onDocClick}
+                      />
+                    )}
 
-                {intent === 'email_trace' && (
-                  <EmailTraceResponse
-                    docs={response.related_docs}
-                    onDocClick={onDocClick}
-                  />
-                )}
+                    {intent === 'email_trace' && (
+                      <EmailTraceResponse
+                        docs={response.related_docs}
+                        onDocClick={onDocClick}
+                      />
+                    )}
 
-                {/* SQL artifact (provider tabs are hidden — always render). */}
-                {intent === 'sql_result' && response.sql_artifact && (
-                  <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
+                    {/* SQL artifact (provider tabs are hidden — always render). */}
+                    {intent === 'sql_result' && response.sql_artifact && (
+                      <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
+                    )}
+
+                    {intent !== 'doc_list' && intent !== 'email_trace' && (
+                      <RelatedDocsList
+                        docs={response.related_docs}
+                        onDocClick={onDocClick}
+                      />
+                    )}
+                  </>
                 )}
 
                 {response.cta && <CtaButton cta={response.cta} />}
-
-                {intent !== 'doc_list' && intent !== 'email_trace' && !showTimeline && (
-                  <RelatedDocsList
-                    docs={response.related_docs}
-                    onDocClick={onDocClick}
-                  />
-                )}
               </>
             )}
 

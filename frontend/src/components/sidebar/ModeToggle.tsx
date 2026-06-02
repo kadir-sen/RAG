@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import type { AppMode } from '../../stores/chatStore';
+import { useAuthStore } from '../../stores/authStore';
 
 type ModeOption = 'document_analysis' | 'correspondence';
 
@@ -8,9 +9,9 @@ interface Props {
   onSelect: (mode: ModeOption) => void;
 }
 
-const OPTIONS: { id: ModeOption; label: string }[] = [
+const ALL_OPTIONS: { id: ModeOption; label: string; requires?: string }[] = [
   { id: 'document_analysis', label: 'Document Analysis' },
-  { id: 'correspondence', label: 'Correspondence' },
+  { id: 'correspondence', label: 'Correspondence', requires: 'correspondence' },
 ];
 
 /**
@@ -19,6 +20,12 @@ const OPTIONS: { id: ModeOption; label: string }[] = [
  * `useChatStore.setMode`.
  */
 function ModeToggle({ activeMode, onSelect }: Props) {
+  const features = useAuthStore((s) => s.user?.features ?? {});
+  const options = ALL_OPTIONS.filter((o) => !o.requires || features[o.requires]);
+
+  // If the user only has one available mode, hide the toggle entirely.
+  if (options.length <= 1) return null;
+
   return (
     <div
       data-testid="sidebar-mode-toggle"
@@ -26,7 +33,7 @@ function ModeToggle({ activeMode, onSelect }: Props) {
       aria-label="Knowledge base mode"
       className="mx-3 mt-1 mb-1 grid grid-cols-2 rounded-md border border-[var(--border)] bg-[rgba(255,255,255,0.02)] p-0.5 text-[11px] font-mono"
     >
-      {OPTIONS.map((opt) => {
+      {options.map((opt) => {
         const active = activeMode === opt.id;
         return (
           <button

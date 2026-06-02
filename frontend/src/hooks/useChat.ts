@@ -2,11 +2,35 @@ import { useRef } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { sendMessage } from '../api/chatApi';
 import { useChatStore } from '../stores/chatStore';
+import { useAuthStore } from '../stores/authStore';
 import type { Message } from '../types/chat';
 
 const genId = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
+interface ErrorWithResponse extends Error {
+  response?: {
+    status?: number;
+    data?: {
+      error?: string;
+      detail?: string;
+    };
+  };
+}
+
 function friendlyError(error: Error): string {
+  const e = error as ErrorWithResponse;
+  if (e.response?.status === 402) {
+    if (e.response.data?.error === 'token_quota_exceeded') {
+      return 'Your token quota is fully consumed. Contact your administrator to top it up.';
+    }
+    return 'The system budget has been reached. Try again later.';
+  }
+  if (e.response?.status === 403) {
+    const detail = e.response.data?.detail ?? '';
+    if (detail.startsWith('feature_not_available')) {
+      return 'This mode is not available on your account. Ask your administrator to enable it.';
+    }
+  }
   const msg = error.message.toLowerCase();
   if (msg.includes('network error') || msg.includes('err_connection'))
     return 'Unable to reach the server. Please check your connection.';
@@ -64,11 +88,24 @@ export function useChat() {
       };
       addMessage(assistantMsg);
       setLoading(false);
+      if (response.quota) {
+        useAuthStore.getState().updateQuota(response.quota);
+      }
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
     onError: (error: Error) => {
       inFlightRef.current = false;
       if (error.message === 'DUPLICATE') return;
+      const e = error as ErrorWithResponse;
+      // 402 / quota exhausted — zero out the user's bar so the UI matches the
+      // backend's "no more requests" state without waiting for a /me poll.
+      if (e.response?.status === 402 && e.response.data?.error === 'token_quota_exceeded') {
+        useAuthStore.getState().updateQuota({
+          used_tokens: useAuthStore.getState().user?.token_limit ?? 0,
+          token_limit: useAuthStore.getState().user?.token_limit ?? 0,
+          percent_remaining: 0,
+        });
+      }
       const errorMsg: Message = {
         id: `e_${genId()}`,
         role: 'assistant',

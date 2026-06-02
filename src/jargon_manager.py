@@ -1,5 +1,9 @@
 """
 Jargon Manager - Central abbreviation and domain terminology system.
+
+Custom (user-added) terms persist to ``storage/jargon_custom.json`` so they
+survive process restarts. Built-in terms are immutable and cannot be removed
+through the admin API.
 Loads jargon dictionaries from Excel and provides:
 - Abbreviation expansion (SOW -> Scope of Work)
 - Reverse lookup (Scope of Work -> SOW)
@@ -130,6 +134,7 @@ class JargonManager:
         "BMM": "Building Maintenance and Management",
         "TCI": "TCI Engineering",
         "SIRA": "Systematic Integrated Risk Assessment",
+        "FASTA": "Fire Alarm System Testing and Approval",
     }
 
     # Domain concept groups: maps a concept to related search terms
@@ -168,6 +173,11 @@ class JargonManager:
             "quality", "NCR", "NCN", "non-conformance",
             "defect", "deficiency", "inspection", "QA", "QC",
         ],
+        "fire_alarm": [
+            "fire alarm", "FASTA", "Fire Alarm System Testing and Approval",
+            "fire alarm system", "fire alarm testing", "fire alarm approval",
+            "SIRA", "DPS", "NOC", "life safety",
+        ],
     }
 
     def __init__(self):
@@ -178,6 +188,10 @@ class JargonManager:
         self._meaning_to_abbr: Dict[str, str] = {}
         # synonym groups: maps any form to canonical form
         self._synonyms: Dict[str, str] = {}
+        # User-added custom terms (subset of _abbr_to_meaning, not built-in)
+        self._custom_terms: Dict[str, Dict[str, str]] = {}
+        # Path for custom term persistence
+        self._custom_store_path = JARGON_DIR / "jargon_custom.json"
 
         # Load built-in jargon
         self._load_builtin()
@@ -324,6 +338,94 @@ class JargonManager:
             Canonical abbreviation or None
         """
         return self._synonyms.get(term.lower().strip())
+
+    def compress_query(self, query: str) -> str:
+        """
+        Compress full forms to canonical abbreviations.
+        "Extension of Time approved" -> "EOT approved".
+
+        Uses longest-match-first to avoid partial overlaps. If a full form
+        appears already paired with its abbreviation (case-insensitive), the
+        compression is skipped to keep the original phrasing.
+        """
+        if not query:
+            return query
+
+        # Lazy reverse-index of full-form -> abbreviation, longest first.
+        if not hasattr(self, "_compress_index"):
+            self._compress_index = sorted(
+                self._meaning_to_abbr.items(),
+                key=lambda kv: len(kv[0]),
+                reverse=True,
+            )
+
+        out = query
+        out_lower = out.lower()
+        for meaning_lower, abbr in self._compress_index:
+            if len(meaning_lower) < 4:
+                continue
+            if meaning_lower not in out_lower:
+                continue
+            if abbr.lower() in out_lower:
+                continue
+            pattern = re.compile(re.escape(meaning_lower), re.IGNORECASE)
+            out = pattern.sub(abbr, out)
+            out_lower = out.lower()
+        return out
+
+    def normalize_query_bidirectional(self, query: str) -> str:
+        """expand_query + compress_query for retrieval-friendly normalization."""
+        return self.compress_query(self.expand_query(query))
+
+    def replace_query_terms_with_meanings(self, query: str) -> str:
+        """
+        Replace exact jargon abbreviation matches with their full meanings.
+
+        This is intentionally different from ``expand_query``. RAG retrieval
+        should embed the semantic meaning of the user's term, not a parenthetical
+        mix that can later be compressed back to the abbreviation.
+
+        Example:
+            "documents related to EOT" -> "documents related to Extension of Time"
+        """
+        if not query:
+            return query
+
+        replaced = query
+        for abbr, meaning in sorted(
+            self._abbr_to_meaning.items(), key=lambda kv: len(kv[0]), reverse=True
+        ):
+            if not abbr or not meaning:
+                continue
+            paired_pattern = re.compile(
+                rf"(?<![A-Za-z0-9]){re.escape(abbr)}(?![A-Za-z0-9])"
+                rf"\s*\(\s*{re.escape(meaning)}\s*\)",
+                re.IGNORECASE,
+            )
+            replaced = paired_pattern.sub(meaning, replaced)
+            pattern = re.compile(
+                rf"(?<![A-Za-z0-9]){re.escape(abbr)}(?![A-Za-z0-9])",
+                re.IGNORECASE,
+            )
+            replaced = pattern.sub(meaning, replaced)
+
+        return replaced
+
+    def lookup_concept_group(self, term: str) -> Optional[List[str]]:
+        """
+        Return synonyms for a term if it belongs to a DOMAIN_CONCEPT_GROUP.
+        Match is case-insensitive substring against group keys and members.
+        """
+        if not term:
+            return None
+        t = term.lower().strip()
+        for concept, members in self.DOMAIN_CONCEPT_GROUPS.items():
+            if t == concept or t in concept:
+                return list(members)
+            for m in members:
+                if t == m.lower():
+                    return list(members)
+        return None
 
     def expand_query(self, query: str) -> str:
         """
@@ -520,6 +622,122 @@ class JargonManager:
         """Number of terms in dictionary."""
         return len(self._abbr_to_meaning)
 
+    # ── Custom term management (persisted) ────────────────────────────
+
+    def add_custom_term(
+        self,
+        abbreviation: str,
+        full_form: str,
+        concept_group: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Add a user-defined term and persist it. Built-ins cannot be overridden via API."""
+        abbr_upper = abbreviation.strip().upper()
+        if not abbr_upper or not full_form.strip():
+            raise ValueError("abbreviation and full_form are required")
+        if abbr_upper in self.BUILTIN_JARGON:
+            raise ValueError(f"'{abbr_upper}' is a built-in term and cannot be overridden")
+
+        record = {"abbreviation": abbr_upper, "full_form": full_form.strip()}
+        if concept_group:
+            record["concept_group"] = concept_group.strip().lower()
+
+        self._add_term(abbr_upper, full_form.strip())
+        self._custom_terms[abbr_upper] = record
+
+        if concept_group:
+            grp = self.DOMAIN_CONCEPT_GROUPS.setdefault(concept_group.strip().lower(), [])
+            for token in (abbr_upper, full_form.strip()):
+                if token and token not in grp:
+                    grp.append(token)
+
+        # Invalidate caches
+        if hasattr(self, "_compress_index"):
+            del self._compress_index
+
+        self.save_to_disk()
+        logger.info(f"[JargonManager] Added custom term: {abbr_upper} = {full_form}")
+        return record
+
+    def remove_custom_term(self, abbreviation: str) -> bool:
+        """Remove a previously-added custom term. Built-ins are protected."""
+        abbr_upper = abbreviation.strip().upper()
+        if abbr_upper in self.BUILTIN_JARGON:
+            raise ValueError(f"'{abbr_upper}' is a built-in term and cannot be removed")
+        if abbr_upper not in self._custom_terms:
+            return False
+
+        meaning = self._abbr_to_meaning.pop(abbr_upper, None)
+        self._custom_terms.pop(abbr_upper, None)
+        if meaning:
+            self._meaning_to_abbr.pop(meaning.lower(), None)
+            self._synonyms.pop(meaning.lower(), None)
+        self._synonyms.pop(abbr_upper.lower(), None)
+
+        if hasattr(self, "_compress_index"):
+            del self._compress_index
+
+        self.save_to_disk()
+        logger.info(f"[JargonManager] Removed custom term: {abbr_upper}")
+        return True
+
+    def list_custom_terms(self) -> List[Dict[str, str]]:
+        """Return all user-added terms."""
+        return list(self._custom_terms.values())
+
+    def save_to_disk(self, path: Optional[Path] = None) -> None:
+        """Persist current custom-term set to disk as JSON."""
+        import json as _json
+        target = Path(path) if path else self._custom_store_path
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "w", encoding="utf-8") as f:
+                _json.dump(
+                    {"terms": list(self._custom_terms.values())},
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+        except Exception as e:
+            logger.error(f"[JargonManager] save_to_disk failed: {e}")
+
+    def load_from_disk(self, path: Optional[Path] = None) -> int:
+        """Load custom terms from JSON. Returns number of terms loaded."""
+        import json as _json
+        target = Path(path) if path else self._custom_store_path
+        if not target.exists():
+            return 0
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            count = 0
+            for record in data.get("terms", []):
+                abbr = record.get("abbreviation", "").strip().upper()
+                full = record.get("full_form", "").strip()
+                concept = record.get("concept_group")
+                if not abbr or not full:
+                    continue
+                if abbr in self.BUILTIN_JARGON:
+                    continue
+                self._add_term(abbr, full)
+                self._custom_terms[abbr] = {
+                    "abbreviation": abbr,
+                    "full_form": full,
+                    **({"concept_group": concept} if concept else {}),
+                }
+                if concept:
+                    grp = self.DOMAIN_CONCEPT_GROUPS.setdefault(concept.lower(), [])
+                    for token in (abbr, full):
+                        if token and token not in grp:
+                            grp.append(token)
+                count += 1
+            if hasattr(self, "_compress_index"):
+                del self._compress_index
+            logger.info(f"[JargonManager] Loaded {count} custom terms from disk")
+            return count
+        except Exception as e:
+            logger.error(f"[JargonManager] load_from_disk failed: {e}")
+            return 0
+
 
 # Singleton
 _jargon_manager: Optional[JargonManager] = None
@@ -531,4 +749,5 @@ def get_jargon_manager() -> JargonManager:
     if _jargon_manager is None:
         _jargon_manager = JargonManager()
         _jargon_manager.auto_discover_and_load()
+        _jargon_manager.load_from_disk()
     return _jargon_manager

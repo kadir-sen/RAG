@@ -52,6 +52,28 @@ export interface CallToAction {
   metadata: Record<string, unknown>;
 }
 
+export interface QuotaInfo {
+  used_tokens: number;
+  token_limit: number;
+  percent_remaining: number;
+}
+
+export interface AuthUser {
+  username: string;
+  display_name: string;
+  role: 'user' | 'admin';
+  features: Record<string, boolean>;
+  token_limit: number;
+  used_tokens: number;
+  percent_remaining: number;
+}
+
+export interface LoginResponse {
+  access_token: string;
+  token_type: 'bearer';
+  user: AuthUser;
+}
+
 export interface ChatResponse {
   ui_intent: 'answer' | 'doc_list' | 'email_trace' | 'sql_result';
   assistant_text: string;
@@ -61,6 +83,7 @@ export interface ChatResponse {
   provider_answers: ProviderAnswer[];
   routing_confidence: number | null;
   cta: CallToAction | null;
+  quota: QuotaInfo | null;
 }
 
 export interface ConversationMeta {
@@ -85,6 +108,16 @@ export interface LibraryDocument {
   notice_extracted: boolean;
   created_at: string;
   notice_metadata: NoticeMetadata | null;
+  cluster_id?: string | null;
+  cluster_label?: string | null;
+}
+
+export interface LibraryClusterSummary {
+  cluster_id: string;
+  label: string;
+  doc_count: number;
+  file_types: string[];
+  sample_doc_names: string[];
 }
 
 export interface KnowledgeCollection {

@@ -1,0 +1,38 @@
+# ConstructionIQ — Production compose for AWS Lightsail
+# Usage on server (in /opt/mvp-api):
+#   sudo docker compose -f docker-compose.prod.yml up -d
+#
+# Image is loaded via `docker save | docker load` from local Mac, NOT built here.
+# The dev-side docker-compose.yml is independent (Streamlit legacy) and not used in production.
+
+services:
+  api:
+    image: mvp-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mvp-api
+    restart: unless-stopped
+    # Bound to loopback only — host nginx fronts traffic and proxy_passes here.
+    # See /etc/nginx/sites-available/default on the Lightsail host.
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env.production
+    environment:
+      - APP_MODE=api
+      - PORT=8000
+    volumes:
+      - ./storage:/app/storage
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

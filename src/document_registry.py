@@ -41,6 +41,10 @@ class DocumentRecord:
     data_table_status: Optional[str] = None
     data_tables_count: int = 0
     schema_match_details: List[Dict] = field(default_factory=list)
+    # Topic clustering — denormalized cache of DocumentClusterer state.
+    # Truth source is storage/document_clusters.json.
+    cluster_id: Optional[str] = None
+    cluster_label: Optional[str] = None
 
 
 class DocumentRegistry:

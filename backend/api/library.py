@@ -1,10 +1,15 @@
 """Library endpoints — global document registry."""
 
+import threading
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from backend.models.responses import LibraryDocument, NoticeMetadataOut
+from backend.models.responses import (
+    LibraryClusterSummary,
+    LibraryDocument,
+    NoticeMetadataOut,
+)
 
 router = APIRouter()
 
@@ -46,6 +51,8 @@ def _build_library_doc(r, include_notice: bool = True) -> LibraryDocument:
         notice_extracted=r.notice_extracted,
         created_at=r.created_at,
         notice_metadata=notice,
+        cluster_id=getattr(r, "cluster_id", None),
+        cluster_label=getattr(r, "cluster_label", None),
     )
 
 
@@ -93,6 +100,52 @@ async def library_summary():
         "by_doc_type": dict(sorted(by_doc_type.items(), key=lambda x: x[1], reverse=True)),
         "total_tables": total_tables,
     }
+
+
+@router.get("/library/clusters", response_model=List[LibraryClusterSummary])
+async def list_library_clusters():
+    """List topic clusters with doc counts and sample filenames."""
+    from src.document_clusterer import get_clusterer
+    from src.document_registry import get_document_registry
+
+    clusterer = get_clusterer()
+    registry = get_document_registry()
+
+    # Build a quick map: cluster_id -> list of file_names (first 3)
+    samples: dict[str, list[str]] = {}
+    for r in registry.get_completed():
+        cid = getattr(r, "cluster_id", None)
+        if not cid:
+            continue
+        bucket = samples.setdefault(cid, [])
+        if len(bucket) < 3:
+            bucket.append(r.file_name)
+
+    out: List[LibraryClusterSummary] = []
+    for c in clusterer.list_clusters():
+        out.append(LibraryClusterSummary(
+            cluster_id=c["cluster_id"],
+            label=c["label"],
+            doc_count=c["doc_count"],
+            file_types=c["file_types"],
+            sample_doc_names=samples.get(c["cluster_id"], []),
+        ))
+    return out
+
+
+@router.post("/library/clusters/recompute")
+async def recompute_library_clusters(force: bool = False):
+    """Trigger a full re-cluster in the background. Returns immediately."""
+    from src.document_clusterer import get_clusterer
+
+    clusterer = get_clusterer()
+    thread = threading.Thread(
+        target=clusterer.cluster_all,
+        kwargs={"force": force},
+        daemon=True,
+    )
+    thread.start()
+    return {"status": "scheduled", "force": force}
 
 
 @router.get("/library/{doc_id}", response_model=LibraryDocument)
