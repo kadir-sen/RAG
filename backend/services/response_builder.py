@@ -314,21 +314,41 @@ def _build_sql_artifact(
     if not sql:
         return None
 
+    # When a query fans out across multiple tables (e.g. the monthly manpower /
+    # equipment / IPC logs), the data handler returns sql as a {table: sql} dict
+    # and result_data as a {table: rows} dict — not a single string/list. The
+    # SQLArtifact contract is a single SQL string + flat rows, so normalize here.
+    # (Previously the dict reached SQLArtifact.generated_sql and 500'd every
+    # multi-table DATA answer with a Pydantic string_type error.)
+    fanned_tables: List[str] = []
+    if isinstance(sql, dict):
+        fanned_tables = [str(k) for k in sql.keys()]
+        sql = "\n\n".join(
+            f"-- {name}\n{stmt}" for name, stmt in sql.items() if stmt
+        )
+    elif not isinstance(sql, str):
+        sql = str(sql)
+
     data_source = next(
         (s for s in sources if s.get("type") == "structured_data"), None
     )
-    tables_used = []
+    tables_used = list(fanned_tables)
     source_file_id = ""
     source_file_name = ""
     if data_source:
-        if "table_name" in data_source:
-            tables_used = [data_source["table_name"]]
+        if "table_name" in data_source and data_source["table_name"] not in tables_used:
+            tables_used.append(data_source["table_name"])
         source_file_id = data_source.get("doc_id", "")
         source_file_name = data_source.get("file_name", "")
 
     rows: List[Dict[str, Any]] = []
     if isinstance(result_data, list):
         rows = result_data
+    elif isinstance(result_data, dict):
+        # {table: [rows]} → flatten in table order for a combined preview
+        for part in result_data.values():
+            if isinstance(part, list):
+                rows.extend(part)
 
     return SQLArtifact(
         generated_sql=sql,
