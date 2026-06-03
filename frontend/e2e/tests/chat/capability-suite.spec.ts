@@ -110,12 +110,15 @@ test.describe('COAir — demo-readiness capability suite', () => {
     const chipCount = await card.locator('button').count();
     expect.soft(hasRelated || chipCount > 0, 'RAG: should surface related docs or citations').toBeTruthy();
 
-    // If bubbles exist, the first must be clickable and open the viewer.
+    // A related-doc bubble must be clickable and open the document viewer.
+    // Target a bubble by its filename (citation chips above don't carry an
+    // extension), and wait for the lazily-loaded RightDocViewer chunk to mount.
     if (hasRelated) {
-      const firstBubble = card.locator('button').first();
-      await firstBubble.click().catch(() => {});
-      const viewer = page.locator(S.viewerClose);
-      expect.soft(await viewer.isVisible().catch(() => false), 'RAG: bubble should open the document viewer').toBeTruthy();
+      const bubble = card.getByRole('button', { name: /\.(pdf|msg|docx|xlsx)/i }).first();
+      await bubble.click();
+      await expect
+        .soft(page.locator(S.viewerClose), 'RAG: bubble should open the document viewer')
+        .toBeVisible({ timeout: 15_000 });
       await page.locator(S.viewerClose).click().catch(() => {});
     }
     await page.screenshot({ path: `${SHOTS}/01-rag.png`, fullPage: true });
