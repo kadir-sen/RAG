@@ -175,10 +175,15 @@ $SSH "$SSH_TARGET" "chmod 600 $REMOTE_APP_DIR/.env.production"
 # ── 6. Optional: data/ + storage/ sync ────────────────────────────────
 if [ "$WITH_DATA" -eq 1 ]; then
     log "Syncing data/ and storage/ (opt-in)"
-    rsync -avz -e "$SSH" \
+    # --omit-dir-times --no-perms: the remote dirs are owned by the container
+    # (root), so rsync as the ubuntu SSH user cannot set dir times/perms and
+    # would abort with exit 23 under `set -e` — before storage/ (the parquet
+    # tables) ever syncs. Skipping dir time/perm preservation copies content
+    # cleanly; the root container reads the files regardless.
+    rsync -rlvz --omit-dir-times --no-perms -e "$SSH" \
         --exclude '.cache' --exclude '__pycache__' \
         data/    "$SSH_TARGET:$REMOTE_APP_DIR/data/"
-    rsync -avz -e "$SSH" \
+    rsync -rlvz --omit-dir-times --no-perms -e "$SSH" \
         --exclude '__pycache__' \
         storage/ "$SSH_TARGET:$REMOTE_APP_DIR/storage/"
 else

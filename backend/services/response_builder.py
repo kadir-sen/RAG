@@ -1,8 +1,56 @@
 """Maps raw router Dict[str, Any] → ChatResponse contract."""
 
 import hashlib
+import math
 import re
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Dict, Any, List
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively coerce a value into JSON-native types.
+
+    DuckDB/pandas SQL results carry numpy scalars, NaN/Inf, Decimals and
+    Timestamps that FastAPI's response serialization cannot encode — these
+    raised an unhandled 500 on every DATA/sql_result answer. Normalizing here,
+    at the artifact boundary, keeps the SQL path serialization-safe.
+    """
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    # NaN-like sentinels (numpy NaN already handled above; this catches NaT / pd.NA)
+    try:
+        if value != value:  # noqa: PLR0124 — NaN is the only value unequal to itself
+            return None
+    except Exception:
+        pass
+    if isinstance(value, Decimal):
+        f = float(value)
+        return f if math.isfinite(f) else None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    # numpy scalars expose .item(); arrays/Series expose .tolist()
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except Exception:
+            pass
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            return _json_safe(tolist())
+        except Exception:
+            pass
+    return str(value)
 from backend.models.responses import (
     CallToAction,
     ChatResponse,
@@ -286,7 +334,7 @@ def _build_sql_artifact(
         generated_sql=sql,
         tables_used=tables_used,
         row_count=len(rows),
-        preview_rows=rows[:20],
+        preview_rows=_json_safe(rows[:20]),
         source_file_id=source_file_id,
         source_file_name=source_file_name,
     )
