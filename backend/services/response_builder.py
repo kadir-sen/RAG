@@ -8,6 +8,30 @@ from decimal import Decimal
 from typing import Dict, Any, List
 
 
+# Matches an ISO date/datetime with a stray trailing letter glued on, e.g.
+# "2027-03-23T00:00:00A" or "2016-05-01B" — these come from upstream column-bleed
+# during Excel extraction (a Block value like "A"/"B" bleeding into the Date
+# column). We strip the trailing letters so the displayed value is valid ISO.
+_TRAILING_ALPHA_DATE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)?)[A-Za-z]+$"
+)
+
+
+def clean_corrupted_date_string(text: str) -> str:
+    """Return an ISO date/datetime string with any stray trailing letters removed.
+
+    Existing parquet/DuckDB tables already hold corrupted strings such as
+    "2027-03-23T00:00:00A"; cleaning at the serialization boundary fixes the
+    user-visible value for both the SQL artifact and the document viewer without
+    needing a full re-index. (The root-cause extraction fix lives in
+    excel_table_extractor; this guards already-indexed data.)
+    """
+    if not isinstance(text, str):
+        return text
+    m = _TRAILING_ALPHA_DATE_RE.match(text)
+    return m.group(1) if m else text
+
+
 def _json_safe(value: Any) -> Any:
     """Recursively coerce a value into JSON-native types.
 
@@ -20,7 +44,9 @@ def _json_safe(value: Any) -> Any:
         return {str(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(v) for v in value]
-    if value is None or isinstance(value, (bool, int, str)):
+    if isinstance(value, str):
+        return clean_corrupted_date_string(value)
+    if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -96,6 +122,30 @@ def build_chat_response(raw: Dict[str, Any], is_dual: bool = False) -> ChatRespo
     return _build_from_single(raw)
 
 
+def _clean_answer_text(text: str) -> str:
+    """Tidy small LLM grammar slips before the answer reaches the UI — chiefly the
+    accidental double negative ("does not not contain") reported in testing."""
+    if not text:
+        return text
+    cleaned = re.sub(r"\b(does|do|did|is|are|was|were|has|have)\s+not\s+not\b",
+                     r"\1 not", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bnot\s+not\b", "not", cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
+def _is_bare_refusal(answer: str) -> bool:
+    """True for a short, content-free 'no documents' answer — safe to drop
+    citations for. A longer answer that contains a refusal phrase but ALSO real
+    content keeps its citations: the live-test report explicitly valued graceful
+    refusals that still surface relevant documents, so a nuanced
+    "no document directly states X, but the inspection report covers ..." must
+    not lose its sources."""
+    text = (answer or "").strip()
+    if not text:
+        return True
+    return len(text) < 220 and _looks_like_no_document_answer(text)
+
+
 def _looks_like_no_document_answer(answer: str) -> bool:
     text = (answer or "").strip().lower()
     if not text:
@@ -118,13 +168,16 @@ def _looks_like_no_document_answer(answer: str) -> bool:
 
 def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     query_type = raw.get("query_type", "document")
-    answer_text = raw.get("answer", "")
+    answer_text = _clean_answer_text(raw.get("answer", ""))
     sources = raw.get("sources", [])
     sql = raw.get("sql")
     result_data = raw.get("result_data")
 
     ui_intent = INTENT_MAP.get(query_type, "answer")
-    if query_type in ("document", "file_list") and _looks_like_no_document_answer(answer_text):
+    # Drop citations only for empty or bare-refusal document answers. Nuanced
+    # answers keep their citations (routing fixes handle the old misroute case
+    # where a data query produced irrelevant email citations).
+    if query_type in ("document", "file_list") and _is_bare_refusal(answer_text):
         sources = []
     citations, related_docs = _extract_citations_and_related(sources, query_type)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
@@ -182,18 +235,18 @@ def _build_from_dual(raw: Dict[str, Any]) -> ChatResponse:
         provider_answers.append(ProviderAnswer(
             provider=provider,
             model=MODEL_NAMES.get(provider, provider),
-            text=prov_ans.get("answer", ""),
+            text=_clean_answer_text(prov_ans.get("answer", "")),
             sql=prov_sql,
             sql_artifact=prov_sql_artifact,
         ))
 
     # Use first provider for primary fields (citations, related docs)
-    answer_text = first_answer.get("answer", "")
+    answer_text = _clean_answer_text(first_answer.get("answer", ""))
     sources = first_answer.get("sources", [])
     sql = first_answer.get("sql")
     result_data = first_answer.get("result_data")
 
-    if query_type in ("document", "file_list") and _looks_like_no_document_answer(answer_text):
+    if query_type in ("document", "file_list") and _is_bare_refusal(answer_text):
         sources = []
     citations, related_docs = _extract_citations_and_related(sources, query_type)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)

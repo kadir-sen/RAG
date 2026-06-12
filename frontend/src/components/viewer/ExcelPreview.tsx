@@ -29,7 +29,7 @@ export default function ExcelPreview({ content }: Props) {
               <th
                 key={col}
                 scope="col"
-                className="text-left px-3 py-2 font-semibold text-[var(--text-primary)] bg-[var(--bg-surface)] border-b border-[var(--border)] sticky top-0 whitespace-nowrap"
+                className="text-left px-3 py-2 font-semibold text-[var(--text-primary)] bg-[var(--bg-surface)] border-b-2 border-r border-[var(--border)] last:border-r-0 sticky top-0 whitespace-nowrap min-w-[72px]"
               >
                 {col}
               </th>
@@ -49,7 +49,7 @@ export default function ExcelPreview({ content }: Props) {
               {columns.map((col) => (
                 <td
                   key={col}
-                  className="px-3 py-1.5 text-[var(--text-secondary)] border-b border-dashed border-[var(--border)]/60 whitespace-nowrap"
+                  className="px-3 py-1.5 text-[var(--text-secondary)] border-b border-dashed border-[var(--border)]/60 border-r border-r-[var(--border)]/40 last:border-r-0 whitespace-nowrap min-w-[72px]"
                 >
                   {String((row as Record<string, unknown>)[col] ?? '')}
                 </td>

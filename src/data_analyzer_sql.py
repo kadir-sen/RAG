@@ -287,10 +287,10 @@ class DataAnalyzerSQL:
         "Q: \"Average daily headcount by block\"\n"
         "SQL: SELECT \"Block\", ROUND(SUM(\"Number of Workers\") * 1.0 / NULLIF(COUNT(DISTINCT \"Date\"), 0), 1) AS avg_daily_workers "
         "FROM manpower_production_clean GROUP BY \"Block\" ORDER BY avg_daily_workers DESC\n\n"
-        "Q: \"Peak crane usage day\"\n"
+        "Q: \"Peak crane usage day\" (single peak → LIMIT 1)\n"
         "SQL: SELECT \"Date\", ROUND(SUM(\"Estimated Machinery Hours\"), 2) AS total_hours "
         "FROM equipment_log_clean WHERE \"Machinery Name\" ILIKE '%crane%' "
-        "GROUP BY \"Date\" ORDER BY total_hours DESC LIMIT 5\n\n"
+        "GROUP BY \"Date\" ORDER BY total_hours DESC LIMIT 1\n\n"
         "NOW GENERATE SQL FOR:\n"
         "{user_query}\n\n"
         "SQL:"
@@ -1549,6 +1549,38 @@ class DataAnalyzerSQL:
         return sql.strip()
 
     @staticmethod
+    def _strip_unwanted_limit(sql: str, question: str) -> str:
+        """Remove a trailing LIMIT from a GROUP BY / aggregation query unless the
+        user explicitly asked for a subset (top N, peak, highest, first N, ...).
+
+        The LLM sometimes copies a LIMIT from the few-shot examples and truncates
+        an aggregate — e.g. a "workers by trade" breakdown comes back with only a
+        handful of rows. Stripping the spurious LIMIT restores the full result.
+        Only the final, top-level LIMIT is removed; LIMITs inside subqueries/CTEs
+        (not at the end of the statement) are left untouched.
+        """
+        if "group by" not in sql.lower():
+            return sql
+        q = (question or "").lower()
+        subset_markers = (
+            "top ", "first ", "bottom ", "last ", "limit",
+            "highest", "lowest", "largest", "smallest", "biggest",
+            "peak", "busiest", "most ", "least ", "maximum", "minimum",
+            "best ", "worst ", " max ", " min ", " single ",
+        )
+        if any(m in q for m in subset_markers):
+            return sql
+        stripped = re.sub(
+            r"\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*;?\s*$",
+            "",
+            sql,
+            flags=re.IGNORECASE,
+        )
+        if stripped != sql:
+            logger.info("   Stripped auto-added LIMIT from aggregation query (no subset intent)")
+        return stripped.strip()
+
+    @staticmethod
     def _detect_key_columns(sql: str) -> list:
         """Extract key columns from SQL for highlighting (GROUP BY, WHERE, aggregates)."""
         key_cols = []
@@ -1735,6 +1767,10 @@ class DataAnalyzerSQL:
 
         sql_clean = sql.strip()
 
+        # Safety net: drop a spurious trailing LIMIT the LLM may have copied from
+        # the few-shot examples onto an aggregation query the user wanted in full.
+        sql_clean = self._strip_unwanted_limit(sql_clean, question)
+
         try:
             self._schema_guard_warn(sql_clean, table_name)
         except Exception as ge:
@@ -1911,11 +1947,19 @@ class DataAnalyzerSQL:
         is_enum = any(kw in question.lower() for kw in enum_keywords)
         if result_df.empty:
             preview = "Empty result"
-        elif len(result_df) <= 50 or (is_enum and len(result_df) <= 200):
+        elif len(result_df) <= 200 or (is_enum and len(result_df) <= 500):
+            # Aggregated/grouped results stay tiny in tokens, so show them in full.
+            # This keeps "X by trade/block/activity" breakdowns complete instead of
+            # making the LLM claim the data ends after the first handful of groups.
             preview = result_df.to_string(index=False)
         else:
-            preview = result_df.head(20).to_string(index=False)
-            preview += f"\n... ({len(result_df) - 20} more rows truncated)"
+            head_n = 50
+            preview = result_df.head(head_n).to_string(index=False)
+            preview += (
+                f"\n... ({len(result_df) - head_n} more rows not shown; "
+                f"{len(result_df)} groups total — summarise the full set, do not "
+                f"imply the data ends here)"
+            )
         table_context = self._build_table_context(table_name) if table_name else ""
         jargon_hints = self.jargon.build_column_context(list(result_df.columns))
 

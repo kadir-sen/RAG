@@ -119,6 +119,37 @@ _DOCUMENT_CONTENT_SEARCH_PATTERNS = [
     r"\b(?:documents?|files?|reports?|letters?|notices?)\s+(?:related\s+to|about|mention|mentioning|regarding|on)\b",
 ]
 
+# Explicit structured-data SOURCE mentions. When one of these co-occurs with an
+# aggregation/grouping ask (below), the query is unambiguously a SQL/DuckDB
+# request — even if the phrasing also contains generic document-intent words
+# like "show me the" or "summarize the". This is what stops queries such as
+# "total workers by trade, show me the breakdown as a table" from being
+# misrouted to DOCUMENT and returning "Empty Response".
+_STRONG_DATA_SOURCE_TOKENS = (
+    "spreadsheet", "spreadsheets", "excel", "csv",
+    "data file", "data files", "data table", "data tables",
+    "manpower log", "manpower production log", "production log", "equipment log",
+    "ipc", "boq", "as a table", "in a table", "tabular",
+)
+_STRONG_DATA_AGG_TOKENS = (
+    "total", "count", "sum ", "average", "mean", "group by", "grouped by",
+    "breakdown", "distribution", "headcount", "how many",
+    "per trade", "by trade", "per block", "by block", "per floor", "by floor",
+    "per week", "by week", "per month", "by month",
+)
+
+
+def _has_strong_data_signal(query_lower: str) -> bool:
+    """True when the query explicitly names a structured-data source AND asks
+    for an aggregation/grouping. Such queries MUST route to DATA/SQL even when
+    the phrasing also contains generic document-intent words. Kept deliberately
+    narrow (source noun + aggregation verb together) so document questions like
+    "what does the contract say" are never captured."""
+    has_source = any(t in query_lower for t in _STRONG_DATA_SOURCE_TOKENS)
+    if not has_source:
+        return False
+    return any(t in query_lower for t in _STRONG_DATA_AGG_TOKENS)
+
 
 # ── Embedding-similarity anchor texts ────────────────────────
 
@@ -542,12 +573,15 @@ class QueryRouter:
         """
         logger.info(f"Classifying query... (mode={mode or 'default'})")
 
-        # Expand abbreviations before any classification
+        # Jargon expansion is for RETRIEVAL/SQL, not for intent classification.
+        # Keyword/regex/intent matching runs on the ORIGINAL query so a wrong
+        # acronym expansion can't skew the route. The expanded form is still
+        # passed to the schema-semantic and embedding tiers, which benefit from it.
         expanded_query = self.jargon.expand_query(query)
         if expanded_query != query:
-            logger.info(f"   Jargon expanded: {expanded_query[:100]}...")
+            logger.info(f"   Jargon expanded (retrieval only): {expanded_query[:100]}...")
 
-        query_lower = expanded_query.lower()
+        query_lower = query.lower()
 
         # ── Tier 0: Thread/Draft pattern detection (deterministic) ──
         thread_decision = self._classify_thread_draft(query_lower)
@@ -561,6 +595,39 @@ class QueryRouter:
             logger.info(f"   -> Pattern: {content_search_decision.query_type.value.upper()} "
                         f"(conf={content_search_decision.confidence:.2f})")
             return content_search_decision
+
+        # ── Ambiguity gate: defer conflicting signals to the LLM ──
+        # The deterministic keyword/schema heuristics are unreliable when a query
+        # carries BOTH data signals and document-intent phrasing (e.g. "what does
+        # the manpower log show by trade"). Rather than apply brittle override
+        # rules, hand these to the LLM classifier — it resolves them correctly and
+        # the call is cheap (Gemini Flash, ~16 tokens) and cached.
+        if self._signals_conflict(query_lower):
+            # Shadow: what the deterministic tiers WOULD have answered (LLM-free),
+            # recorded so we can measure how often they'd have misrouted.
+            shadow = (self._classify_schema_semantic(expanded_query)
+                      or self._classify_heuristic(query_lower))
+            decision = self._classify_llm_rich(query)
+            decision.reasons.append("ambiguity gate: conflicting data/document signals")
+            decision = self._apply_mode_bias(decision, mode)
+            try:
+                from .telemetry import get_current_trace
+                tr = get_current_trace()
+                if tr is not None:
+                    shadow_type = shadow.query_type.value if shadow else None
+                    tr.record_routing(
+                        ambiguous=True,
+                        deterministic_candidate=shadow_type,
+                        final_route=decision.query_type.value,
+                        diverged=bool(shadow_type and shadow_type != decision.query_type.value),
+                        used_llm=True,
+                    )
+            except Exception:
+                pass
+            logger.info(f"   -> LLM (ambiguity gate): {decision.query_type.value.upper()} "
+                        f"(conf={decision.confidence:.2f}) "
+                        f"[shadow={shadow.query_type.value if shadow else 'none'}]")
+            return decision
 
         schema_decision = self._classify_schema_semantic(expanded_query)
         if schema_decision is not None:
@@ -700,32 +767,24 @@ class QueryRouter:
             f"conf={schema_signal.confidence:.2f} schemas={schema_signal.matched_schemas}"
         )
 
-        has_doc_intent = self._has_document_intent(query)
-
+        # NOTE: conflicting data+document signals are caught upstream by the
+        # ambiguity gate in classify_query() and handed to the LLM, so this tier
+        # only runs for queries with a clean signal. No data-vs-document override
+        # is needed here anymore (that override was the source of misroutes like
+        # "what does the manpower log show by trade").
         if schema_signal.is_data_intent:
-            # If the user is clearly asking to read document prose, require a
-            # very strong schema match before sending to SQL.
-            if has_doc_intent and schema_signal.score < 5.0:
-                return RouterDecision(
-                    query_type=QueryType.DOCUMENT,
-                    confidence=0.84,
-                    reasons=[
-                        "Document intent outweighs weak schema signal",
-                        *schema_signal.reasons,
-                    ],
-                )
             return RouterDecision(
                 query_type=QueryType.DATA,
                 confidence=max(0.76, schema_signal.confidence),
                 reasons=["Schema semantic match", *schema_signal.reasons],
             )
 
-        if has_doc_intent:
+        if self._has_document_intent(query):
             return RouterDecision(
                 query_type=QueryType.DOCUMENT,
                 confidence=0.82,
                 reasons=[
-                    "Document intent with no strong schema match",
+                    "Document intent with no schema match",
                     *schema_signal.reasons,
                 ],
             )
@@ -744,13 +803,12 @@ class QueryRouter:
         # ("what does", "explain", "describe", "according to", "stated in", ...)
         doc_intent_boost = sum(1 for p in _DOCUMENT_INTENT_PATTERNS if p in query_lower)
 
-        # Schema-aware boost: if query matches table column names or values, boost DATA.
-        # Suppress when document intent is present — column-name overlap should not
-        # outweigh an explicit "what does the contract say" signal.
-        schema_boost = 0
-        if doc_intent_boost == 0:
-            schema_boost = self._schema_data_boost(query_lower)
-            data_score += schema_boost
+        # Schema-aware boost: if query matches table column names or values, boost
+        # DATA. Conflicting data+document signals are resolved upstream by the
+        # ambiguity gate (→ LLM), so here schema_boost is always a plain scoring
+        # input rather than a contested override.
+        schema_boost = self._schema_data_boost(query_lower)
+        data_score += schema_boost
 
         # Document-intent boost goes to DOCUMENT and suppresses TIMELINE
         if doc_intent_boost > 0:
@@ -779,15 +837,6 @@ class QueryRouter:
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         top_type, top_score = ranked[0]
         second_score = ranked[1][1]
-
-        # Document-intent override: if user clearly asked for document content,
-        # never let a tied/winning DATA score steal the route.
-        if doc_intent_boost > 0 and top_type == QueryType.DATA and doc_score > 0:
-            return RouterDecision(
-                query_type=QueryType.DOCUMENT,
-                confidence=min(0.9, 0.6 + doc_intent_boost * 0.1),
-                reasons=[f"Document intent overrides DATA (doc_intent={doc_intent_boost})"],
-            )
 
         # Strong match: top score high AND clear margin
         if top_score >= self.STRONG_HEURISTIC_THRESHOLD and (top_score - second_score) >= self.MARGIN_THRESHOLD:
@@ -1012,13 +1061,23 @@ class QueryRouter:
             )
             system = build_system_prompt("You are a precise query classifier.")
 
+            # Explicit, normalized cache key: case/whitespace variants of the same
+            # question reuse the cached route, while an inventory-signature suffix
+            # invalidates it whenever the available files/tables change. With the
+            # ambiguity gate now sending more queries here, caching keeps the added
+            # cost near zero for repeated/similar questions.
+            import hashlib as _hashlib
+            _norm_q = " ".join((query or "").lower().split())
+            _inv_sig = _hashlib.sha256(
+                (file_inventory + "||" + table_inventory).encode()
+            ).hexdigest()[:12]
+            _cls_key = "route:" + _hashlib.sha256(
+                f"{_norm_q}|{_inv_sig}".encode()
+            ).hexdigest()[:32]
+
             resp = llm_client.generate_text(
                 prompt, system=system, max_tokens=16,
-                # cache_key=None auto-derives the key from the full prompt, which
-                # already embeds file_inventory + table_inventory. So identical
-                # queries against the same corpus hit cache, while any upload that
-                # changes the inventory changes the prompt and invalidates it.
-                cache_key=None,
+                cache_key=_cls_key,
             )
             result = resp.text.strip().upper()
 
@@ -1082,18 +1141,25 @@ class QueryRouter:
         'hello', 'hi', 'hey', 'selam', 'merhaba', 'hola', 'bonjour',
         'good morning', 'good afternoon', 'good evening',
         'nasılsın', 'how are you', "what's up", 'whats up',
-        'naber', 'sup', 'yo', 'hallo', 'greetings',
-        'thanks', 'thank you', 'ok', 'okay', 'yes', 'no',
+        'naber', 'sup', 'hallo', 'greetings',
+        'thanks', 'thank you', 'thank you!',
         'test', 'testing', 'ping',
     }
 
     def _is_greeting(self, query: str) -> bool:
-        """Detect simple greetings that don't need routing."""
+        """Detect simple greetings that don't need routing.
+
+        Only an EXACT match against the greeting set counts. The previous
+        "any word ≤3 letters" shortcut misfired on real one-word queries
+        ("the", "hmm", "noc", "rfi", "boq") and on follow-up answers
+        ("yes"/"no"/"ok"), wrongly returning the canned welcome and skipping
+        routing entirely.
+        """
         q = query.strip().lower().rstrip('!?., ')
         # Remove chat context prefix if present
         if 'current question:' in q:
             q = q.split('current question:')[-1].strip().rstrip('!?., ')
-        return q in self.GREETING_PATTERNS or (len(q) <= 3 and q.isalpha())
+        return q in self.GREETING_PATTERNS
 
     def _build_greeting_response(self) -> Dict[str, Any]:
         """Build a construction-focused greeting with system capabilities."""
@@ -3072,6 +3138,28 @@ class QueryRouter:
             or any(kw in q_lower for kw in DOCUMENT_KEYWORDS)
         )
 
+    def _signals_conflict(self, query_lower: str) -> bool:
+        """True when deterministic signals point in conflicting directions, so the
+        keyword/schema heuristics can't be trusted and the LLM should decide.
+
+        The dominant conflict is a structured-data request ("workers by trade",
+        "manpower log totals") phrased with document-intent words ("what does ...
+        show", "summarise the ..."). We flag it when a document-intent signal
+        co-occurs with a genuine data signal (explicit data source, a schema/column
+        match, or two-plus data keywords). Kept narrow so unambiguous queries —
+        "what does clause 5 say" (doc only) or "total crane hours" (data only) —
+        stay on the fast deterministic path.
+        """
+        has_doc = self._has_document_intent(query_lower)
+        if not has_doc:
+            return False
+        has_data = (
+            _has_strong_data_signal(query_lower)
+            or self._schema_data_boost(query_lower) > 0
+            or sum(1 for kw in DATA_KEYWORDS if _kw_match(kw, query_lower)) >= 2
+        )
+        return has_data
+
     def _dual_answers_empty_or_error(self, answers: Dict[str, Dict[str, Any]]) -> bool:
         """Return True when every provider answer is empty/error-like."""
         if not answers:
@@ -3200,7 +3288,13 @@ class QueryRouter:
                     or "no relevant" in answer_lower
                 )
                 q_lower = expanded.lower()
-                has_doc_intent = self._has_document_intent(q_lower)
+                # A strong structured-data query ("spreadsheet ... total by trade")
+                # must fall back to SQL even when it carries generic doc-intent
+                # phrasing — otherwise it returns an empty/irrelevant-citation answer.
+                has_doc_intent = (
+                    self._has_document_intent(q_lower)
+                    and not _has_strong_data_signal(q_lower)
+                )
 
                 if empty_answer and not has_doc_intent:
                     logger.info("   Document query returned empty, retrying as DATA (tables available)")

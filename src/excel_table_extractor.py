@@ -1623,10 +1623,18 @@ class ExcelTableExtractor:
                         types_present.add('string')
 
                 if has_datetime or len(types_present) > 1:
-                    # Mixed types or datetime: convert all to string
-                    df[col] = df[col].apply(
-                        lambda v: str(v) if v is not None and not (isinstance(v, float) and pd.isna(v)) else None
-                    )
+                    # Mixed types or datetime: convert all to string. Datetime/date
+                    # objects use clean ISO (isoformat) rather than str(), which can
+                    # otherwise emit locale/tz artifacts and was a source of the
+                    # corrupted "...T00:00:00A" values seen in the viewer.
+                    def _coerce_cell(v):
+                        if v is None or (isinstance(v, float) and pd.isna(v)):
+                            return None
+                        if isinstance(v, (dt_type, date_type)):
+                            return v.isoformat()
+                        return str(v)
+
+                    df[col] = df[col].apply(_coerce_cell)
                 elif types_present == {'numeric'}:
                     # All numeric but stored as object: convert to float
                     df[col] = pd.to_numeric(df[col], errors='coerce')

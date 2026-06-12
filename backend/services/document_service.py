@@ -6,8 +6,22 @@ import re
 from pathlib import Path, PureWindowsPath
 
 from backend.models.responses import DocContent
+from backend.services.response_builder import clean_corrupted_date_string
 
 _DATA_EXTENSIONS = {".xlsx", ".xls", ".csv"}
+
+
+def _clean_table_rows(rows: list) -> list:
+    """Strip stray trailing letters from corrupted ISO date strings in viewer rows
+    (e.g. "2027-03-23T00:00:00A" → "2027-03-23T00:00:00"). Shares the cleaner with
+    the SQL artifact path so the same defect is fixed in both surfaces."""
+    cleaned = []
+    for row in rows:
+        cleaned.append({
+            k: clean_corrupted_date_string(v) if isinstance(v, str) else v
+            for k, v in row.items()
+        })
+    return cleaned
 
 # Pattern to strip deduplication suffixes: "name_3.ext" -> "name.ext"
 _DEDUP_SUFFIX_RE = re.compile(r'_\d+(\.[^.]+)$')
@@ -273,7 +287,7 @@ class DocumentService:
                 type="table",
                 file_name=fp.name,
                 columns=list(df.columns.astype(str)),
-                rows=df.fillna("").to_dict("records"),
+                rows=_clean_table_rows(df.fillna("").to_dict("records")),
                 total_rows=max(total_rows, len(df)),
             )
         except Exception as e:
@@ -290,7 +304,7 @@ class DocumentService:
                 type="table",
                 file_name=display_name,
                 columns=list(df.columns),
-                rows=df.to_dict("records"),
+                rows=_clean_table_rows(df.to_dict("records")),
                 total_rows=info.get("row_count", len(df)),
             )
         except Exception as e:

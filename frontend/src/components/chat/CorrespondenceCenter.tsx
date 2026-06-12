@@ -126,10 +126,12 @@ export default function CorrespondenceCenter({ onSend }: Props) {
     <div className="flex-1 flex flex-col min-h-0 welcome-blueprint">
       <div className="flex-1 overflow-y-auto px-6 md:px-10 py-6 md:py-8">
         <div className="max-w-4xl mx-auto flex flex-col gap-5 animate-fade-in-up">
-          {/* Selected thread heading */}
+          {/* Selected thread heading — the eyebrow tracks selection state so it
+              never contradicts the title (e.g. "Selected thread" over "No thread
+              selected yet"). */}
           <div>
             <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-secondary)]">
-              Selected thread
+              {selectedEmails.length > 0 ? 'Selected thread' : 'Correspondence'}
             </p>
             <h2 className="text-xl md:text-2xl font-semibold text-white tracking-tight mt-1">
               {selectedThread ? selectedThread.displayLabel : 'No thread selected yet'}
@@ -137,7 +139,7 @@ export default function CorrespondenceCenter({ onSend }: Props) {
             <p className="font-mono text-[11px] text-[var(--text-muted)] mt-1">
               {selectedEmails.length > 0
                 ? `${selectedEmails.length} message${selectedEmails.length > 1 ? 's' : ''}${dateRange ? ` · ${dateRange}` : ''}${subject ? ` · ${subject}` : ''}`
-                : 'Pick a thread on the left, then choose which emails to include.'}
+                : 'Two steps: 1) pick a thread on the left, 2) tick the emails to include, then ask below.'}
             </p>
           </div>
 

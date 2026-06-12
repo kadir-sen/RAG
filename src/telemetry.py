@@ -28,6 +28,7 @@ class QueryTrace:
     errors: List[str] = field(default_factory=list)
     steps: List[Dict[str, Any]] = field(default_factory=list)
     provider_stats: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    routing: Dict[str, Any] = field(default_factory=dict)
 
     _start_time: float = field(default_factory=time.time, repr=False)
 
@@ -61,6 +62,12 @@ class QueryTrace:
 
     def record_error(self, error: str):
         self.errors.append(error)
+
+    def record_routing(self, **kwargs: Any):
+        """Shadow-mode routing detail: deterministic candidate vs final route,
+        ambiguity flag, and whether they diverged. Lets us measure how often the
+        deterministic path would have misrouted before fully trusting it."""
+        self.routing.update(kwargs)
 
     def record_step(self, step_id: int, step_type: str, status: str, latency_ms: float = 0):
         self.steps.append({
