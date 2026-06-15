@@ -28,6 +28,7 @@ from backend.api import (
     auth,
     chat,
     conversations,
+    feedback,
     files,
     documents,
     indexing,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(
         conversations.router, prefix="/api", tags=["conversations"], dependencies=auth_dep,
     )
+    app.include_router(feedback.router, prefix="/api", tags=["feedback"], dependencies=auth_dep)
     app.include_router(files.router, prefix="/api", tags=["files"], dependencies=auth_dep)
     app.include_router(
         documents.router, prefix="/api", tags=["documents"], dependencies=auth_dep,

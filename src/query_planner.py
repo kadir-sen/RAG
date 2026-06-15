@@ -56,6 +56,40 @@ class QueryPlan:
     plan_rationale: str = ""
 
 
+# Multi-step detection — shared by the planner and the router so they agree on
+# which queries deserve decomposition. Conservative: a false negative just gives
+# a single-step plan; a false positive only costs one extra LLM planning call.
+_SEQUENTIAL_INDICATORS = (
+    ' then ', ' and then ', ' after that ', ' next ',
+    'month-over-month', 'year-over-year',
+)
+_COMPOUND_INDICATORS = (
+    ' and also ', ', also ', ' as well as ', 'additionally',
+    ' ayrıca ', ' ve ayrıca ', 'bir de ', ' bunun yanında ',
+)
+
+
+def is_multi_step_query(query: str) -> bool:
+    """True when a query stacks multiple questions / sequential steps and should
+    be decomposed (sequential chains, explicit compound conjunctions, 'hem ... hem',
+    or two or more question marks)."""
+    q = (query or "").lower()
+    # The orchestrator augments queries with conversation history. Evaluate ONLY
+    # the current turn so historical "?"/conjunctions don't falsely trigger.
+    if "current question:" in q:
+        q = q.split("current question:")[-1]
+    padded = f" {q} "  # so leading/trailing tokens match the space-delimited markers
+    if any(ind in padded for ind in _SEQUENTIAL_INDICATORS):
+        return True
+    if any(ind in padded for ind in _COMPOUND_INDICATORS):
+        return True
+    if padded.count(" hem ") >= 2:  # Turkish "hem X hem Y"
+        return True
+    if q.count("?") >= 2:
+        return True
+    return False
+
+
 class QueryPlanner:
     """
     Decomposes complex queries into executable sub-steps.
@@ -82,7 +116,16 @@ class QueryPlanner:
         "- 'Does actual progress match the contract?' → sql(IPC progress) + document(contract terms) + combine\n"
         "- 'Which trade has best productivity?' → sql(manpower: output/workers) — single step\n"
         "- 'Total hours by equipment type' → sql(equipment) — single step\n"
-        "- 'What does the contract say about delays?' → document — single step\n\n"
+        "- 'What does the contract say about delays?' → document — single step\n"
+        "COMPOUND / STACKED QUESTIONS (split each part into its own step, then combine):\n"
+        "- 'What were the crane hours, and also which trades were on site?' → "
+        "sql(equipment hours) + sql(manpower trades) + combine\n"
+        "- 'Summarize the delay notice and additionally show the actual progress %' → "
+        "document(delay notice) + sql(IPC progress) + combine\n"
+        "- 'Does the contract allow EOT, and what do the production logs show for that period?' → "
+        "document(EOT clause) + sql(production for period) + combine\n"
+        "- A follow-up like 'and manpower?' after an equipment question → "
+        "sql(manpower) + combine (compare with the previous turn's result)\n\n"
         "RULES:\n"
         "1. If one step suffices, return is_simple=true with one step.\n"
         "2. Multi-step plans must end with a 'combine' step.\n"
@@ -196,21 +239,10 @@ class QueryPlanner:
 
     def _is_obviously_simple(self, query: str) -> bool:
         """Check if query is obviously single-step.
-        Only truly sequential multi-step patterns return False.
-        Cross-source keyword detection is left to the LLM planner.
+        Sequential AND compound (stacked) multi-part queries return False so the
+        LLM planner decomposes them. Cross-source detection is left to the LLM.
         """
-        q = query.lower()
-
-        multi_indicators = [
-            ' then ', ' and then ', ' after that ', ' next ',
-            'month-over-month', 'year-over-year',
-        ]
-
-        for indicator in multi_indicators:
-            if indicator in q:
-                return False
-
-        return True
+        return not is_multi_step_query(query)
 
     def _detect_simple_type(self, query: str) -> str:
         """Detect the type for a simple query.
@@ -382,7 +414,7 @@ class PlanExecutor:
                     if placeholder in instruction:
                         instruction = instruction.replace(
                             placeholder,
-                            str(prev.get('summary', prev.get('answer', '')))[:500]
+                            str(prev.get('summary', prev.get('answer', '')))[:2000]
                         )
 
             try:
@@ -506,7 +538,7 @@ class PlanExecutor:
                     if placeholder in instruction:
                         instruction = instruction.replace(
                             placeholder,
-                            str(prev.get('summary', prev.get('answer', '')))[:500]
+                            str(prev.get('summary', prev.get('answer', '')))[:2000]
                         )
 
             try:

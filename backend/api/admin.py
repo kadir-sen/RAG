@@ -329,3 +329,29 @@ async def diagnose_data_table(req: DiagnoseRequest):
         "extractor_matches": match_extractor(rec.file_path),
         "sheets": sheet_reports,
     }
+
+
+# ── Data flywheel (learning loop) ────────────────────────────────────────────
+
+@router.post("/admin/flywheel/apply")
+def flywheel_apply() -> dict:
+    """Consume captured feedback and apply additive improvements (routing few-shot,
+    jargon growth, document-keyword strengthening). Also rebuilds the golden set."""
+    from src.flywheel import apply_flywheel
+    from src.golden_set import build_golden_set
+    applied = apply_flywheel()
+    golden = build_golden_set()
+    return {"ok": True, "applied": applied, "golden": golden}
+
+
+@router.get("/admin/flywheel/status")
+def flywheel_status() -> dict:
+    """Feedback + golden-set + learned-routing snapshot for the learning loop."""
+    from src.feedback_store import summary as feedback_summary
+    from src.golden_set import load_golden_set
+    from src.flywheel import get_learned_routing_examples
+    return {
+        "feedback": feedback_summary(),
+        "golden_rows": len(load_golden_set()),
+        "learned_routing_examples": len(get_learned_routing_examples(limit=10_000)),
+    }
