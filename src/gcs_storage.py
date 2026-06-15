@@ -16,10 +16,16 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 # Local paths (must match catalog.py)
 PARQUET_DIR = BASE_DIR / "storage" / "parquet"
 CATALOG_FILE = PARQUET_DIR / "catalog.json"
+# Chunk store (lexical retrieval source — must match chunk_store.py)
+CHUNKS_DB_FILE = BASE_DIR / "storage" / "chunks" / "chunks.db"
+# Feedback store (data flywheel — must match feedback_store.py)
+FEEDBACK_FILE = BASE_DIR / "storage" / "feedback" / "feedback.jsonl"
 
 # GCS prefixes
 _PARQUET_PREFIX = "tables/"
 _CATALOG_BLOB = "catalog/catalog.json"
+_CHUNKS_BLOB = "chunks/chunks.db"
+_FEEDBACK_BLOB = "feedback/feedback.jsonl"
 
 
 def is_enabled() -> bool:
@@ -116,6 +122,36 @@ def sync_catalog_from_gcs():
         return
     PARQUET_DIR.mkdir(parents=True, exist_ok=True)
     download_file(_CATALOG_BLOB, str(CATALOG_FILE))
+
+
+def sync_chunks_to_gcs():
+    """Upload the chunk store DB to GCS (lexical retrieval source)."""
+    if not is_enabled() or not CHUNKS_DB_FILE.exists():
+        return
+    upload_file(str(CHUNKS_DB_FILE), _CHUNKS_BLOB)
+
+
+def sync_chunks_from_gcs():
+    """Always download the chunk store DB from GCS (Cloud Run is stateless)."""
+    if not is_enabled():
+        return
+    CHUNKS_DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+    download_file(_CHUNKS_BLOB, str(CHUNKS_DB_FILE))
+
+
+def sync_feedback_to_gcs():
+    """Upload the feedback log to GCS (data flywheel input)."""
+    if not is_enabled() or not FEEDBACK_FILE.exists():
+        return
+    upload_file(str(FEEDBACK_FILE), _FEEDBACK_BLOB)
+
+
+def sync_feedback_from_gcs():
+    """Always download the feedback log from GCS (Cloud Run is stateless)."""
+    if not is_enabled():
+        return
+    FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    download_file(_FEEDBACK_BLOB, str(FEEDBACK_FILE))
 
 
 def sync_parquet_to_gcs(parquet_path: str):

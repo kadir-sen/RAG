@@ -582,6 +582,23 @@ class DocumentRAG:
 
             logger.info(f"   Generated {len(nodes)} nodes from {len(new_docs)} documents")
 
+            # Mirror chunk text to the local chunk store for the lexical retrieval
+            # lane (Phase 1). Non-fatal: retrieval degrades to dense-only on failure.
+            try:
+                from .chunk_store import get_chunk_store
+                rows = []
+                for node in nodes:
+                    meta = node.metadata or {}
+                    rows.append({
+                        "doc_id": meta.get("doc_id", ""),
+                        "file_name": meta.get("file_name", "Unknown"),
+                        "page_number": meta.get("page_number", 1),
+                        "text": node.get_content(),
+                    })
+                get_chunk_store().add_chunks(rows)
+            except Exception as e:
+                logger.warning(f"   Chunk store mirror skipped: {e}")
+
             # 2. Batch embed all nodes at once
             embed_model = Settings.embed_model
             texts = [node.get_content() for node in nodes]
@@ -710,6 +727,22 @@ class DocumentRAG:
                     "sources": [],
                 }
 
+        # ── Hybrid retrieval: dense + lexical → RRF → LLM rerank (Phase 1) ──
+        # Flag-gated; on any failure or no candidates we fall through to the
+        # original pure-dense LlamaIndex path below (fully backward-compatible).
+        from .config import ENABLE_HYBRID_RETRIEVAL
+        if ENABLE_HYBRID_RETRIEVAL:
+            try:
+                hybrid = self._hybrid_query(
+                    question=question,               # jargon/concept-expanded (dense)
+                    raw_question=original_question,   # cleaner text for lexical + rerank
+                    top_k=top_k, doc_ids=doc_ids, file_names=file_names,
+                )
+                if hybrid is not None:
+                    return hybrid
+            except Exception as e:
+                logger.warning(f"   Hybrid retrieval failed → dense fallback: {e}")
+
         logger.info(f"   Retrieving top {top_k} matches...")
         filter_specs = []
         if doc_ids:
@@ -801,6 +834,242 @@ class DocumentRAG:
 
         logger.info(f"✅ Found {len(sources)} unique sources")
         return {"answer": str(response), "sources": sources}
+
+    # ── Hybrid retrieval helpers (Phase 1) ──────────────────────────────
+    def _hybrid_query(self, question: str, raw_question: str, top_k: int,
+                      doc_ids: Optional[List[str]] = None,
+                      file_names: Optional[List[str]] = None) -> Optional[dict]:
+        """Dense + lexical candidate fusion (RRF) + optional LLM rerank, then
+        synthesize an answer from the final chunks. Returns None when there are
+        no candidates at all (caller falls back to the dense path)."""
+        from .config import RAG_CANDIDATE_K, RAG_RERANK_K, RAG_FINAL_K, ENABLE_RERANK
+
+        final_k = top_k or RAG_FINAL_K
+
+        # 1. Dense candidates (existing vector lane, widened pool)
+        dense = self._dense_candidates(question, RAG_CANDIDATE_K, doc_ids, file_names)
+
+        # 2. Lexical candidates (BM25 over chunk store) + doc-keyword boost
+        lexical: List[Dict] = []
+        doc_boost: Dict[str, float] = {}
+        try:
+            from .lexical_index import get_lexical_index
+            li = get_lexical_index()
+            lexical = li.search_chunks(raw_question, RAG_CANDIDATE_K)
+            if doc_ids:
+                ids = set(doc_ids)
+                lexical = [c for c in lexical if c.get("doc_id") in ids]
+            if file_names:
+                fns = set(file_names)
+                lexical = [c for c in lexical if c.get("file_name") in fns]
+            for c in lexical:
+                c["key"] = f"{c.get('file_name')}::{c.get('page_number')}"
+            doc_boost = li.match_docs(self._lexical_terms(raw_question))
+        except Exception as e:
+            logger.debug(f"   Lexical lane skipped: {e}")
+
+        if not dense and not lexical:
+            return None
+
+        # 3. Reciprocal Rank Fusion (pure, unit-tested in lexical_index)
+        from .config import RRF_K
+        from .lexical_index import rrf_fuse
+        fused = rrf_fuse(dense, lexical, doc_boost, rrf_k=RRF_K)
+
+        # 4. LLM rerank the top of the fused pool → final_k
+        if ENABLE_RERANK and len(fused) > final_k:
+            final = self._llm_rerank(raw_question, fused[:RAG_RERANK_K], final_k)
+        else:
+            final = fused[:final_k]
+
+        # 5. Synthesize the answer from the final chunks
+        answer = self._synthesize_from_nodes(raw_question, final)
+
+        # 6. Build sources (dedupe by file+page, preserve order)
+        sources = []
+        seen = set()
+        for nd in final:
+            key = f"{nd.get('file_name')}_{nd.get('page_number')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            sources.append(self._node_to_source(nd))
+
+        logger.info(
+            f"   Hybrid: dense={len(dense)} lexical={len(lexical)} "
+            f"fused={len(fused)} → {len(sources)} sources"
+        )
+        return {"answer": answer, "sources": sources}
+
+    def _dense_candidates(self, question: str, candidate_k: int,
+                          doc_ids: Optional[List[str]],
+                          file_names: Optional[List[str]]) -> List[Dict]:
+        """Retrieve dense candidates as normalized node dicts."""
+        retriever_kwargs = {"similarity_top_k": candidate_k}
+        filter_specs = []
+        if doc_ids:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilter, FilterOperator,
+            )
+            filter_specs.append(
+                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
+            )
+        if file_names:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilter, FilterOperator,
+            )
+            filter_specs.append(
+                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN)
+            )
+        if filter_specs:
+            from llama_index.core.vector_stores.types import (
+                MetadataFilters, FilterCondition,
+            )
+            retriever_kwargs["filters"] = MetadataFilters(
+                filters=filter_specs,
+                condition=FilterCondition.OR if len(filter_specs) > 1 else None,
+            )
+        try:
+            nodes = self.index.as_retriever(**retriever_kwargs).retrieve(question)
+        except Exception as e:
+            logger.warning(f"   Dense retrieval failed: {e}")
+            return []
+        out = []
+        for n in nodes:
+            meta = n.metadata or {}
+            text = (n.text or "").strip()
+            fname = meta.get("file_name", "Unknown")
+            try:
+                page = int(meta.get("page_number", 1))
+            except (TypeError, ValueError):
+                page = 1
+            try:
+                total = int(meta.get("total_pages", 1))
+            except (TypeError, ValueError):
+                total = 1
+            out.append({
+                "key": f"{fname}::{page}",
+                "doc_id": meta.get("doc_id", ""),
+                "file_name": fname,
+                "file_path": meta.get("file_path", ""),
+                "page_number": page,
+                "total_pages": total,
+                "text": text,
+                "dense_score": round(n.score, 3) if n.score else None,
+            })
+        return out
+
+    def _llm_rerank(self, question: str, candidates: List[Dict], final_k: int) -> List[Dict]:
+        """Rerank candidates by relevance with a single cached LLM call."""
+        if not candidates:
+            return []
+        from . import llm_client
+        import hashlib
+        passages = []
+        for i, nd in enumerate(candidates):
+            snippet = (nd.get("text") or "")[:500].replace("\n", " ")
+            passages.append(f"[{i}] ({nd.get('file_name')} p.{nd.get('page_number')}) {snippet}")
+        prompt = (
+            "Rank the passages by how well they help answer the QUESTION.\n\n"
+            f"QUESTION: {question}\n\n"
+            "PASSAGES:\n" + "\n\n".join(passages) + "\n\n"
+            f"Return JSON {{\"order\": [passage numbers, most relevant first]}} "
+            f"with the {final_k} most relevant passage numbers only."
+        )
+        try:
+            key = "rerank:" + hashlib.sha256(
+                (question + "|" + "|".join(str(c.get("key")) for c in candidates)).encode()
+            ).hexdigest()[:32]
+            resp = llm_client.generate_json(
+                prompt,
+                system="You are a precise passage reranker. Output JSON only.",
+                cache_key=key,
+            )
+            order = resp.raw.get("order", []) if isinstance(resp.raw, dict) else []
+            picked, used = [], set()
+            for i in order:
+                if isinstance(i, int) and 0 <= i < len(candidates) and i not in used:
+                    picked.append(candidates[i])
+                    used.add(i)
+                if len(picked) >= final_k:
+                    break
+            # Backfill if the model returned too few
+            for i, c in enumerate(candidates):
+                if len(picked) >= final_k:
+                    break
+                if i not in used:
+                    picked.append(c)
+            return picked[:final_k]
+        except Exception as e:
+            logger.warning(f"   LLM rerank failed → fused order: {e}")
+            return candidates[:final_k]
+
+    def _synthesize_from_nodes(self, question: str, nodes: List[Dict]) -> str:
+        """Synthesize an answer from final chunks using the document system prompt."""
+        from . import llm_client
+        if not nodes:
+            return "No relevant document excerpts were found for this question."
+        parts = []
+        for i, nd in enumerate(nodes, 1):
+            parts.append(
+                f"[Source {i}: {nd.get('file_name')}, p.{nd.get('page_number')}]\n"
+                f"{nd.get('text', '')}"
+            )
+        context = "\n\n---\n\n".join(parts)
+        prompt = (
+            f"DOCUMENT EXCERPTS:\n{context}\n\n"
+            f"QUESTION: {question}\n\nANSWER:"
+        )
+        resp = llm_client.generate_text(
+            prompt, system=self.DOCUMENT_SYSTEM_PROMPT, max_tokens=1024,
+        )
+        # Telemetry
+        try:
+            from .telemetry import get_current_trace
+            tr = get_current_trace()
+            if tr:
+                tr.record_llm_call(resp.usage)
+        except Exception:
+            pass
+        return resp.text.strip()
+
+    def _node_to_source(self, nd: Dict) -> Dict:
+        """Convert a fused node dict into the standard source dict shape."""
+        text = (nd.get("text") or "").strip()
+        sentences = text.replace("\n", " ").split(". ")
+        highlight = ". ".join(sentences[:3])
+        if len(sentences) > 3:
+            highlight += "..."
+        doc_id = nd.get("doc_id") or (
+            generate_doc_id(nd.get("file_path")) if nd.get("file_path") else ""
+        )
+        return {
+            "doc_id": doc_id,
+            "file_name": nd.get("file_name", "Unknown"),
+            "file_path": nd.get("file_path", ""),
+            "page_number": nd.get("page_number", 1),
+            "total_pages": nd.get("total_pages", 1),
+            "score": nd.get("dense_score"),
+            "text_snippet": text[:500] + "..." if len(text) > 500 else text,
+            "highlight_text": highlight[:300],
+        }
+
+    def _lexical_terms(self, question: str) -> List[str]:
+        """Build keyword terms for the document-level keyword signal."""
+        from .lexical_index import _tokenize
+        terms = [t for t in _tokenize(question) if len(t) >= 3]
+        try:
+            from .jargon_manager import get_jargon_manager
+            terms += get_jargon_manager().expand_domain_concepts(question) or []
+        except Exception:
+            pass
+        seen, out = set(), []
+        for t in terms:
+            tl = t.lower()
+            if tl not in seen:
+                seen.add(tl)
+                out.append(t)
+        return out[:12]
 
     def _extract_sources(self, response) -> list:
         """Extract sources from a LlamaIndex query response."""
@@ -1329,6 +1598,12 @@ class DocumentRAG:
             if file_name in self.file_registry:
                 del self.file_registry[file_name]
             self.documents = [d for d in self.documents if d.metadata.get("file_name") != file_name]
+            # Keep the lexical chunk store in sync with the vector store.
+            try:
+                from .chunk_store import get_chunk_store
+                get_chunk_store().delete_by_file(file_name)
+            except Exception as e:
+                logger.debug(f"Chunk store delete skipped: {e}")
             logger.info(f"Cleared: {file_name}")
         except Exception as e:
             logger.error(f"Error clearing file: {e}")
