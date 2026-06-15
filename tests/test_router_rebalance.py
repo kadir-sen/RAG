@@ -1,11 +1,15 @@
-"""Faz 2 — deterministik↔LLM yeniden dengeleme regresyon testleri.
+"""Routing regresyon testleri (LLM-öncelikli mimari).
 
 Network/LLM gerektirmeyen saf birim testleri:
-  * _signals_conflict — belirsiz (data+document) sorgular LLM'e devredilmeli,
-    net sorgular deterministik kalmalı.
+  * _has_strong_data_signal — artık FRONT-LINE override değil; yalnızca
+    yürütme-sonrası fallback recovery'de kullanılan saf yardımcı. Açık veri
+    kaynağı + agregasyon birlikteyse True, saf doküman/zayıf sorgularda False.
   * _is_greeting — yalnızca tam selam eşleşmesi (≤3 harf yakala-hepsini kaldırıldı).
   * response_builder citation koruması — çıplak refusal'da bastır, nüanslı uzun
     cevapta KORU (test raporunun övdüğü davranış).
+
+NOT: Eski `_signals_conflict` ambiguity-gate'i LLM-öncelikli refactor'da kaldırıldı
+(belirsiz data+document sorgularını LLM çözer; bu artık varsayılan davranış).
 
 `QueryRouter` örneklenmiyor (init ağır bağımlılıklar yüklüyor); metodlar hafif bir
 stub `self` ile çağrılıyor.
@@ -13,67 +17,47 @@ stub `self` ile çağrılıyor.
 
 import pytest
 
-from src.router import QueryRouter
+from src.router import QueryRouter, _has_strong_data_signal
 from backend.services.response_builder import (
     _is_bare_refusal,
     build_chat_response,
 )
 
 
-# ── _signals_conflict (stub'lı) ────────────────────────────────────────────
-class _StubRouter:
-    """`_signals_conflict` ve `_is_greeting` için minimal self.
-
-    `_schema_data_boost` 0 döndürür (yüklü tablo yok), böylece çelişki kararı
-    yalnızca strong-data işareti + data-keyword sayısına dayanır — bu set için
-    yeterli ve deterministik."""
-    _has_document_intent = staticmethod(QueryRouter._has_document_intent)
-    _signals_conflict = QueryRouter._signals_conflict
-    _is_greeting = QueryRouter._is_greeting
-    GREETING_PATTERNS = QueryRouter.GREETING_PATTERNS
-
-    def _schema_data_boost(self, _q):
-        return 0
-
-
-def conflict(q: str) -> bool:
-    return _StubRouter()._signals_conflict(q.lower())
-
-
-class TestSignalsConflict:
+# ── _has_strong_data_signal (saf fonksiyon, fallback-only) ──────────────────
+class TestStrongDataSignal:
     @pytest.mark.parametrize("q", [
-        # data sinyali + açık doc-intent ifadesi ("show me the" / "what does ... show")
-        # → belirsiz → LLM yolu
-        "what is the total number of workers by trade? show me the breakdown as a table",
-        "what does the manpower log show about trade distribution",
+        # açık veri kaynağı + agregasyon birlikte → güçlü data sinyali
+        "show me the breakdown as a table",
         "summarize the spreadsheet total manpower by trade",
+        "from the spreadsheet data, give me the total manpower count grouped by trade",
+        "using the manpower production log spreadsheets, total count of workers per trade",
     ])
-    def test_ambiguous_data_plus_doc_phrasing_defers_to_llm(self, q):
-        assert conflict(q) is True
+    def test_explicit_source_plus_aggregation_is_strong(self, q):
+        assert _has_strong_data_signal(q.lower()) is True
 
     @pytest.mark.parametrize("q", [
+        # veri kaynağı ismi yok → güçlü sinyal yok (sadece agregasyon yetmez)
+        "total crane hours across all blocks",
+        "how many steel fixers on site",
+        "equipment utilization by block",
+        # saf doküman → güçlü sinyal yok
         "what does clause 5 say about liquidated damages",
         "summarize the inspection letter",
         "explain the scope of work",
         "tell me about the project",
     ])
-    def test_pure_document_queries_not_conflicting(self, q):
-        assert conflict(q) is False
-
-    @pytest.mark.parametrize("q", [
-        # doc-intent yok → çelişki yok → deterministik hızlı yol (DATA).
-        # Q4/Q10 ifadeleri de buraya girer: "give me"/"what is" doc-intent değil.
-        "total crane hours across all blocks",
-        "how many steel fixers on site",
-        "equipment utilization by block",
-        "from the spreadsheet data, give me the total manpower count grouped by trade",
-        "using the manpower production log spreadsheets, total count of workers per trade",
-    ])
-    def test_pure_data_queries_not_conflicting(self, q):
-        assert conflict(q) is False
+    def test_no_explicit_source_is_not_strong(self, q):
+        assert _has_strong_data_signal(q.lower()) is False
 
 
 # ── _is_greeting daraltma ──────────────────────────────────────────────────
+class _StubRouter:
+    """`_is_greeting` için minimal self."""
+    _is_greeting = QueryRouter._is_greeting
+    GREETING_PATTERNS = QueryRouter.GREETING_PATTERNS
+
+
 class TestGreetingTightening:
     def greet(self, q):
         return _StubRouter()._is_greeting(q)

@@ -127,6 +127,54 @@ def route_file(file_path: str) -> ProcessingResult:
     return result
 
 
+def _enrich_document_llm(file_path: str, full_text: str) -> None:
+    """Generate a one-line summary + 3-5 topic tags for a document at ingest time.
+
+    Phase 2 enrichment: a single cheap, cached LLM call over the first ~2k chars.
+    Stored on the registry record (llm_summary / llm_topics) and later fed to the
+    LLM router's document-topic context to reduce misrouting/hallucination.
+    Failures are non-fatal — ingest must never break because enrichment failed.
+    """
+    text = (full_text or "").strip()
+    if len(text) < 80:
+        return  # too little signal to summarize meaningfully
+
+    try:
+        import hashlib
+        from . import llm_client
+        from .document_rag import generate_doc_id
+        from .document_registry import get_document_registry
+
+        snippet = text[:2000]
+        prompt = (
+            "You index construction project documents for a query router.\n"
+            "From the document excerpt below, produce a compact JSON object:\n"
+            '{"summary": "<one sentence, max 160 chars>", '
+            '"topics": ["<3-5 short topic tags, e.g. \'delay notice\', \'BOQ\'>"]}\n\n'
+            f"DOCUMENT EXCERPT:\n{snippet}"
+        )
+        cache_key = "docenrich:" + hashlib.sha256(snippet.encode()).hexdigest()[:32]
+        resp = llm_client.generate_json(
+            prompt,
+            system="You are a precise document indexer. Output JSON only.",
+            cache_key=cache_key,
+        )
+        data = resp.raw if isinstance(resp.raw, dict) else {}
+        summary = str(data.get("summary", "")).strip()[:300] or None
+        topics = [
+            str(t).strip() for t in (data.get("topics") or [])
+            if str(t).strip()
+        ][:5]
+        if summary or topics:
+            get_document_registry().set_llm_enrichment(
+                generate_doc_id(file_path),
+                summary=summary,
+                topics=topics or None,
+            )
+    except Exception as e:
+        logger.warning(f"[FileRouter] LLM document enrichment skipped: {e}")
+
+
 def _process_document(file_path: str) -> ProcessingResult:
     """Process a document file (PDF, DOCX, TXT) through RAG pipeline."""
     from .document_rag import get_document_rag
@@ -148,11 +196,11 @@ def _process_document(file_path: str) -> ProcessingResult:
             result.ocr_pages = file_info.get("ocr_pages", 0)
 
             # Notice extraction
+            doc_text_by_page = {}
             try:
                 from .table_ingestion import extract_document_notice
                 from .document_rag import generate_doc_id
 
-                doc_text_by_page = {}
                 for doc in rag.documents:
                     if doc.metadata.get("file_name") == filename:
                         page_num = doc.metadata.get("page_number", 1)
@@ -173,14 +221,18 @@ def _process_document(file_path: str) -> ProcessingResult:
                 logger.warning(f"[FileRouter] Notice extraction error: {e}")
 
             # Quick truncation summary (no LLM — fast)
-            if doc_text_by_page and result.notice_summary:
-                full_text = "\n".join(
+            doc_full_text = ""
+            if doc_text_by_page:
+                doc_full_text = "\n".join(
                     doc_text_by_page[p] for p in sorted(doc_text_by_page.keys())
                 ).strip()
-                if full_text:
-                    result.notice_summary["summary"] = (
-                        full_text[:200].strip() + "..." if len(full_text) > 200 else full_text
-                    )
+            if doc_full_text and result.notice_summary:
+                result.notice_summary["summary"] = (
+                    doc_full_text[:200].strip() + "..." if len(doc_full_text) > 200 else doc_full_text
+                )
+
+            # LLM enrichment (Phase 2): one-line summary + topic tags for routing
+            _enrich_document_llm(file_path, doc_full_text)
 
             # Table extraction for PDFs (direct — skips duplicate OCR analysis)
             if filename.lower().endswith(".pdf"):
@@ -261,14 +313,18 @@ def _process_email(file_path: str) -> ProcessingResult:
                 ns["cc_list"] = parsed.cc
 
         # 2c. Quick truncation summary (no LLM — fast)
-        if page_texts and result.notice_summary:
-            full_text = "\n".join(
+        email_full_text = ""
+        if page_texts:
+            email_full_text = "\n".join(
                 page_texts[p] for p in sorted(page_texts.keys())
             ).strip()
-            if full_text:
-                result.notice_summary["summary"] = (
-                    full_text[:200].strip() + "..." if len(full_text) > 200 else full_text
-                )
+        if email_full_text and result.notice_summary:
+            result.notice_summary["summary"] = (
+                email_full_text[:200].strip() + "..." if len(email_full_text) > 200 else email_full_text
+            )
+
+        # 2d. LLM enrichment (Phase 2): one-line summary + topic tags for routing
+        _enrich_document_llm(file_path, email_full_text)
 
         # 3. Process attachments recursively
         if parsed.attachments:

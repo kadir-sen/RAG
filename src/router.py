@@ -7,10 +7,14 @@ Routing strategy (LLM-free by default):
   3. LLM classification via llm_client (last resort)
 """
 import re
+import time
 from pathlib import Path
 from typing import Tuple, Dict, Any, List, Optional
 
-from .config import GOOGLE_API_KEY, GEMINI_MODEL, ENABLE_TIMELINE
+from .config import (
+    GOOGLE_API_KEY, GEMINI_MODEL, ENABLE_TIMELINE,
+    ENABLE_THINKING, THINKING_BUDGET_SYNTHESIS,
+)
 from .types import QueryType, RouterDecision, LLMUsage
 from .logger import logger, log_separator
 
@@ -141,10 +145,13 @@ _STRONG_DATA_AGG_TOKENS = (
 
 def _has_strong_data_signal(query_lower: str) -> bool:
     """True when the query explicitly names a structured-data source AND asks
-    for an aggregation/grouping. Such queries MUST route to DATA/SQL even when
-    the phrasing also contains generic document-intent words. Kept deliberately
-    narrow (source noun + aggregation verb together) so document questions like
-    "what does the contract say" are never captured."""
+    for an aggregation/grouping.
+
+    NOTE: this is NO LONGER a front-line routing override. As of the LLM-first
+    refactor it is used only by the POST-EXECUTION fallback recovery in
+    route_and_execute() (to decide whether an empty DOCUMENT answer may retry as
+    DATA). Kept deliberately narrow (source noun + aggregation verb together) so
+    document questions like "what does the contract say" are never captured."""
     has_source = any(t in query_lower for t in _STRONG_DATA_SOURCE_TOKENS)
     if not has_source:
         return False
@@ -238,6 +245,8 @@ class QueryRouter:
     CLASSIFICATION_PROMPT = (
         "You are a query router for a construction project management system.\n\n"
         "AVAILABLE FILES IN SYSTEM:\n{file_inventory}\n\n"
+        "AVAILABLE DOCUMENT TOPICS (subjects the document corpus actually covers):\n"
+        "{topic_inventory}\n\n"
         "DATA TABLES (SQL queryable):\n{table_inventory}\n\n"
         "SCHEMA & JARGON CONTEXT (matched to this query):\n{schema_context}\n\n"
         "CATEGORIES — pick exactly ONE:\n"
@@ -308,26 +317,28 @@ class QueryRouter:
         "single document by date or reference number, the user wants to READ that "
         "document — route to DOCUMENT, NOT DATA, even if dates/codes look like "
         "table values.\n\n"
+        "{learned_examples}"
+        "{mode_hint}"
         "User query: {user_query}\n\n"
         "Respond with exactly ONE word: FILE_LIST, DATA, DOCUMENT, TIMELINE, or HYBRID."
     )
 
     HYBRID_SYNTHESIS_PROMPT = (
-        "You are a construction project analyst combining contract/document information "
-        "with actual project data to provide actionable insights.\n\n"
-        "Do NOT invent facts - only use information from the sources below.\n\n"
+        "You are a construction project analyst. Answer the QUESTION by combining the "
+        "RAW document excerpts with the RAW project data below. Do NOT invent facts — "
+        "use only the material provided.\n\n"
         "QUESTION: {user_query}\n\n"
         "SCHEMA & JARGON CONTEXT:\n{schema_context}\n\n"
-        "DOCUMENT/CONTRACT INFORMATION:\n{doc_results}\n\n"
-        "ACTUAL PROJECT DATA:\n{data_results}\n\n"
+        "DOCUMENT EXCERPTS (raw chunks, each with source document + page):\n{doc_excerpts}\n\n"
+        "PROJECT DATA (the SQL run and its actual result rows):\n{data_table}\n\n"
         "Provide a comprehensive answer that:\n"
-        "1. States what the contract/document specifies (the plan/requirement)\n"
-        "2. States what the actual data shows (the reality)\n"
-        "3. Highlights any gaps, discrepancies, or alignment between the two\n"
-        "4. For quantities: compare contractual (BOQ) vs actual (cumulative) values\n"
-        "5. For progress: compare planned milestones vs actual completion percentages\n"
-        "6. Provides a clear conclusion: is the project on track, behind, or ahead?\n"
-        "7. Is specific with numbers — always include actual values, not just 'higher' or 'lower'"
+        "1. Directly answers EVERY part of the question.\n"
+        "2. Explicitly ALIGNS specific document excerpts/clauses with specific data rows/values "
+        "(e.g. contractual BOQ quantity vs cumulative actual; planned milestone vs actual %).\n"
+        "3. Highlights gaps, discrepancies, or alignment with concrete numbers.\n"
+        "4. Cites the document name + page for prose claims; reference the data for numeric claims.\n"
+        "5. Concludes clearly: on track, behind, or ahead — with the numbers that justify it.\n"
+        "6. If a part cannot be answered from the provided material, say so — do not guess."
     )
 
     def __init__(self):
@@ -341,6 +352,11 @@ class QueryRouter:
         self._jargon = None
         self._hybrid_executor = None
         self._schema_alias_cache: Dict[str, List[str]] = {}
+        # Memoized "available document topics" block for the LLM router (Phase 1C).
+        # Cluster labels rarely change at query time, so a short TTL avoids
+        # rebuilding the block on every classification while staying fresh.
+        self._topic_inventory_cache: Optional[str] = None
+        self._topic_inventory_ts: float = 0.0
         logger.info("Query Router initialized")
 
     @property
@@ -429,6 +445,13 @@ class QueryRouter:
             names = ", ".join(r.file_name for r in documents[:10])
             extra = f" (+{len(documents) - 10} more)" if len(documents) > 10 else ""
             file_lines.append(f"Documents ({len(documents)}): {names}{extra}")
+            # Per-document LLM summaries (Phase 2) — give the router a sense of
+            # what each document is ABOUT, not just its filename. Bounded to keep
+            # the prompt compact.
+            for r in documents[:6]:
+                summary = (getattr(r, "llm_summary", None) or "").strip()
+                if summary:
+                    file_lines.append(f"    • {r.file_name}: {summary[:160]}")
         if data_files:
             names = ", ".join(r.file_name for r in data_files[:10])
             extra = f" (+{len(data_files) - 10} more)" if len(data_files) > 10 else ""
@@ -537,7 +560,62 @@ class QueryRouter:
 
         return file_inventory, table_inventory
 
-    # ── Classification: 3-tier strategy (LLM-free by default) ──
+    def _get_topic_inventory(self, ttl_s: float = 60.0) -> str:
+        """Compact, memoized block of the document topics the corpus covers.
+
+        Feeds the LLM router so it can confidently send content questions to
+        DOCUMENT/TIMELINE vs DATA. Reuses the document clusterer's labels (and the
+        per-doc llm_topics from upload-time enrichment when present). Memoized for a
+        short TTL since labels rarely change at query time.
+        """
+        now = time.monotonic()
+        if (self._topic_inventory_cache is not None
+                and (now - self._topic_inventory_ts) < ttl_s):
+            return self._topic_inventory_cache
+
+        block = "No document topics available."
+        try:
+            from .document_clusterer import get_clusterer, UNCATEGORIZED_LABEL
+            clusters = get_clusterer().list_clusters()
+            lines = []
+            for c in clusters:
+                label = (c.get("label") or "").strip()
+                if not label or label == UNCATEGORIZED_LABEL:
+                    continue
+                ftypes = ", ".join(c.get("file_types", []) or [])
+                ftypes = f", {ftypes}" if ftypes else ""
+                lines.append(f"- {label} ({c.get('doc_count', 0)} docs{ftypes})")
+                if len(lines) >= 12:
+                    break
+
+            # Fallback / complement: when clustering hasn't run yet (few docs) the
+            # cluster labels are empty, so aggregate the per-document llm_topics
+            # captured at upload (Phase 2 enrichment) into a distinct topic list.
+            if not lines:
+                from .document_registry import get_document_registry
+                seen: List[str] = []
+                seen_lower = set()
+                for rec in get_document_registry().get_completed():
+                    for t in (getattr(rec, "llm_topics", None) or []):
+                        t = str(t).strip()
+                        if t and t.lower() not in seen_lower:
+                            seen.append(t)
+                            seen_lower.add(t.lower())
+                    if len(seen) >= 15:
+                        break
+                if seen:
+                    lines = [f"- {t}" for t in seen[:15]]
+
+            if lines:
+                block = "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"   Topic inventory unavailable: {e}")
+
+        self._topic_inventory_cache = block
+        self._topic_inventory_ts = now
+        return block
+
+    # ── Classification: LLM-first with deterministic safety net ──
 
     # Mode-specific routing bias: when frontend mode is known, override or bias
     # classification toward the expected query types for that mode.
@@ -561,62 +639,57 @@ class QueryRouter:
 
     def classify_query(self, query: str, mode: str | None = None) -> RouterDecision:
         """
-        Classify query using 3-tier strategy:
-          0. Regex pattern detection for THREAD / DRAFT (cheap, deterministic)
-          1. Heuristic keyword scoring with schema-aware boost (no LLM)
-          2. Embedding-similarity with anchor texts (no LLM)
-          3. LLM classification with rich context (last resort)
-        Returns RouterDecision with type, confidence, reasons.
+        LLM-first classification. The LLM is the PRIMARY router: it sees the file
+        inventory, the SQL table schemas, AND the available document topics, then
+        picks the route. Only one cheap deterministic shortcut runs BEFORE the LLM:
 
-        If `mode` is provided (frontend activeMode), applies mode-specific routing
-        bias to better match user intent per UI context.
+          0. THREAD / DRAFT regex — these are UI-action intents (open a thread,
+             draft a reply), not content routing, so a fast regex is correct here.
+
+        Everything else (the former schema-semantic / keyword-heuristic / embedding
+        tiers and the mode default) is demoted to `_classify_safety_net`, which runs
+        ONLY when the LLM call itself fails or times out. This removes the brittle
+        deterministic OVERRIDES (e.g. "data source + aggregation word → force SQL")
+        that misrouted real queries.
+
+        If `mode` is provided (frontend activeMode) it is passed to the LLM as a
+        soft hint and applied as a low-confidence tiebreaker via `_apply_mode_bias`.
         """
         logger.info(f"Classifying query... (mode={mode or 'default'})")
 
         # Jargon expansion is for RETRIEVAL/SQL, not for intent classification.
         # Keyword/regex/intent matching runs on the ORIGINAL query so a wrong
         # acronym expansion can't skew the route. The expanded form is still
-        # passed to the schema-semantic and embedding tiers, which benefit from it.
+        # used by the safety-net schema-semantic and embedding tiers.
         expanded_query = self.jargon.expand_query(query)
         if expanded_query != query:
             logger.info(f"   Jargon expanded (retrieval only): {expanded_query[:100]}...")
 
         query_lower = query.lower()
 
-        # ── Tier 0: Thread/Draft pattern detection (deterministic) ──
+        # ── Cheap deterministic shortcut: Thread/Draft UI-action intents ──
         thread_decision = self._classify_thread_draft(query_lower)
         if thread_decision is not None:
             logger.info(f"   -> Pattern: {thread_decision.query_type.value.upper()} "
                         f"(conf={thread_decision.confidence:.2f})")
             return thread_decision
 
-        content_search_decision = self._classify_document_content_search(query_lower)
-        if content_search_decision is not None:
-            logger.info(f"   -> Pattern: {content_search_decision.query_type.value.upper()} "
-                        f"(conf={content_search_decision.confidence:.2f})")
-            return content_search_decision
-
-        # ── Ambiguity gate: defer conflicting signals to the LLM ──
-        # The deterministic keyword/schema heuristics are unreliable when a query
-        # carries BOTH data signals and document-intent phrasing (e.g. "what does
-        # the manpower log show by trade"). Rather than apply brittle override
-        # rules, hand these to the LLM classifier — it resolves them correctly and
-        # the call is cheap (Gemini Flash, ~16 tokens) and cached.
-        if self._signals_conflict(query_lower):
-            # Shadow: what the deterministic tiers WOULD have answered (LLM-free),
-            # recorded so we can measure how often they'd have misrouted.
-            shadow = (self._classify_schema_semantic(expanded_query)
-                      or self._classify_heuristic(query_lower))
-            decision = self._classify_llm_rich(query)
-            decision.reasons.append("ambiguity gate: conflicting data/document signals")
+        # ── Primary: the LLM decides, armed with schema + document-topic context ──
+        decision = self._classify_llm_rich(query, mode=mode)
+        if decision is not None:
             decision = self._apply_mode_bias(decision, mode)
+            # Telemetry shadow: what the CHEAP deterministic signals would have
+            # chosen (no embedding call), so we can measure how often LLM-first
+            # changes the route and in which direction.
             try:
                 from .telemetry import get_current_trace
                 tr = get_current_trace()
                 if tr is not None:
+                    shadow = (self._classify_schema_semantic(expanded_query)
+                              or self._classify_heuristic(query_lower))
                     shadow_type = shadow.query_type.value if shadow else None
                     tr.record_routing(
-                        ambiguous=True,
+                        ambiguous=False,
                         deterministic_candidate=shadow_type,
                         final_route=decision.query_type.value,
                         diverged=bool(shadow_type and shadow_type != decision.query_type.value),
@@ -624,48 +697,67 @@ class QueryRouter:
                     )
             except Exception:
                 pass
-            logger.info(f"   -> LLM (ambiguity gate): {decision.query_type.value.upper()} "
-                        f"(conf={decision.confidence:.2f}) "
-                        f"[shadow={shadow.query_type.value if shadow else 'none'}]")
+            logger.info(f"   -> LLM: {decision.query_type.value.upper()} "
+                        f"(conf={decision.confidence:.2f})")
             return decision
+
+        # ── Safety net: LLM unavailable (error/timeout) → deterministic fallback ──
+        logger.warning("   LLM classification unavailable → deterministic safety net")
+        return self._classify_safety_net(query, expanded_query, query_lower, mode)
+
+    def _classify_safety_net(
+        self, query: str, expanded_query: str, query_lower: str, mode: str | None
+    ) -> RouterDecision:
+        """Deterministic fallback chain, used ONLY when the LLM router fails.
+
+        Preserves the previous tier ordering so behavior degrades gracefully:
+          1. Document content-search regex ("which documents mention X")
+          2. Schema-semantic DATA gate
+          3. Keyword heuristic scoring
+          4. Embedding similarity (anchor texts)
+          5. Mode-based default
+          6. Default DOCUMENT (conf 0.5) — never silently send to SQL.
+        """
+        content_search_decision = self._classify_document_content_search(query_lower)
+        if content_search_decision is not None:
+            content_search_decision = self._apply_mode_bias(content_search_decision, mode)
+            logger.info(f"   -> [safety-net] Pattern: {content_search_decision.query_type.value.upper()} "
+                        f"(conf={content_search_decision.confidence:.2f})")
+            return content_search_decision
 
         schema_decision = self._classify_schema_semantic(expanded_query)
         if schema_decision is not None:
             schema_decision = self._apply_mode_bias(schema_decision, mode)
-            logger.info(f"   -> Schema semantic: {schema_decision.query_type.value.upper()} "
+            logger.info(f"   -> [safety-net] Schema semantic: {schema_decision.query_type.value.upper()} "
                         f"(conf={schema_decision.confidence:.2f})")
             return schema_decision
 
-        # ── Tier 1: Heuristic keyword scoring (no LLM) ──
         heuristic_decision = self._classify_heuristic(query_lower)
         if heuristic_decision is not None:
-            # Apply mode bias for low-confidence heuristic decisions
             heuristic_decision = self._apply_mode_bias(heuristic_decision, mode)
-            logger.info(f"   -> Heuristic: {heuristic_decision.query_type.value.upper()} "
+            logger.info(f"   -> [safety-net] Heuristic: {heuristic_decision.query_type.value.upper()} "
                         f"(conf={heuristic_decision.confidence:.2f})")
             return heuristic_decision
 
-        # ── Tier 2: Embedding similarity (no LLM) ──
         embedding_decision = self._classify_embedding(expanded_query)
         if embedding_decision is not None:
-            # Apply mode bias for low-confidence embedding decisions
             embedding_decision = self._apply_mode_bias(embedding_decision, mode)
-            logger.info(f"   -> Embedding: {embedding_decision.query_type.value.upper()} "
+            logger.info(f"   -> [safety-net] Embedding: {embedding_decision.query_type.value.upper()} "
                         f"(conf={embedding_decision.confidence:.2f})")
             return embedding_decision
 
-        # ── Mode-based default (before LLM fallback) ──
         mode_default = self._mode_default_decision(query, mode)
         if mode_default is not None:
-            logger.info(f"   -> Mode default: {mode_default.query_type.value.upper()} "
+            logger.info(f"   -> [safety-net] Mode default: {mode_default.query_type.value.upper()} "
                         f"(conf={mode_default.confidence:.2f})")
             return mode_default
 
-        # ── Tier 3: LLM classification with full context (last resort) ──
-        decision = self._classify_llm_rich(query)
-        logger.info(f"   -> LLM: {decision.query_type.value.upper()} "
-                    f"(conf={decision.confidence:.2f})")
-        return decision
+        logger.info("   -> [safety-net] Default DOCUMENT (conf 0.50)")
+        return RouterDecision(
+            query_type=QueryType.DOCUMENT,
+            confidence=0.5,
+            reasons=["Safety-net default: no deterministic signal"],
+        )
 
     def _apply_mode_bias(self, decision: RouterDecision, mode: str | None) -> RouterDecision:
         """Apply mode-specific routing bias to low-confidence decisions."""
@@ -767,10 +859,10 @@ class QueryRouter:
             f"conf={schema_signal.confidence:.2f} schemas={schema_signal.matched_schemas}"
         )
 
-        # NOTE: conflicting data+document signals are caught upstream by the
-        # ambiguity gate in classify_query() and handed to the LLM, so this tier
-        # only runs for queries with a clean signal. No data-vs-document override
-        # is needed here anymore (that override was the source of misroutes like
+        # NOTE: this tier now runs only inside the deterministic SAFETY NET
+        # (when the LLM router is unavailable). The LLM is the primary decision-
+        # maker for ambiguous data+document queries, so no brittle data-vs-document
+        # override is applied here (that override was the source of misroutes like
         # "what does the manpower log show by trade").
         if schema_signal.is_data_intent:
             return RouterDecision(
@@ -804,9 +896,9 @@ class QueryRouter:
         doc_intent_boost = sum(1 for p in _DOCUMENT_INTENT_PATTERNS if p in query_lower)
 
         # Schema-aware boost: if query matches table column names or values, boost
-        # DATA. Conflicting data+document signals are resolved upstream by the
-        # ambiguity gate (→ LLM), so here schema_boost is always a plain scoring
-        # input rather than a contested override.
+        # DATA. This heuristic now runs only inside the safety net (LLM is the
+        # primary router), so schema_boost is a plain scoring input, not a
+        # contested override.
         schema_boost = self._schema_data_boost(query_lower)
         data_score += schema_boost
 
@@ -975,76 +1067,18 @@ class QueryRouter:
 
         return None
 
-    def _classify_llm(self, query: str) -> RouterDecision:
-        """Tier 3: LLM classification (last resort)."""
-        from . import llm_client
-        from .prompt_security import safe_render_prompt, build_system_prompt
+    def _classify_llm_rich(self, query: str, mode: str | None = None) -> Optional[RouterDecision]:
+        """Primary LLM router. Sees file inventory + document topics + table schemas.
 
-        try:
-            _, data_files = self._get_available_sources()
-
-            try:
-                from .schema_context import get_schema_prompt_block
-                schema_context = get_schema_prompt_block(query, mode="router", max_tables=5)
-            except Exception:
-                schema_context = ""
-
-            prompt = safe_render_prompt(
-                self.CLASSIFICATION_PROMPT,
-                user_query=query,
-                data_files=data_files,
-                file_inventory="",
-                table_inventory="",
-                schema_context=schema_context,
-            )
-            system = build_system_prompt("You are a query classifier.")
-
-            resp = llm_client.generate_text(prompt, system=system, max_tokens=16)
-            result = resp.text.strip().upper()
-
-            # Record telemetry
-            from .telemetry import get_current_trace
-            trace = get_current_trace()
-            if trace:
-                trace.record_llm_call(resp.usage)
-
-            # Default to DATA if tables loaded, DOCUMENT otherwise
-            qtype = QueryType.DATA if self.data_analyzer.list_tables() else QueryType.DOCUMENT
-            if "DATA" in result:
-                qtype = QueryType.DATA
-            elif "TIMELINE" in result:
-                qtype = QueryType.TIMELINE
-            elif "HYBRID" in result:
-                qtype = QueryType.HYBRID
-
-            return RouterDecision(
-                query_type=qtype,
-                confidence=0.75,
-                reasons=[f"LLM classified as {qtype.value}"],
-                used_llm=True,
-                llm_usage={
-                    "prompt_tokens": resp.usage.prompt_tokens,
-                    "completion_tokens": resp.usage.completion_tokens,
-                    "cost": resp.usage.cost_estimate,
-                },
-            )
-
-        except Exception as e:
-            logger.error(f"   LLM classification error: {e}")
-            # Fallback: default to DOCUMENT — see comment in _classify_llm_rich.
-            return RouterDecision(
-                query_type=QueryType.DOCUMENT,
-                confidence=0.5,
-                reasons=[f"Fallback after LLM error: {e}"],
-            )
-
-    def _classify_llm_rich(self, query: str) -> RouterDecision:
-        """Primary LLM classification with rich context (file inventory + table schemas)."""
+        Returns None when the LLM call itself fails (so the caller can fall back to
+        the deterministic safety net). `mode` is injected as a soft UI hint only.
+        """
         from . import llm_client
         from .prompt_security import safe_render_prompt, build_system_prompt
 
         try:
             file_inventory, table_inventory = self._get_classification_context()
+            topic_inventory = self._get_topic_inventory()
 
             try:
                 from .schema_context import get_schema_prompt_block
@@ -1052,27 +1086,59 @@ class QueryRouter:
             except Exception:
                 schema_context = ""
 
+            # Learned routing examples from user feedback (data flywheel). These
+            # reinforce correct routes the system was praised for over time.
+            learned_examples = ""
+            try:
+                from .flywheel import get_learned_routing_examples
+                ex = get_learned_routing_examples(limit=8)
+                lines = [
+                    f"Q: \"{e['question']}\" -> {str(e['route']).upper()}"
+                    for e in ex if e.get("question") and e.get("route")
+                ]
+                if lines:
+                    learned_examples = (
+                        "LEARNED FROM USER FEEDBACK (trust these routes):\n"
+                        + "\n".join(lines) + "\n\n"
+                    )
+            except Exception:
+                pass
+
+            # Soft mode hint — biases ambiguous calls toward the active UI context
+            # without hard-overriding the LLM's content judgement.
+            mode_hint = ""
+            if mode == "document_analysis":
+                mode_hint = ("UI CONTEXT: document_analysis — when genuinely ambiguous, "
+                             "lean toward FILE_LIST or TIMELINE (browsing/organising docs).\n\n")
+            elif mode == "correspondence":
+                mode_hint = ("UI CONTEXT: correspondence — when genuinely ambiguous, "
+                             "lean toward TIMELINE or THREAD (mail/notice flow).\n\n")
+
             prompt = safe_render_prompt(
                 self.CLASSIFICATION_PROMPT,
                 user_query=query,
                 file_inventory=file_inventory,
+                topic_inventory=topic_inventory,
                 table_inventory=table_inventory,
                 schema_context=schema_context,
+                learned_examples=learned_examples,
+                mode_hint=mode_hint,
             )
             system = build_system_prompt("You are a precise query classifier.")
 
             # Explicit, normalized cache key: case/whitespace variants of the same
             # question reuse the cached route, while an inventory-signature suffix
-            # invalidates it whenever the available files/tables change. With the
-            # ambiguity gate now sending more queries here, caching keeps the added
-            # cost near zero for repeated/similar questions.
+            # invalidates it whenever the available files/tables/topics change. With
+            # the LLM now the primary router, caching keeps the added cost near zero
+            # for repeated/similar questions.
             import hashlib as _hashlib
             _norm_q = " ".join((query or "").lower().split())
             _inv_sig = _hashlib.sha256(
-                (file_inventory + "||" + table_inventory).encode()
+                (file_inventory + "||" + table_inventory + "||" + topic_inventory
+                 + "||" + learned_examples).encode()
             ).hexdigest()[:12]
             _cls_key = "route:" + _hashlib.sha256(
-                f"{_norm_q}|{_inv_sig}".encode()
+                f"{_norm_q}|{mode or ''}|{_inv_sig}".encode()
             ).hexdigest()[:32]
 
             resp = llm_client.generate_text(
@@ -1120,18 +1186,9 @@ class QueryRouter:
 
         except Exception as e:
             logger.error(f"   LLM rich classification error: {e}")
-            # Fallback: try heuristic
-            decision = self._classify_heuristic(query.lower())
-            if decision is not None:
-                decision.reasons.append(f"Heuristic fallback after LLM error: {e}")
-                return decision
-            # Last resort: default to DOCUMENT — an LLM/heuristic miss should not
-            # silently send the query to SQL just because tables happen to be loaded.
-            return RouterDecision(
-                query_type=QueryType.DOCUMENT,
-                confidence=0.5,
-                reasons=[f"Fallback after LLM error: {e}"],
-            )
+            # Signal failure to classify_query so it routes through the
+            # deterministic safety net (single fallback path, one place).
+            return None
 
     # ── Complex query detection ───────────────────────────────
 
@@ -1215,23 +1272,12 @@ class QueryRouter:
         }
 
     def _is_complex_query(self, query: str) -> bool:
-        """Detect if a query requires multi-step planning.
-        Only triggers for genuinely sequential/multi-step queries.
-        Cross-source detection is left to the LLM classifier.
-        """
-        q = query.lower()
-
-        # Only truly sequential multi-step indicators
-        sequential_indicators = [
-            ' then ', ' and then ', ' after that ', ' next ',
-            'month-over-month', 'year-over-year',
-        ]
-
-        for indicator in sequential_indicators:
-            if indicator in q:
-                return True
-
-        return False
+        """Detect if a query requires multi-step planning — sequential chains AND
+        compound (stacked 2-3 question) queries. Shares one detector with the
+        planner so router and planner always agree. Cross-source single-answer
+        detection is still left to the LLM classifier (HYBRID)."""
+        from .query_planner import is_multi_step_query
+        return is_multi_step_query(query)
 
     # ── Retrieval helpers ─────────────────────────────────────
 
@@ -1672,16 +1718,89 @@ class QueryRouter:
 
         return related_sources
 
+    def _decompose_hybrid(self, query: str) -> Dict[str, str]:
+        """Split a hybrid query into a document-part and a data-part sub-query.
+
+        A single cached LLM call. Falls back to using the full query for both
+        sides on any failure, so HYBRID never breaks because decomposition did.
+        """
+        from . import llm_client
+        import hashlib
+        prompt = (
+            "Split this construction question into two focused sub-queries for a "
+            "hybrid retrieval system.\n"
+            "- 'doc': what to look up in DOCUMENTS/contracts (clauses, terms, prose).\n"
+            "- 'data': what to compute from DATA TABLES (counts, hours, progress, BOQ).\n"
+            "If one side is not needed, repeat the original question there.\n\n"
+            f"QUESTION: {query}\n\n"
+            'Return JSON: {"doc": "<doc sub-query>", "data": "<data sub-query>"}'
+        )
+        try:
+            key = "hybdec:" + hashlib.sha256(query.lower().encode()).hexdigest()[:32]
+            resp = llm_client.generate_json(
+                prompt, system="You split queries. Output JSON only.", cache_key=key,
+            )
+            data = resp.raw if isinstance(resp.raw, dict) else {}
+            doc_q = (data.get("doc") or "").strip() or query
+            data_q = (data.get("data") or "").strip() or query
+            logger.info(f"   Hybrid decomposed → doc='{doc_q[:60]}' data='{data_q[:60]}'")
+            return {"doc": doc_q, "data": data_q}
+        except Exception as e:
+            logger.warning(f"   Hybrid decomposition failed, using full query for both: {e}")
+            return {"doc": query, "data": query}
+
+    @staticmethod
+    def _format_doc_excerpts(doc_result: Dict[str, Any], max_chunks: int = 6) -> str:
+        """Build a raw chunk context block from a document result's sources."""
+        srcs = doc_result.get("sources", []) or []
+        if not srcs:
+            return "(no relevant document excerpts found)"
+        parts = []
+        for i, s in enumerate(srcs[:max_chunks], 1):
+            text = (s.get("text_snippet") or s.get("highlight_text") or "").strip()
+            parts.append(
+                f"[{i}] {s.get('file_name', 'Unknown')} p.{s.get('page_number', '?')}:\n{text}"
+            )
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _format_data_table(data_result: Dict[str, Any], max_rows: int = 30) -> str:
+        """Build a raw SQL + result-rows context block from a data result."""
+        sql = data_result.get("sql") or ""
+        cols = data_result.get("result_columns") or []
+        rows = data_result.get("result_data") or []
+        lines = []
+        if sql:
+            lines.append(f"SQL:\n{sql}")
+        if cols and rows:
+            lines.append("RESULT ROWS:")
+            lines.append(" | ".join(str(c) for c in cols))
+            for r in rows[:max_rows]:
+                if isinstance(r, dict):
+                    lines.append(" | ".join(str(r.get(c, "")) for c in cols))
+                elif isinstance(r, (list, tuple)):
+                    lines.append(" | ".join(str(v) for v in r))
+                else:
+                    lines.append(str(r))
+            if len(rows) > max_rows:
+                lines.append(f"... (+{len(rows) - max_rows} more rows)")
+        elif data_result.get("answer"):
+            # No structured rows (e.g. scalar/summary result) — fall back to its text.
+            lines.append(f"RESULT:\n{data_result['answer']}")
+        return "\n".join(lines) if lines else "(no project data returned)"
+
     def _handle_hybrid_query(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
-        """Handle hybrid query needing both sources, using llm_client."""
-        logger.info("Routing to BOTH handlers...")
+        """Handle hybrid query needing both sources. Decomposes into a doc-part and
+        a data-part, runs each, then synthesizes from the RAW chunks + RAW rows."""
+        logger.info("Routing to BOTH handlers (decompose + raw-result synthesis)...")
 
-        doc_result = self.document_rag.query(query, doc_ids=doc_ids)
+        sub = self._decompose_hybrid(query)
+        doc_result = self.document_rag.query(sub["doc"], doc_ids=doc_ids)
         allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
-        data_result = self.data_analyzer.query(query, allowed_tables=allowed_tables)
+        data_result = self.data_analyzer.query(sub["data"], allowed_tables=allowed_tables)
 
-        # Synthesize with llm_client
-        logger.info("   Synthesizing results...")
+        # Synthesize from RAW context (chunks + rows), not pre-synthesized answers.
+        logger.info("   Synthesizing results from raw context...")
         try:
             from . import llm_client
             from .prompt_security import safe_render_prompt, build_system_prompt
@@ -1695,13 +1814,16 @@ class QueryRouter:
             prompt = safe_render_prompt(
                 self.HYBRID_SYNTHESIS_PROMPT,
                 user_query=query,
-                doc_results=doc_result["answer"],
-                data_results=data_result["answer"],
+                doc_excerpts=self._format_doc_excerpts(doc_result),
+                data_table=self._format_data_table(data_result),
                 schema_context=schema_context,
             )
             system = build_system_prompt("You synthesize information from multiple sources.")
 
-            resp = llm_client.generate_text(prompt, system=system)
+            # Extended thinking on hybrid synthesis (Phase 3): reconciling document
+            # prose with table numbers benefits from reasoning. Off via config flag.
+            _syn_think = THINKING_BUDGET_SYNTHESIS if ENABLE_THINKING else 0
+            resp = llm_client.generate_text(prompt, system=system, thinking=_syn_think)
             combined_answer = resp.text
 
             # Record telemetry
@@ -3138,27 +3260,6 @@ class QueryRouter:
             or any(kw in q_lower for kw in DOCUMENT_KEYWORDS)
         )
 
-    def _signals_conflict(self, query_lower: str) -> bool:
-        """True when deterministic signals point in conflicting directions, so the
-        keyword/schema heuristics can't be trusted and the LLM should decide.
-
-        The dominant conflict is a structured-data request ("workers by trade",
-        "manpower log totals") phrased with document-intent words ("what does ...
-        show", "summarise the ..."). We flag it when a document-intent signal
-        co-occurs with a genuine data signal (explicit data source, a schema/column
-        match, or two-plus data keywords). Kept narrow so unambiguous queries —
-        "what does clause 5 say" (doc only) or "total crane hours" (data only) —
-        stay on the fast deterministic path.
-        """
-        has_doc = self._has_document_intent(query_lower)
-        if not has_doc:
-            return False
-        has_data = (
-            _has_strong_data_signal(query_lower)
-            or self._schema_data_boost(query_lower) > 0
-            or sum(1 for kw in DATA_KEYWORDS if _kw_match(kw, query_lower)) >= 2
-        )
-        return has_data
 
     def _dual_answers_empty_or_error(self, answers: Dict[str, Dict[str, Any]]) -> bool:
         """Return True when every provider answer is empty/error-like."""
@@ -3506,12 +3607,14 @@ class QueryRouter:
                 prompt = safe_render_prompt(
                     self.HYBRID_SYNTHESIS_PROMPT,
                     user_query=query,
-                    doc_results=doc_result["answer"],
-                    data_results=data_result["answer"],
+                    doc_excerpts=self._format_doc_excerpts(doc_result),
+                    data_table=self._format_data_table(data_result),
                     schema_context=schema_context,
                 )
                 system = build_system_prompt("You synthesize information from multiple sources.")
-                resp = llm_client.generate_text(prompt, system=system, provider=provider)
+                _syn_think = THINKING_BUDGET_SYNTHESIS if ENABLE_THINKING else 0
+                resp = llm_client.generate_text(prompt, system=system, provider=provider,
+                                                thinking=_syn_think)
                 combined_answer = resp.text
             except Exception as e:
                 logger.error(f"   [{provider}] Hybrid synthesis error: {e}")

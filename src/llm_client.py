@@ -21,6 +21,16 @@ from .logger import logger
 from .usage_tracker import enforce_budget, record_usage
 
 
+# Native google-genai SDK is required for Gemini extended thinking (the legacy
+# llama-index Gemini wrapper can't pass thinking_config). It is optional: when
+# absent, the Gemini thinking path degrades gracefully to the standard call.
+try:
+    import importlib.util as _ilu
+    _GENAI_AVAILABLE = _ilu.find_spec("google.genai") is not None
+except Exception:
+    _GENAI_AVAILABLE = False
+
+
 def _attribute_to_current_user(prompt_tok: int, comp_tok: int) -> None:
     """Mirror an LLM call to the active user's per-user counter.
 
@@ -121,25 +131,59 @@ def _cache_set(key: str, value: str, ttl: int):
 
 class _AnthropicCompletionResponse:
     """Mimics LlamaIndex CompletionResponse."""
-    def __init__(self, text: str):
+    def __init__(self, text: str, output_tokens: int = 0, input_tokens: int = 0):
         self.text = text
+        self.output_tokens = output_tokens
+        self.input_tokens = input_tokens
 
 
 class _AnthropicChatResponse:
     """Mimics LlamaIndex ChatResponse."""
-    def __init__(self, text: str):
+    def __init__(self, text: str, output_tokens: int = 0, input_tokens: int = 0):
         self.message = type('Msg', (), {'content': text})()
+        self.output_tokens = output_tokens
+        self.input_tokens = input_tokens
+
+
+def _anthropic_extract_text(resp) -> str:
+    """Return the first text block, skipping any leading `thinking` block."""
+    for block in getattr(resp, "content", []) or []:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    # Fallback: legacy single-block responses
+    try:
+        return resp.content[0].text
+    except Exception:
+        return ""
 
 
 class _AnthropicWrapper:
-    """Thin wrapper around anthropic SDK matching LlamaIndex LLM interface."""
+    """Thin wrapper around anthropic SDK matching LlamaIndex LLM interface.
 
-    def __init__(self, api_key: str, model: str, temperature: float = 0.1, max_tokens: int = 2048):
+    When ``thinking`` (a token budget) is set, extended thinking is enabled: the
+    API requires temperature == 1, ``budget_tokens`` >= 1024 and < max_tokens, and
+    the response carries a leading `thinking` block that must be skipped.
+    """
+
+    def __init__(self, api_key: str, model: str, temperature: float = 0.1,
+                 max_tokens: int = 2048, thinking: int = 0):
         import anthropic
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
-        self.temperature = temperature
-        self.max_tokens = max_tokens
+        self.thinking = int(thinking) if thinking else 0
+        # Extended thinking requires temperature == 1 and headroom above the budget.
+        if self.thinking > 0:
+            self.temperature = 1.0
+            self.max_tokens = max(max_tokens, self.thinking + 512)
+        else:
+            self.temperature = temperature
+            self.max_tokens = max_tokens
+
+    def _thinking_kwargs(self) -> dict:
+        if self.thinking > 0:
+            budget = max(1024, self.thinking)
+            return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+        return {}
 
     def complete(self, prompt: str):
         import anthropic
@@ -149,9 +193,15 @@ class _AnthropicWrapper:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
                 messages=[{"role": "user", "content": prompt}],
+                **self._thinking_kwargs(),
             )
-            text = resp.content[0].text
-            return _AnthropicCompletionResponse(text)
+            text = _anthropic_extract_text(resp)
+            u = getattr(resp, "usage", None)
+            return _AnthropicCompletionResponse(
+                text,
+                output_tokens=getattr(u, "output_tokens", 0) or 0,
+                input_tokens=getattr(u, "input_tokens", 0) or 0,
+            )
         except anthropic.BadRequestError:
             raise  # content policy — do not retry
         except anthropic.AuthenticationError:
@@ -174,13 +224,19 @@ class _AnthropicWrapper:
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             messages=api_messages,
+            **self._thinking_kwargs(),
         )
         if system_text:
             kwargs["system"] = system_text
         try:
             resp = self.client.messages.create(**kwargs)
-            text = resp.content[0].text
-            return _AnthropicChatResponse(text)
+            text = _anthropic_extract_text(resp)
+            u = getattr(resp, "usage", None)
+            return _AnthropicChatResponse(
+                text,
+                output_tokens=getattr(u, "output_tokens", 0) or 0,
+                input_tokens=getattr(u, "input_tokens", 0) or 0,
+            )
         except anthropic.BadRequestError:
             raise  # content policy — do not retry
         except anthropic.AuthenticationError:
@@ -189,7 +245,41 @@ class _AnthropicWrapper:
 
 # ── LLM Factory ─────────────────────────────────────────────
 
-def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048):
+def _gemini_generate_thinking(
+    prompt: str, system: str, temperature: float, max_tokens: int,
+    model: str, thinking_budget: int,
+):
+    """Native google-genai call with extended thinking for Gemini 2.5.
+
+    The legacy llama-index Gemini wrapper cannot pass thinking_config, so this
+    bypasses it. Returns (text, completion_tokens, thoughts_tokens).
+    """
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    contents = f"{system}\n\n{prompt}" if system else prompt
+    resp = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+            thinking_config=types.ThinkingConfig(thinking_budget=int(thinking_budget)),
+        ),
+    )
+    text = (resp.text or "").strip()
+    comp_tok = 0
+    thoughts_tok = 0
+    um = getattr(resp, "usage_metadata", None)
+    if um is not None:
+        comp_tok = getattr(um, "candidates_token_count", 0) or 0
+        thoughts_tok = getattr(um, "thoughts_token_count", 0) or 0
+    return text, comp_tok, thoughts_tok
+
+
+def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
+               thinking: int = 0):
     """
     Create a LlamaIndex LLM instance for the given provider.
 
@@ -197,6 +287,8 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048):
         provider: "openai" | "claude" | "gemini"
         temperature: Sampling temperature
         max_tokens: Max output tokens
+        thinking: Extended-thinking token budget (Claude only here; the Gemini
+            thinking path bypasses create_llm via _gemini_generate_thinking).
 
     Returns:
         Tuple of (llm_instance, model_name)
@@ -218,6 +310,7 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048):
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
+            thinking=thinking,
         )
         return llm, model
     else:
@@ -260,6 +353,7 @@ def generate_text(
     cache_key: Optional[str] = None,
     ttl_s: int = CACHE_TTL_SECONDS,
     provider: str = "gemini",
+    thinking: int = 0,
 ) -> LLMResponse:
     """
     Generate text via LLM, with caching and usage tracking.
@@ -274,6 +368,9 @@ def generate_text(
         cache_key: Explicit cache key; if None, auto-derived
         ttl_s: Cache TTL in seconds
         provider: LLM provider ("gemini" | "openai" | "claude")
+        thinking: Extended-thinking/reasoning token budget. 0 = off (default).
+            Honoured for gemini (native google-genai path) and claude; no-op for
+            openai (gpt-4o-mini has no thinking knob).
 
     Returns:
         LLMResponse with text, usage info, cache status
@@ -287,10 +384,23 @@ def generate_text(
         else:
             model = GEMINI_MODEL
 
-    # ── Build cache key (includes provider) ──
+    thinking = int(thinking) if thinking else 0
+    # Gemini thinking needs the native google-genai SDK; degrade gracefully if absent.
+    use_gemini_thinking = (provider == "gemini" and thinking > 0 and _GENAI_AVAILABLE)
+    if provider == "gemini" and thinking > 0 and not _GENAI_AVAILABLE:
+        logger.warning(
+            "[LLMClient] thinking requested for gemini but google-genai not installed "
+            "— proceeding without thinking (pip install google-genai to enable)"
+        )
+    use_claude_thinking = (provider == "claude" and thinking > 0)
+
+    # ── Build cache key (includes provider + thinking budget) ──
     if cache_key is None:
-        key_data = f"{provider}:{model}:{system[:200]}:{prompt}"
+        key_data = f"{provider}:{model}:think{thinking}:{system[:200]}:{prompt}"
         cache_key = "llm:" + hashlib.sha256(key_data.encode()).hexdigest()[:32]
+    elif thinking > 0:
+        # Explicit caller keys must still differ by thinking budget.
+        cache_key = f"{cache_key}:think{thinking}"
 
     # ── Enforce global + per-user usage caps (cache hits still allowed below) ──
     enforce_budget()
@@ -316,16 +426,33 @@ def generate_text(
             ),
         )
 
-    # ── Create LLM ──
-    llm, model = create_llm(provider, temperature, max_tokens)
+    # ── Create LLM (skipped for the native gemini-thinking path) ──
+    if use_gemini_thinking:
+        llm = None
+    else:
+        llm, model = create_llm(
+            provider, temperature, max_tokens,
+            thinking=thinking if use_claude_thinking else 0,
+        )
 
     last_error = None
     for attempt in range(1 + LLM_MAX_RETRIES):
         try:
             start = time.time()
+            thoughts_tok = 0
+            native_comp_tok = 0
 
+            if use_gemini_thinking:
+                # Native google-genai path (legacy llama-index wrapper can't do thinking)
+                text, native_comp_tok, thoughts_tok = _gemini_generate_thinking(
+                    prompt=prompt, system=system,
+                    temperature=temperature, max_tokens=max_tokens,
+                    model=model, thinking_budget=thinking,
+                )
+                text = text.strip()
+                response = None
             # Use chat() for OpenAI/Claude (proper system prompt handling)
-            if provider in ("openai", "claude") and system:
+            elif provider in ("openai", "claude") and system:
                 from llama_index.core.llms import ChatMessage, MessageRole
                 messages = [
                     ChatMessage(role=MessageRole.SYSTEM, content=system),
@@ -340,9 +467,14 @@ def generate_text(
 
             elapsed_ms = (time.time() - start) * 1000
 
-            # ── Build usage ──
+            # ── Build usage (thinking tokens are billed as output tokens) ──
             prompt_tok = estimate_tokens((system + prompt) if system else prompt)
-            comp_tok = estimate_tokens(text)
+            if native_comp_tok:
+                comp_tok = native_comp_tok + thoughts_tok
+            else:
+                # Claude exposes real output_tokens (incl. thinking) on the response.
+                resp_out = getattr(response, "output_tokens", 0) or 0
+                comp_tok = resp_out if resp_out else estimate_tokens(text)
             cost = estimate_cost(model, prompt_tok, comp_tok)
 
             usage = LLMUsage(
@@ -462,6 +594,7 @@ def generate_text_dual(
     cache_key: Optional[str] = None,
     ttl_s: int = CACHE_TTL_SECONDS,
     providers: Optional[List[str]] = None,
+    thinking: int = 0,
 ) -> DualLLMResponse:
     """
     Generate text from both OpenAI and Claude in parallel.
@@ -493,6 +626,7 @@ def generate_text_dual(
                 cache_key=f"{cache_key}:{prov}" if cache_key else None,
                 ttl_s=ttl_s,
                 provider=prov,
+                thinking=thinking,
             )
             return prov, resp, None
         except Exception as e:

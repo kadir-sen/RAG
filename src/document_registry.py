@@ -45,6 +45,11 @@ class DocumentRecord:
     # Truth source is storage/document_clusters.json.
     cluster_id: Optional[str] = None
     cluster_label: Optional[str] = None
+    # Upload-time LLM enrichment (Phase 2): a one-line summary + 3-5 topic tags,
+    # generated once at ingest. Feeds the LLM router's document-topic context and
+    # the per-document inventory to reduce hallucination/misrouting.
+    llm_summary: Optional[str] = None
+    llm_topics: List[str] = field(default_factory=list)
 
 
 class DocumentRegistry:
@@ -171,6 +176,26 @@ class DocumentRegistry:
                     rec.schema_match_details = schema_match_details
                 self._save()
                 logger.info(f"[Registry] Completed: {rec.file_name}")
+
+    def set_llm_enrichment(
+        self,
+        doc_id: str,
+        summary: Optional[str] = None,
+        topics: Optional[List[str]] = None,
+    ) -> None:
+        """Store the upload-time LLM summary/topics for a document (Phase 2)."""
+        with self._file_lock:
+            rec = self._records.get(doc_id)
+            if rec:
+                if summary is not None:
+                    rec.llm_summary = summary
+                if topics is not None:
+                    rec.llm_topics = topics
+                self._save()
+                logger.info(
+                    f"[Registry] LLM enrichment set for {rec.file_name}: "
+                    f"{len(topics or [])} topics"
+                )
 
     def mark_error(self, doc_id: str, error: str) -> None:
         with self._file_lock:

@@ -34,6 +34,27 @@ if ANTHROPIC_API_KEY:
 # Keep it OFF unless explicitly enabled, even when multiple keys are present.
 ENABLE_DUAL_PROVIDER = os.getenv("ENABLE_DUAL_PROVIDER", "false").lower() in ("1", "true", "yes")
 
+# ── Extended thinking / reasoning (Phase 3) ─────────────────
+# Reasoning is enabled ONLY on hallucination-prone steps: SQL generation and
+# hybrid synthesis. Routing thinking is OFF by default to protect demo latency.
+# Budgets are in tokens (provider-specific): Gemini 2.5 thinking_budget, Claude
+# extended-thinking budget_tokens (Claude requires >= 1024 and temperature == 1).
+ENABLE_THINKING = os.getenv("ENABLE_THINKING", "true").lower() in ("1", "true", "yes")
+THINKING_BUDGET_SQL = int(os.getenv("THINKING_BUDGET_SQL", "1024"))
+THINKING_BUDGET_SYNTHESIS = int(os.getenv("THINKING_BUDGET_SYNTHESIS", "1024"))
+THINKING_BUDGET_ROUTING = int(os.getenv("THINKING_BUDGET_ROUTING", "0"))
+
+# ── Hybrid retrieval (RAG güçlendirme — Phase 1) ────────────
+# Dense vector + lexical (DuckDB FTS/BM25) candidates fused via Reciprocal Rank
+# Fusion, with a document-keyword boost, then an optional LLM rerank. All
+# toggleable; when OFF the original pure-dense path runs unchanged.
+ENABLE_HYBRID_RETRIEVAL = os.getenv("ENABLE_HYBRID_RETRIEVAL", "true").lower() in ("1", "true", "yes")
+ENABLE_RERANK = os.getenv("ENABLE_RERANK", "true").lower() in ("1", "true", "yes")
+RAG_CANDIDATE_K = int(os.getenv("RAG_CANDIDATE_K", "30"))   # per-retriever candidate pool
+RAG_RERANK_K = int(os.getenv("RAG_RERANK_K", "15"))         # candidates sent to the reranker
+RAG_FINAL_K = int(os.getenv("RAG_FINAL_K", "6"))            # chunks kept for synthesis
+RRF_K = int(os.getenv("RRF_K", "60"))                       # RRF damping constant
+
 # Pinecone settings
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "hybrid-rag")
 PINECONE_DIMENSION = EMBEDDING_DIMENSION

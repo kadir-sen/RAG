@@ -22,6 +22,7 @@ import pandas as pd
 from .config import (
     GOOGLE_API_KEY, GEMINI_MODEL, MAX_UI_DISPLAY_ROWS,
     SQL_LAZY_SUMMARY_MAX_ROWS, SQL_LAZY_SUMMARY_MAX_CELLS,
+    ENABLE_THINKING, THINKING_BUDGET_SQL,
 )
 from .logger import logger, log_separator, log_document_processing
 
@@ -1748,7 +1749,11 @@ class DataAnalyzerSQL:
         )
         system = build_system_prompt("You are a DuckDB SQL query generator. Return only valid DuckDB SQL.")
 
-        resp = llm_client.generate_text(prompt, system=system, max_tokens=512, provider=provider)
+        # Extended thinking on SQL generation (Phase 3): correct joins/filters are
+        # the highest-value place to reason. Off when ENABLE_THINKING is false.
+        _sql_think = THINKING_BUDGET_SQL if ENABLE_THINKING else 0
+        resp = llm_client.generate_text(prompt, system=system, max_tokens=512,
+                                        provider=provider, thinking=_sql_think)
 
         # Record telemetry
         from .telemetry import get_current_trace
@@ -1836,7 +1841,9 @@ class DataAnalyzerSQL:
         system = build_system_prompt("You fix broken SQL queries. Return only valid DuckDB SQL.")
 
         try:
-            resp = llm_client.generate_text(prompt, system=system, max_tokens=512, provider=provider)
+            _sql_think = THINKING_BUDGET_SQL if ENABLE_THINKING else 0
+            resp = llm_client.generate_text(prompt, system=system, max_tokens=512,
+                                            provider=provider, thinking=_sql_think)
 
             from .telemetry import get_current_trace
             trace = get_current_trace()
