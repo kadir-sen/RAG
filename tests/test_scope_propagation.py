@@ -81,7 +81,9 @@ class TestPlannerScope:
         from src.query_planner import PlanExecutor
 
         mock_da = MagicMock()
-        mock_da.query.return_value = {
+        # No prior-step context → the schema layer (query_schema_aware) handles it,
+        # forwarding allowed_tables. (query_with_context is only used when context exists.)
+        mock_da.query_schema_aware.return_value = {
             "answer": "42", "sources": [], "sql": "SELECT 1", "result_data": [{"v": 42}],
         }
 
@@ -94,8 +96,8 @@ class TestPlannerScope:
             "count workers", {}, allowed_tables=["t_manpower"]
         )
 
-        mock_da.query.assert_called_once_with(
-            "count workers", allowed_tables=["t_manpower"]
+        mock_da.query_schema_aware.assert_called_once_with(
+            "count workers", allowed_tables=["t_manpower"], provider="gemini"
         )
 
     def test_document_step_receives_doc_ids(self):

@@ -222,6 +222,19 @@ fi
 log "Healthcheck OK"
 curl -fsS "$HEALTH_URL" && echo
 
+# ── 8b. Self-prune: keep the 2GB box from filling with old versions ───
+# Each `docker load` untags the previous mvp-api:latest, leaving a ~2.8GB
+# dangling image; remote builds also pile up build cache. Reclaim both now
+# that the new image is verified healthy. `image prune -f` only removes
+# UNTAGGED images, so mvp-api:latest and the mvp-api:previous rollback survive.
+log "Pruning old images + build cache on remote (self-clean)"
+$SSH "$SSH_TARGET" "
+    sudo docker image prune -f || true
+    sudo docker builder prune -f --keep-storage 2GB || true
+    echo '--- docker disk usage after prune ---'
+    sudo docker system df || true
+" || warn "Prune step failed (non-fatal)"
+
 # ── 9. Final summary ──────────────────────────────────────────────────
 cat <<EOF
 

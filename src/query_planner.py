@@ -105,17 +105,21 @@ class QueryPlanner:
         "AVAILABLE STEP TYPES:\n"
         "- sql: Query tabular data (equipment hours, manpower counts, production output, "
         "IPC progress, BOQ quantities). Use for ANY numerical, analytical, or listing question.\n"
-        "- document: Search PDF/contract documents. Use ONLY for reading contract clauses, "
-        "terms, specifications, or document prose that is NOT in any table.\n"
-        "- timeline: Query document relationships. Use for correspondence flow, notice sequences, "
-        "'who sent what when', senders/recipients/dates of letters and notices.\n"
+        "- document: Search PDF/contract documents. Use for reading contract clauses, terms, "
+        "specifications, prose, AND for a SINGLE specific letter/notice — 'who sent X', "
+        "'what date is X', 'what does X say'. This is the reliable default for document content.\n"
+        "- timeline: Query document RELATIONSHIPS across MANY docs — correspondence flow, the "
+        "ORDER/SEQUENCE of notices, 'what happened in what order'. Use ONLY when the answer is a "
+        "chronology/chain spanning multiple letters. For a single document's sender/date, prefer "
+        "document.\n"
         "- combine: Synthesize results from previous steps into a final answer.\n\n"
         "AVAILABLE DATA TABLES (reliable, schema-matched — the ONLY valid sql sources):\n{table_context}\n\n"
         "AVAILABLE DOCUMENTS (topics + summaries):\n{doc_context}\n\n"
         "CONTENT-AWARE ROUTING (decide each sub-question's type by what the ANSWER is):\n"
-        "- A person/sender/recipient, a date of a letter/notice, a clause/term, 'who sent', "
-        "'what does X say', correspondence or a delay/EOT/RFI notice → document or timeline "
-        "(the answer is document PROSE), NOT sql.\n"
+        "- A person/sender/recipient, a date of a SPECIFIC letter/notice, a clause/term, "
+        "'who sent X', 'what does X say', a single delay/EOT/RFI notice → document "
+        "(the answer is document PROSE), NOT sql. Use timeline ONLY for a multi-doc "
+        "chronology/sequence, not for one document's sender or date.\n"
         "- A count, sum, average, hours, headcount, %, BOQ/IPC amount over a DATA TABLE above "
         "→ sql.\n"
         "- Only emit a 'sql' step when a table in AVAILABLE DATA TABLES genuinely holds the "
@@ -135,8 +139,10 @@ class QueryPlanner:
         "- 'Does the contract allow EOT, and what do the production logs show for that period?' → "
         "document(EOT clause) + sql(production for period) + combine\n"
         "- 'What were the total crane hours, and who sent the CCTV delay notification and when?' → "
-        "sql(crane hours from equipment table) + timeline(CCTV delay notification sender + date) + combine "
-        "(the sender/date is document correspondence, NOT a table)\n"
+        "sql(crane hours from equipment table) + document(who sent the CCTV delay notification and when) + combine "
+        "(a single notice's sender/date is document prose — use document, NOT sql and NOT timeline)\n"
+        "- 'List the correspondence about the CCTV delay in chronological order' → "
+        "timeline(CCTV delay correspondence sequence) — single step (a multi-doc chain → timeline)\n"
         "- A follow-up like 'and manpower?' after an equipment question → "
         "sql(manpower) + combine (compare with the previous turn's result)\n\n"
         "RULES:\n"
@@ -265,7 +271,11 @@ class QueryPlanner:
         """
         q = query.lower()
 
-        timeline_kw = ['timeline', 'chronology', 'who sent', 'who received', 'correspondence']
+        # Genuine multi-doc chronology signals → timeline. A single document's
+        # sender/date ('who sent X') is handled by document RAG (reliable
+        # superset), with timeline kept for sequences/chains spanning many docs.
+        timeline_kw = ['timeline', 'chronology', 'chronological', 'sequence of',
+                       'correspondence flow', 'in what order', 'order of events']
         if any(kw in q for kw in timeline_kw):
             return StepType.TIMELINE.value
 
@@ -274,6 +284,13 @@ class QueryPlanner:
                     'highest', 'lowest', 'top', 'bottom', 'compare']
         if any(kw in q for kw in data_kw):
             return StepType.SQL.value
+
+        # Single-doc correspondence lookup → document (not a data table).
+        # Checked AFTER data_kw so numeric intent ('how many letters') stays sql.
+        doc_corr_kw = ['who sent', 'who received', 'who issued', 'what date', 'when was',
+                       'sender of', 'recipient of', 'notice', 'notification', 'letter']
+        if any(kw in q for kw in doc_corr_kw):
+            return StepType.DOCUMENT.value
 
         # Schema-aware: check if query terms match column names OR column values
         try:
@@ -438,7 +455,7 @@ class PlanExecutor:
                 elif step.step_type == StepType.DOCUMENT.value:
                     result = self._execute_document_step(instruction, doc_ids=doc_ids)
                 elif step.step_type == StepType.TIMELINE.value:
-                    result = self._execute_timeline_step(instruction)
+                    result = self._execute_timeline_step(instruction, doc_ids=doc_ids)
                 elif step.step_type == StepType.COMBINE.value:
                     result = self._execute_combine_step(
                         plan.original_query, instruction, step.depends_on, step_results
@@ -562,7 +579,7 @@ class PlanExecutor:
                 elif step.step_type == StepType.DOCUMENT.value:
                     result = self._execute_document_step(instruction, provider=provider, doc_ids=doc_ids)
                 elif step.step_type == StepType.TIMELINE.value:
-                    result = self._execute_timeline_step(instruction)
+                    result = self._execute_timeline_step(instruction, provider=provider, doc_ids=doc_ids)
                 elif step.step_type == StepType.COMBINE.value:
                     result = self._execute_combine_step(
                         plan.original_query, instruction, step.depends_on, step_results,
@@ -639,10 +656,99 @@ class PlanExecutor:
             "sources": result.get("sources", []),
         }
 
-    def _execute_timeline_step(self, instruction: str) -> Dict[str, Any]:
-        """Execute a timeline/graph query step."""
+    # Doc-type / correspondence keywords used to detect that a timeline question
+    # targets a *specific* document the light_graph may not contain.
+    _SALIENT_DOCTYPE_RE = re.compile(
+        r"\b(notification|notice|letter|memo|rfi|eot|claim|instruction|"
+        r"correspondence|delay|submittal|transmittal|circular)\b",
+        re.IGNORECASE,
+    )
+    # An answer that looks like a "not found" — covers LLM-synthesized misses
+    # (graph had OTHER nodes, so the empty-graph sentinel never fired).
+    _NOT_FOUND_RE = re.compile(
+        r"\b(not\s+(in|present|found|available|mention)|"
+        r"no\s+\w*\s*(record|match|matching|document|notification|notice|letter|information)|"
+        r"could\s+not\s+find|unable\s+to\s+(find|locate)|does\s+not\s+(appear|contain)|"
+        r"bulunam|mevcut\s+değil|yok)\b",
+        re.IGNORECASE,
+    )
+
+    def _salient_terms(self, instruction: str) -> List[str]:
+        """Pull the distinctive terms a timeline question is *about*:
+        quoted names, ALL-CAPS acronyms (CCTV/RFI/EOT), and doc-type keywords."""
+        terms: List[str] = []
+        terms += re.findall(r'"([^"]+)"', instruction)
+        terms += re.findall(r"'([^']+)'", instruction)
+        terms += re.findall(r"\b[A-Z]{2,}\b", instruction)  # acronyms
+        terms += self._SALIENT_DOCTYPE_RE.findall(instruction)
+        # de-dupe, lowercase, drop very short noise
+        seen, out = set(), []
+        for t in terms:
+            tl = t.strip().lower()
+            if len(tl) >= 3 and tl not in seen:
+                seen.add(tl)
+                out.append(tl)
+        return out
+
+    def _timeline_graph_miss(self, instruction: str, result: Dict[str, Any]) -> bool:
+        """Deterministic 'the timeline graph did not answer this' signal.
+
+        Returns True (→ fall back to document RAG) when the light_graph clearly
+        lacks the targeted document. light_graph is a *subset* of the vector
+        store (only successfully notice-extracted docs land in the graph), so a
+        miss here is recoverable via full-text RAG.
+        """
+        answer = (result.get("answer") or "").strip()
+        sources = result.get("sources") or []
+
+        # 1) Empty graph / empty result.
+        if not sources or answer == "No documents in the timeline graph.":
+            return True
+
+        # 2) Keyword-miss: the question targets specific terms, but NO graph node
+        #    mentions any of them. Cheap string scan over the node fields.
+        terms = self._salient_terms(instruction)
+        if terms:
+            try:
+                nodes = self.light_graph.timeline()
+            except Exception:
+                nodes = []
+            haystack = " ".join(
+                str(v).lower()
+                for n in nodes
+                for v in (
+                    n.get("subject"), n.get("sender"), n.get("recipient"),
+                    n.get("file_name"), n.get("doc_type"),
+                    " ".join(n.get("ref_numbers", []) or []),
+                )
+                if v
+            )
+            if not any(t in haystack for t in terms):
+                return True
+
+        # 3) "Not found"-style synthesized answer (short, negative).
+        if len(answer) < 400 and self._NOT_FOUND_RE.search(answer):
+            return True
+
+        return False
+
+    def _execute_timeline_step(self, instruction: str, provider: str = "gemini",
+                               doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Execute a timeline/graph query step, with fallback to document RAG.
+
+        The light_graph only contains documents whose notice metadata extracted
+        successfully — a strict subset of the vector store. When the graph lacks
+        the targeted document, fall back to full document RAG (which has every
+        PDF), instead of returning an empty/"not found" answer.
+        """
         graph = self.light_graph
         result = graph.smart_timeline_answer(instruction)
+
+        if self._timeline_graph_miss(instruction, result):
+            logger.info("[Executor] Timeline graph miss → document RAG fallback")
+            fb = self._execute_document_step(instruction, provider=provider, doc_ids=doc_ids)
+            fb["_fallback"] = "document"
+            return fb
 
         return {
             "answer": result.get("answer", "No matching documents found."),
