@@ -579,6 +579,11 @@ class DataAnalyzerSQL:
             # Equipment by floor
             (r'(?:equipment|machinery)\s+(?:by|per|on)\s+(?:floor|level)',
              'SELECT "Floor", "Machinery Name", ROUND(SUM(TRY_CAST("Estimated Machinery Hours" AS DOUBLE)), 2) AS total_hours FROM {table} GROUP BY "Floor", "Machinery Name" ORDER BY "Floor", total_hours DESC'),
+            # Broad fallback: ANY remaining hours/utilisation/equipment-name question
+            # → deterministic per-machine breakdown (correct quoting, no fragile LLM SQL).
+            # Placed LAST so the specific patterns above win first.
+            (r'\bhours?\b|utiliz|tower\s+crane|material\s+hoist|concrete\s+pump|needle\s+vibrator',
+             'SELECT "Machinery Name", ROUND(SUM(TRY_CAST("Estimated Machinery Hours" AS DOUBLE)), 2) AS total_hours FROM {table} GROUP BY "Machinery Name" ORDER BY total_hours DESC'),
         ],
         "manpower_production": [
             (r'(?:total|overall|all)\s+(?:workers|manpower|headcount)',
@@ -605,6 +610,10 @@ class DataAnalyzerSQL:
             # Average daily headcount
             (r'(?:average|avg)\s+(?:daily)?\s*(?:headcount|workers)',
              'SELECT ROUND(SUM("Number of Workers") * 1.0 / NULLIF(COUNT(DISTINCT "Date"), 0), 1) AS avg_daily_headcount FROM {table}'),
+            # Broad fallback: ANY remaining worker/manpower/trade question →
+            # deterministic per-trade breakdown (correct quoting, no fragile LLM SQL).
+            (r'\b(?:workers?|manpower|headcount|labou?r|trades?|crews?|fixers?|carpenters?|masons?|steel)\b',
+             'SELECT "Job Description", SUM("Number of Workers") AS total_workers FROM {table} GROUP BY "Job Description" ORDER BY total_workers DESC'),
         ],
         "ipc_sample": [
             (r'(?:total|overall)\s+(?:boq|contract)\s+(?:amount|value)',
