@@ -6,6 +6,7 @@ to handle complex multi-step queries.
 Architecture:
   Router -> Hybrid Executor -> Planner -> [Step1, Step2, ...] -> Combined Answer
 """
+import re
 from typing import Dict, List, Optional, Any
 
 from llama_index.llms.gemini import Gemini
@@ -73,51 +74,95 @@ class HybridExecutor:
             self._jargon = get_jargon_manager()
         return self._jargon
 
-    def _build_table_context(self) -> str:
-        """Build context string describing available tables."""
-        tables = self.data_analyzer.list_tables()
-        if not tables:
-            return "No tables loaded."
+    def _build_table_context(self, query: str = "") -> str:
+        """L2 — query-relevant, RELIABLE data tables only (no OCR junk pseudo-
+        tables). Scales: only the top-N tables relevant to the query are listed,
+        so prompt size stays bounded as the corpus grows."""
+        da = self.data_analyzer
+        # select_tables is heuristic (no LLM) and already drops junk tables.
+        names = da.select_tables(query, max_tables=8) if query else da.sql_table_names()[:12]
+        if not names:
+            return "No reliable data tables loaded."
 
         lines = []
-        for name in tables:
-            info = self.data_analyzer.get_table_summary(name)
-            if info:
-                cols = info.get('columns', [])
-                col_str = ', '.join(cols[:8])
-                if len(cols) > 8:
-                    col_str += f'... (+{len(cols) - 8} more)'
-                rows = info.get('row_count', 0)
-                lines.append(f"- {name}: {rows} rows | Columns: {col_str}")
-
-                # Add jargon context for columns
-                jargon_ctx = self.jargon.build_column_context(cols)
-                if jargon_ctx:
-                    lines.append(f"  {jargon_ctx}")
-
+        for name in names:
+            info = da.get_table_summary(name) or {}
+            cols = info.get('columns', [])
+            col_str = ', '.join(cols[:8])
+            if len(cols) > 8:
+                col_str += f'... (+{len(cols) - 8} more)'
+            schema = (info.get('header_metadata', {}) or {}).get('target_schema', '')
+            tag = f" [schema: {schema}]" if schema else ""
+            lines.append(f"- {name}: {info.get('row_count', 0)} rows{tag} | Columns: {col_str}")
+            jargon_ctx = self.jargon.build_column_context(cols)
+            if jargon_ctx:
+                lines.append(f"  {jargon_ctx}")
         return '\n'.join(lines)
 
-    def _build_doc_context(self) -> str:
-        """Build context string describing available documents."""
-        if not self.document_rag.file_registry:
-            return "No documents loaded."
+    def _build_doc_context(self, query: str = "") -> str:
+        """L0+L1 — document corpus TOPICS (compressed cluster labels) + the
+        query-relevant documents' one-line summaries, so the planner knows what
+        the documents are ABOUT (not just filenames) and routes prose/person/
+        date/correspondence sub-questions to DOCUMENT/TIMELINE, not SQL.
 
+        Scales: cluster labels compress 100s of docs into ~12 topics; only the
+        top-N query-relevant per-doc summaries are added.
+        """
         lines = []
-        for fname, info in self.document_rag.file_registry.items():
-            pages = info.get('page_count', 1)
-            ftype = info.get('file_type', '')
-            lines.append(f"- {fname} ({ftype}, {pages} pages)")
 
-        # Also include graph info
-        stats = self.light_graph.get_statistics()
-        if stats['node_count'] > 0:
-            lines.append(f"\nDocument Graph: {stats['node_count']} documents, {stats['edge_count']} relationships")
-            parties = self.light_graph.get_all_parties()
-            if parties:
-                party_str = ', '.join(p['party'] for p in parties[:5])
-                lines.append(f"Parties: {party_str}")
+        # L1a — corpus topic inventory (compressed: cluster labels, ~12).
+        try:
+            from .document_clusterer import get_clusterer, UNCATEGORIZED_LABEL
+            topics = []
+            for c in get_clusterer().list_clusters():
+                label = (c.get("label") or "").strip()
+                if label and label != UNCATEGORIZED_LABEL:
+                    topics.append(f"{label} ({c.get('doc_count', 0)})")
+                if len(topics) >= 12:
+                    break
+            if topics:
+                lines.append("DOCUMENT TOPICS (corpus covers): " + "; ".join(topics))
+        except Exception:
+            pass
 
-        return '\n'.join(lines)
+        # L0+L1b — query-relevant per-document summaries (top-N).
+        try:
+            from .document_registry import get_document_registry
+            q_tokens = {t for t in re.findall(r"\b\w{3,}\b", (query or "").lower())}
+            scored = []
+            for rec in get_document_registry().get_completed():
+                if rec.file_type == "data":
+                    continue  # data files are covered by the table context
+                hay = " ".join([
+                    rec.file_name or "",
+                    rec.llm_summary or "",
+                    " ".join(getattr(rec, "llm_topics", None) or []),
+                    rec.cluster_label or "",
+                ]).lower()
+                score = sum(1 for t in q_tokens if t in hay)
+                scored.append((score, rec))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            picked = [r for s, r in scored if s > 0][:6] or [r for _, r in scored[:6]]
+            for rec in picked:
+                summary = (rec.llm_summary or "").strip()
+                topics = ", ".join((getattr(rec, "llm_topics", None) or [])[:4])
+                meta = f" — {summary[:140]}" if summary else (f" — topics: {topics}" if topics else "")
+                lines.append(f"- {rec.file_name} ({rec.file_type}){meta}")
+        except Exception:
+            pass
+
+        # L3 — lightweight relationship signal (parties), for timeline routing.
+        try:
+            stats = self.light_graph.get_statistics()
+            if stats.get('node_count', 0) > 0:
+                parties = self.light_graph.get_all_parties()
+                if parties:
+                    party_str = ', '.join(p['party'] for p in parties[:5])
+                    lines.append(f"Correspondence parties: {party_str}")
+        except Exception:
+            pass
+
+        return '\n'.join(lines) if lines else "No documents loaded."
 
     def execute(self, query: str, doc_ids: Optional[List[str]] = None,
                 allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -140,9 +185,10 @@ class HybridExecutor:
         if expanded != query:
             logger.info(f"[HybridExecutor] Expanded: {expanded[:100]}...")
 
-        # Gather context
-        table_context = self._build_table_context()
-        doc_context = self._build_doc_context()
+        # Gather query-relevant, content-aware context (bounded by query relevance,
+        # not corpus size).
+        table_context = self._build_table_context(expanded)
+        doc_context = self._build_doc_context(expanded)
 
         # Plan
         plan = self.planner.plan(expanded, table_context, doc_context)
@@ -174,7 +220,7 @@ class HybridExecutor:
         logger.info(f"[HybridExecutor] Multi-step SQL: {query[:100]}...")
 
         expanded = self.jargon.expand_query(query)
-        table_context = self._build_table_context()
+        table_context = self._build_table_context(expanded)
 
         # Force planning even for seemingly simple queries
         plan = self.planner.plan(expanded, table_context, "")
@@ -401,8 +447,8 @@ class HybridExecutor:
         logger.info(f"[HybridExecutor] Dual query: {query[:100]}...")
 
         expanded = self.jargon.expand_query(query)
-        table_context = self._build_table_context()
-        doc_context = self._build_doc_context()
+        table_context = self._build_table_context(expanded)
+        doc_context = self._build_doc_context(expanded)
 
         # Plan once (plan structure is provider-independent)
         plan = self.planner.plan(expanded, table_context, doc_context)

@@ -117,6 +117,42 @@ def _simple_stem(word: str) -> str:
     return w
 
 
+_GENERIC_COL_RE = re.compile(r"^(col_?\d+|unnamed[:_ ]?\d*|column\d+)$")
+
+
+def is_reliable_sql_table(info: Dict[str, Any]) -> bool:
+    """True when a table is a trustworthy SQL DATA source.
+
+    Prose PDFs get table-extracted into JUNK pseudo-tables (OCR/block-detect,
+    fragmented columns like 'col_0', no matched schema). Those mislead the
+    planner/router into SQL when the real answer is document prose. A table is
+    reliable if it matched a target schema, is real Excel/CSV/parquet, or is a
+    derived/normalized view; it is junk if it is a PDF-derived table with no
+    schema, or its columns are mostly generic placeholders.
+    """
+    if not isinstance(info, dict):
+        return True  # unknown shape → don't exclude
+    # Derived/normalized/combined views are built from real data → trustworthy
+    if info.get("is_combined") or info.get("is_grouped") or info.get("is_normalized"):
+        return True
+    if info.get("header_metadata", {}).get("target_schema"):
+        return True
+    source_type = str(info.get("source_type", "")).lower()
+    if source_type in ("excel", "csv", "parquet", "normalized_raw", "normalized_clean", "combined", "unified_schema"):
+        return True
+    extraction = str(info.get("extraction_method", "")).lower()
+    # PDF-derived table with no matched schema = unreliable OCR pseudo-table
+    if source_type == "pdf" or extraction in ("ocr", "block_detect"):
+        return False
+    # Mostly-generic/fragmented columns (col_0, unnamed, ...) → junk regardless of source
+    columns = info.get("columns", []) or []
+    if columns:
+        generic = sum(1 for c in columns if _GENERIC_COL_RE.match(str(c).strip().lower()))
+        if generic >= max(1, (len(columns) + 1) // 2):
+            return False
+    return True
+
+
 class DataAnalyzerSQL:
     """
     Safe data analysis using DuckDB SQL.
@@ -1427,6 +1463,18 @@ class DataAnalyzerSQL:
         """List all loaded tables."""
         return list(self.tables.keys())
 
+    def sql_table_names(self) -> List[str]:
+        """List only tables that are trustworthy SQL data sources (excludes
+        OCR pseudo-tables extracted from prose PDFs). Use this everywhere SQL
+        candidacy is decided so neither the planner nor the DATA route queries junk."""
+        return [n for n in self.tables if is_reliable_sql_table(self.tables.get(n, {}))]
+
+    def _reliable_search_space(self, search_space: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter a table search space to reliable SQL tables. Never strands to
+        empty: if every candidate is junk, return the original (best-effort)."""
+        reliable = {k: v for k, v in search_space.items() if is_reliable_sql_table(v)}
+        return reliable if reliable else search_space
+
     def create_ipc_unified_view(self, table_names: List[str]) -> Optional[str]:
         """Create a unified IPC view combining all monthly sheets with a period column."""
         if len(table_names) < 2:
@@ -2562,6 +2610,8 @@ class DataAnalyzerSQL:
         search_space = self.tables
         if allowed_tables is not None:
             search_space = {k: v for k, v in self.tables.items() if k in allowed_tables}
+        # Drop junk OCR pseudo-tables (prose-PDF derived) from SQL candidacy.
+        search_space = self._reliable_search_space(search_space)
         if not search_space:
             return None
         if len(search_space) == 1:
@@ -2635,6 +2685,8 @@ class DataAnalyzerSQL:
         search_space = self.tables
         if allowed_tables is not None:
             search_space = {k: v for k, v in self.tables.items() if k in allowed_tables}
+        # Drop junk OCR pseudo-tables (prose-PDF derived) from SQL candidacy.
+        search_space = self._reliable_search_space(search_space)
         # Filter out _clean and _raw suffixed views to avoid duplicates
         base_names = set()
         filtered = {}
