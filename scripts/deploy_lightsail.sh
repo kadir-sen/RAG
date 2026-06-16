@@ -230,7 +230,11 @@ curl -fsS "$HEALTH_URL" && echo
 log "Pruning old images + build cache on remote (self-clean)"
 $SSH "$SSH_TARGET" "
     sudo docker image prune -f || true
-    sudo docker builder prune -f --keep-storage 2GB || true
+    # Cap build cache. Newer Docker renamed --keep-storage to --reserved-space;
+    # try the new flag, fall back to the old one, then to an unbounded prune.
+    sudo docker builder prune -f --reserved-space 2GB \
+        || sudo docker builder prune -f --keep-storage 2GB \
+        || sudo docker builder prune -f || true
     echo '--- docker disk usage after prune ---'
     sudo docker system df || true
 " || warn "Prune step failed (non-fatal)"
