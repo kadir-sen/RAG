@@ -450,7 +450,7 @@ class PlanExecutor:
                     trace.record_step(step.step_id, step.step_type, "done", elapsed)
 
             except Exception as e:
-                logger.error(f"[Executor] Step {step.step_id} FAILED: {e}")
+                logger.error(f"[Executor] Step {step.step_id} FAILED: {e}", exc_info=True)
                 step.status = "error"
                 step.error = str(e)
 

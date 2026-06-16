@@ -2055,15 +2055,35 @@ class DataAnalyzerSQL:
                 } if excel_count > 0 else None,
             }
 
-        # Select table
+        # Select table — never let table selection crash the whole query; fall
+        # back to the largest available table so we can still attempt SQL gen.
         if table_name is None:
-            table_name = self.select_table(question, allowed_tables=allowed_tables)
+            try:
+                table_name = self.select_table(question, allowed_tables=allowed_tables)
+            except Exception as e:
+                logger.warning(f"   Table selection failed ({e}); using fallback table")
+                table_name = None
+            if table_name is None:
+                space = self.tables
+                if allowed_tables:
+                    space = {k: v for k, v in self.tables.items() if k in allowed_tables} or self.tables
+                if space:
+                    table_name = max(space.keys(),
+                                     key=lambda n: self.tables.get(n, {}).get("row_count", 0))
+            if table_name is None:
+                return {"answer": "No suitable data table found for this question.",
+                        "sources": [], "sql": None}
 
         logger.info(f"   Using table: {table_name}")
         info = self.tables.get(table_name, {})
 
-        # Try deterministic shortcut (no LLM)
-        shortcut = self._try_deterministic_shortcut(question, table_name)
+        # Try deterministic shortcut (no LLM). It's only an optimization — if it
+        # errors, fall through to LLM SQL generation instead of failing the query.
+        try:
+            shortcut = self._try_deterministic_shortcut(question, table_name)
+        except Exception as e:
+            logger.warning(f"   Deterministic shortcut errored ({e}); using LLM SQL path")
+            shortcut = None
         if shortcut is not None:
             logger.info("   Answered via deterministic shortcut (no LLM)")
             return shortcut
@@ -2427,6 +2447,68 @@ class DataAnalyzerSQL:
             logger.info(f"[TableSelect] Preferred grouped view: {best_name}")
             return best_name
         return None
+
+    def query_unified_schema(self, question: str, target_schema: str,
+                             allowed_tables: Optional[List[str]] = None,
+                             provider: str = "gemini") -> Optional[Dict[str, Any]]:
+        """Aggregate across ALL tables sharing a target_schema via a single
+        UNION ALL view, so multi-file same-schema questions get one correct total
+        (instead of per-file partial results capped at 3 tables).
+
+        Defensive: returns None on any problem so callers fall back to per-table.
+        """
+        try:
+            names = []
+            for name, info in self.tables.items():
+                if name.endswith(("_clean", "_raw")) or name.startswith("_unified_"):
+                    continue
+                if allowed_tables is not None and name not in allowed_tables:
+                    continue
+                if info.get("header_metadata", {}).get("target_schema", "") == target_schema:
+                    names.append(name)
+            if len(names) < 2:
+                return None  # nothing to unify
+
+            # Common columns across all same-schema tables (preserve first order)
+            col_sets = [set(self.tables.get(n, {}).get("columns", [])) for n in names]
+            common = set.intersection(*col_sets) if col_sets else set()
+            first_cols = [c for c in self.tables.get(names[0], {}).get("columns", []) if c in common]
+            if not first_cols:
+                return None
+
+            col_list = ", ".join(f'"{c}"' for c in first_cols)
+            view = "_unified_" + re.sub(r"[^a-z0-9_]", "", (target_schema or "schema").lower())
+            union_sql = " UNION ALL ".join(
+                f"SELECT {col_list}, '{n}' AS _source_table FROM {n}" for n in names
+            )
+            self.conn.execute(f"DROP VIEW IF EXISTS {view}")
+            self.conn.execute(f"CREATE VIEW {view} AS {union_sql}")
+
+            vinfo = self._get_table_info(view)
+            base = self.tables.get(names[0], {})
+            self.tables[view] = {
+                "file_name": f"All {target_schema} files ({len(names)})",
+                "file_path": "",
+                "source_type": "unified_schema",
+                "is_combined": True,
+                "is_grouped": True,
+                "source_tables": names,
+                "description": f"Unified UNION across {len(names)} {target_schema} tables",
+                "semantic_tags": base.get("semantic_tags", []),
+                "header_metadata": dict(base.get("header_metadata", {})),
+                **vinfo,
+            }
+            logger.info(f"[Unified] {view}: UNION of {len(names)} {target_schema} tables")
+
+            result = self.query(question, table_name=view)
+            if not result or not result.get("sources"):
+                return None
+            result["unified_schema"] = target_schema
+            result["unified_table_count"] = len(names)
+            return result
+        except Exception as e:
+            logger.warning(f"[Unified] schema union failed ({e}); falling back to per-table")
+            return None
 
     def select_table(self, question: str, allowed_tables: Optional[List[str]] = None) -> Optional[str]:
         """

@@ -315,6 +315,29 @@ class HybridExecutor:
         if len(relevant_tables) == 1:
             return self.data_analyzer.query(expanded, allowed_tables=allowed_tables)
 
+        # If the selected tables all share ONE target_schema, aggregate across
+        # ALL same-schema files via a single UNION view → one correct total
+        # (instead of per-file partial results). Falls back to per-table below.
+        try:
+            schemas = {
+                self.data_analyzer.tables.get(t, {}).get("header_metadata", {}).get("target_schema", "")
+                for t in relevant_tables
+            }
+            schemas.discard("")
+            if len(schemas) == 1:
+                only_schema = next(iter(schemas))
+                unified = self.data_analyzer.query_unified_schema(
+                    expanded, only_schema, allowed_tables=allowed_tables, provider=provider,
+                )
+                if unified and unified.get("sources"):
+                    logger.info(
+                        f"[HybridExecutor] Unified-schema aggregation over "
+                        f"{unified.get('unified_table_count')} {only_schema} tables"
+                    )
+                    return unified
+        except Exception as e:
+            logger.warning(f"[HybridExecutor] Unified-schema path skipped: {e}")
+
         logger.info(f"[HybridExecutor] Querying {len(relevant_tables)} tables: {relevant_tables}")
 
         # Query each table independently
