@@ -2462,6 +2462,12 @@ class DataAnalyzerSQL:
             for name, info in self.tables.items():
                 if name.endswith(("_clean", "_raw")) or name.startswith("_unified_"):
                     continue
+                # Skip DERIVED views (grouped/combined) — they already aggregate
+                # the base files, so including them would double-count.
+                if info.get("is_grouped") or info.get("is_combined"):
+                    continue
+                if info.get("source_type") in ("combined", "unified_schema", "grouped"):
+                    continue
                 if allowed_tables is not None and name not in allowed_tables:
                     continue
                 if info.get("header_metadata", {}).get("target_schema", "") == target_schema:
@@ -2509,6 +2515,35 @@ class DataAnalyzerSQL:
         except Exception as e:
             logger.warning(f"[Unified] schema union failed ({e}); falling back to per-table")
             return None
+
+    def query_schema_aware(self, question: str, allowed_tables: Optional[List[str]] = None,
+                           provider: str = "gemini") -> Dict[str, Any]:
+        """Schema-layer entry point for SQL questions.
+
+        Resolves the question's target schema and runs a UNIFIED aggregation over
+        all same-schema base tables (deterministic schema shortcuts on a clean
+        UNION view), which is correct and avoids fragile LLM SQL generation over
+        grouped/combined views (e.g. mis-quoting space-containing columns). Falls
+        back to the standard single-table query path when no schema applies.
+        """
+        try:
+            tname = self.select_table(question, allowed_tables=allowed_tables)
+            schema = ""
+            if tname:
+                schema = self.tables.get(tname, {}).get("header_metadata", {}).get("target_schema", "")
+            if schema:
+                unified = self.query_unified_schema(
+                    question, schema, allowed_tables=allowed_tables, provider=provider,
+                )
+                if unified and unified.get("sources"):
+                    logger.info(f"   [SchemaAware] unified over schema '{schema}'")
+                    return unified
+        except Exception as e:
+            logger.warning(f"   [SchemaAware] skipped ({e}); using single-table path")
+
+        if provider != "gemini":
+            return self.query_with_provider(question, provider, allowed_tables=allowed_tables)
+        return self.query(question, allowed_tables=allowed_tables)
 
     def select_table(self, question: str, allowed_tables: Optional[List[str]] = None) -> Optional[str]:
         """

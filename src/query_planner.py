@@ -595,10 +595,12 @@ class PlanExecutor:
         if context:
             result = self.data_analyzer.query_with_context(instruction, context, provider=provider, allowed_tables=allowed_tables)
         else:
-            if provider != "gemini":
-                result = self.data_analyzer.query_with_provider(instruction, provider, allowed_tables=allowed_tables)
-            else:
-                result = self.data_analyzer.query(instruction, allowed_tables=allowed_tables)
+            # Use the schema layer: unified aggregation over same-schema base tables
+            # with deterministic schema shortcuts, avoiding fragile LLM SQL over
+            # grouped/combined views (the source of the compound-query SQL errors).
+            result = self.data_analyzer.query_schema_aware(
+                instruction, allowed_tables=allowed_tables, provider=provider,
+            )
 
         return {
             "answer": result.get("answer", ""),
