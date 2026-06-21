@@ -145,34 +145,79 @@ def _enrich_document_llm(file_path: str, full_text: str) -> None:
         from .document_rag import generate_doc_id
         from .document_registry import get_document_registry
 
-        snippet = text[:2000]
+        # One unified, cheap call returns everything the downstream layers need:
+        # routing summary/topics + a construction doc_type (classification) + any
+        # timeline events (delay/disruption/excuse/decision/milestone) + domain
+        # terms learned from the text. The first ~4k chars are enough to classify
+        # and catch the lead events/definitions without reading the whole document.
+        snippet = text[:4000]
         prompt = (
-            "You index construction project documents for a query router.\n"
-            "From the document excerpt below, produce a compact JSON object:\n"
-            '{"summary": "<one sentence, max 160 chars>", '
-            '"topics": ["<3-5 short topic tags, e.g. \'delay notice\', \'BOQ\'>"]}\n\n'
+            "You index construction-project / public-inquiry documents.\n"
+            "From the excerpt, return ONE compact JSON object with these keys:\n"
+            '{\n'
+            '  "summary": "<one sentence, max 160 chars>",\n'
+            '  "topics": ["<3-5 short tags, e.g. \'delay notice\', \'BOQ\'>"],\n'
+            '  "doc_type": "<one of: correspondence, contract, variation, claim, '
+            'delay notice, payment certificate, BOQ, drawing, report, meeting minutes, '
+            'witness statement, transcript, other>",\n'
+            '  "events": [{"type": "<delay|disruption|excuse|decision|milestone|claim>", '
+            '"date": "<as written or empty>", "actor": "<who, or empty>", '
+            '"description": "<short>"}],\n'
+            '  "new_terms": [{"term": "<acronym/jargon>", "definition": "<expansion as '
+            'stated in the text>"}]\n'
+            '}\n'
+            "Use [] when a list has nothing. Output JSON only.\n\n"
             f"DOCUMENT EXCERPT:\n{snippet}"
         )
-        cache_key = "docenrich:" + hashlib.sha256(snippet.encode()).hexdigest()[:32]
+        cache_key = "docenrich2:" + hashlib.sha256(snippet.encode()).hexdigest()[:32]
         resp = llm_client.generate_json(
             prompt,
-            system="You are a precise document indexer. Output JSON only.",
+            system="You are a precise construction-document indexer. Output JSON only.",
             cache_key=cache_key,
         )
         data = resp.raw if isinstance(resp.raw, dict) else {}
         summary = str(data.get("summary", "")).strip()[:300] or None
-        topics = [
-            str(t).strip() for t in (data.get("topics") or [])
-            if str(t).strip()
-        ][:5]
+        topics = [str(t).strip() for t in (data.get("topics") or []) if str(t).strip()][:5]
+        doc_type = str(data.get("doc_type", "")).strip()[:60]
+
         if summary or topics:
             get_document_registry().set_llm_enrichment(
                 generate_doc_id(file_path),
                 summary=summary,
                 topics=topics or None,
             )
+
+        # Persist the structured outputs (doc_type, events, new_terms) to a side
+        # store for the Faz-2 batch passes (event-timeline + learning jargon) to
+        # consume. Kept separate so this stays a single cheap call per document.
+        events = [e for e in (data.get("events") or []) if isinstance(e, dict)]
+        new_terms = [t for t in (data.get("new_terms") or []) if isinstance(t, dict)]
+        if doc_type or events or new_terms:
+            _save_doc_enrichment(file_path, {
+                "doc_id": generate_doc_id(file_path),
+                "file_name": Path(file_path).name,
+                "doc_type": doc_type,
+                "summary": summary or "",
+                "topics": topics,
+                "events": events,
+                "new_terms": new_terms,
+            })
     except Exception as e:
         logger.warning(f"[FileRouter] LLM document enrichment skipped: {e}")
+
+
+def _save_doc_enrichment(file_path: str, payload: dict) -> None:
+    """Write the structured enrichment for one document to storage/enrichment/.
+    Best-effort; consumed later by the Faz-2 event-timeline and jargon passes."""
+    try:
+        import json
+        from .config import STORAGE_DIR
+        out_dir = Path(STORAGE_DIR) / "enrichment"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{payload['doc_id']}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"[FileRouter] enrichment save skipped: {e}")
 
 
 def _process_document(file_path: str) -> ProcessingResult:
@@ -206,7 +251,8 @@ def _process_document(file_path: str) -> ProcessingResult:
                         page_num = doc.metadata.get("page_number", 1)
                         doc_text_by_page[page_num] = doc.text
 
-                if doc_text_by_page:
+                from .config import INGEST_EXTRACT_NOTICES
+                if doc_text_by_page and INGEST_EXTRACT_NOTICES:
                     doc_id = generate_doc_id(file_path)
                     notice_summary = extract_document_notice(
                         doc_id=doc_id,
@@ -234,8 +280,10 @@ def _process_document(file_path: str) -> ProcessingResult:
             # LLM enrichment (Phase 2): one-line summary + topic tags for routing
             _enrich_document_llm(file_path, doc_full_text)
 
-            # Table extraction for PDFs (direct — skips duplicate OCR analysis)
-            if filename.lower().endswith(".pdf"):
+            # Table extraction for PDFs (direct — skips duplicate OCR analysis).
+            # Gated: skip on fast bulk embedding runs (INGEST_EXTRACT_TABLES=false).
+            from .config import INGEST_EXTRACT_TABLES
+            if INGEST_EXTRACT_TABLES and filename.lower().endswith(".pdf"):
                 try:
                     from .pdf_table_extractor import extract_pdf_tables
                     tables = extract_pdf_tables(file_path, save_parquet=True)

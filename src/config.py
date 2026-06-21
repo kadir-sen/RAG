@@ -19,7 +19,17 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")  # claude-sonnet-4-20250514 or claude-3-5-sonnet-20241022
 EMBEDDING_MODEL = "gemini-embedding-001"
-EMBEDDING_DIMENSION = 768  # MRL-reduced from 3072 default
+EMBEDDING_DIMENSION = 768  # MRL-reduced from 3072 default (also bge-base-en-v1.5 native dim)
+
+# Embedding provider (all bge-base-en-v1.5, 768-dim → matches EMBEDDING_DIMENSION):
+#   "gemini"    — cloud, paid.
+#   "local"     — sentence-transformers + torch; fast on M4/GPU, ~1 GB RAM (bulk ingest).
+#   "fastembed" — ONNX (no torch), low RAM (~0.6 GB); server default for the 2 GB box.
+# local & fastembed are wire-compatible (same model + query instruction), so docs can
+# be ingested with "local" on the Mac and queried with "fastembed" on the server.
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini").lower()
+LOCAL_EMBEDDING_MODEL = os.getenv("LOCAL_EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "auto")  # "auto" | "mps" | "cpu" | "cuda"
 
 # Dual-LLM providers (built dynamically from available keys)
 # Gemini is always available (primary), others added if keys present
@@ -84,6 +94,16 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 # Chunking settings
 CHUNK_SIZE = 1024
 CHUNK_OVERLAP = 200
+
+# Ingestion toggles — turn off expensive per-PDF steps for fast bulk embedding
+# runs (e.g. large correspondence corpora). Table extraction (pdfplumber, page by
+# page) is ~7x the per-doc cost and adds little on letters/emails; disable it for
+# the bulk vector pass and run it later only where tables matter.
+INGEST_EXTRACT_TABLES = os.getenv("INGEST_EXTRACT_TABLES", "true").lower() in ("1", "true", "yes")
+# Notice extraction feeds the light_graph, which re-saves the whole graph JSON per
+# document (O(n²) over a big corpus). Disable for the bulk vector pass; build the
+# event-timeline / graph in a dedicated optimized batch afterward (Faz 2).
+INGEST_EXTRACT_NOTICES = os.getenv("INGEST_EXTRACT_NOTICES", "true").lower() in ("1", "true", "yes")
 
 # SQL settings
 MAX_UI_DISPLAY_ROWS = 5000  # Only for UI payload truncation, never for SQL LIMIT

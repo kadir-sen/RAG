@@ -20,8 +20,6 @@ from llama_index.core import (
 )
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.vector_stores.pinecone import PineconeVectorStore
-from llama_index.llms.gemini import Gemini
-from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
 from .config import (
     GOOGLE_API_KEY,
@@ -29,6 +27,9 @@ from .config import (
     GEMINI_MODEL,
     EMBEDDING_MODEL,
     EMBEDDING_DIMENSION,
+    EMBEDDING_PROVIDER,
+    LOCAL_EMBEDDING_MODEL,
+    EMBEDDING_DEVICE,
     PINECONE_INDEX_NAME,
     PINECONE_DIMENSION,
     VECTOR_STORE_BACKEND,
@@ -94,19 +95,84 @@ class DocumentRAG:
         "in the project data tables rather than document text."
     )
 
-    def _setup_llm(self):
-        """Configure LLM and embedding models."""
-        log_llm("Setting up Gemini LLM and embeddings", GEMINI_MODEL)
-        Settings.llm = Gemini(
-            api_key=GOOGLE_API_KEY,
-            model=GEMINI_MODEL,
-            system_prompt=self.DOCUMENT_SYSTEM_PROMPT,
-        )
-        Settings.embed_model = GoogleGenAIEmbedding(
+    @staticmethod
+    def _build_embed_model():
+        """Build the embedding model. Local (free, sentence-transformers) when
+        EMBEDDING_PROVIDER=local, else Gemini (cloud). The same model must embed
+        both documents and queries, so this single factory is used everywhere via
+        Settings.embed_model."""
+        if EMBEDDING_PROVIDER == "fastembed":
+            # ONNX bge via fastembed — low RAM, no torch (fits a 2 GB server).
+            # Wire-compatible with the sentence-transformers bge corpus.
+            try:
+                from .fastembed_embedding import FastEmbedEmbedding
+            except ImportError as e:
+                raise RuntimeError(
+                    "EMBEDDING_PROVIDER=fastembed requires `fastembed`. "
+                    "Install via `pip install fastembed`."
+                ) from e
+            log_llm("Setting up FASTEMBED (ONNX, low-RAM) embeddings", LOCAL_EMBEDDING_MODEL)
+            model = FastEmbedEmbedding(model_name=LOCAL_EMBEDDING_MODEL)
+            dim = len(model.get_text_embedding("dimension probe"))
+            if dim != EMBEDDING_DIMENSION:
+                raise RuntimeError(
+                    f"fastembed model '{LOCAL_EMBEDDING_MODEL}' is {dim}-dim but "
+                    f"EMBEDDING_DIMENSION={EMBEDDING_DIMENSION}.")
+            return model
+
+        if EMBEDDING_PROVIDER == "local":
+            try:
+                from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+            except ImportError as e:
+                raise RuntimeError(
+                    "EMBEDDING_PROVIDER=local requires `llama-index-embeddings-huggingface` "
+                    "and `sentence-transformers`. Install via `pip install -r requirements.txt`."
+                ) from e
+            device = None if EMBEDDING_DEVICE == "auto" else EMBEDDING_DEVICE
+            log_llm("Setting up LOCAL embeddings (free)", LOCAL_EMBEDDING_MODEL)
+            # bge models recommend a query-side instruction; docs are embedded plain.
+            model = HuggingFaceEmbedding(
+                model_name=LOCAL_EMBEDDING_MODEL,
+                device=device,
+                query_instruction="Represent this sentence for searching relevant passages: ",
+            )
+            # Guard the #1 migration foot-gun: the embedding dimension MUST match
+            # EMBEDDING_DIMENSION (and the vector-store collection). A mismatch
+            # silently breaks retrieval (query vectors land in a different space).
+            dim = len(model.get_text_embedding("dimension probe"))
+            if dim != EMBEDDING_DIMENSION:
+                raise RuntimeError(
+                    f"LOCAL_EMBEDDING_MODEL '{LOCAL_EMBEDDING_MODEL}' produces {dim}-dim "
+                    f"vectors but EMBEDDING_DIMENSION={EMBEDDING_DIMENSION}. Set "
+                    f"EMBEDDING_DIMENSION={dim} (and recreate the vector-store collection) "
+                    f"or pick a {EMBEDDING_DIMENSION}-dim model."
+                )
+            return model
+        from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+        return GoogleGenAIEmbedding(
             api_key=GOOGLE_API_KEY,
             model_name=EMBEDDING_MODEL,
             embedding_config={"output_dimensionality": EMBEDDING_DIMENSION},
         )
+
+    def _setup_llm(self):
+        """Configure LLM and embedding models."""
+        log_llm("Setting up Gemini LLM and embeddings", GEMINI_MODEL)
+        # Lazy + guarded: the LlamaIndex Gemini wrapper pulls the legacy
+        # google.generativeai SDK, which is fragile on newer Pythons. It's only
+        # needed for LlamaIndex query_engine synthesis; embeddings are independent
+        # (and now local by default), and provider answers go through llm_client.
+        try:
+            from llama_index.llms.gemini import Gemini
+            Settings.llm = Gemini(
+                api_key=GOOGLE_API_KEY,
+                model=GEMINI_MODEL,
+                system_prompt=self.DOCUMENT_SYSTEM_PROMPT,
+            )
+        except Exception as e:
+            logger.warning(f"   Gemini LLM unavailable ({e}); Settings.llm unset "
+                           f"(provider llm_client synthesis still works)")
+        Settings.embed_model = self._build_embed_model()
         Settings.node_parser = SentenceSplitter(
             chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
         )
@@ -167,6 +233,7 @@ class DocumentRAG:
             api_key=QDRANT_API_KEY or None,
             prefer_grpc=False,
             timeout=30.0,
+            check_compatibility=False,  # tolerate minor client/server version skew
         )
 
         existing = {c.name for c in self.qdrant_client.get_collections().collections}
@@ -174,14 +241,31 @@ class DocumentRAG:
 
         if QDRANT_COLLECTION not in existing:
             logger.info(f"[Qdrant] Creating collection: {QDRANT_COLLECTION}")
-            self.qdrant_client.create_collection(
-                collection_name=QDRANT_COLLECTION,
-                vectors_config=qmodels.VectorParams(
-                    size=EMBEDDING_DIMENSION,
-                    distance=qmodels.Distance.COSINE,
-                ),
-            )
-            logger.info(f"   Dimension: {EMBEDDING_DIMENSION}, Metric: cosine")
+            # On-disk vectors + int8 scalar quantization so a large corpus fits a
+            # small (2 GB) box: original vectors live on disk, the int8-quantized
+            # copy stays in RAM (~1/4 size) for fast search.
+            try:
+                self.qdrant_client.create_collection(
+                    collection_name=QDRANT_COLLECTION,
+                    vectors_config=qmodels.VectorParams(
+                        size=EMBEDDING_DIMENSION,
+                        distance=qmodels.Distance.COSINE,
+                        on_disk=True,
+                    ),
+                    quantization_config=qmodels.ScalarQuantization(
+                        scalar=qmodels.ScalarQuantizationConfig(
+                            type=qmodels.ScalarType.INT8,
+                            always_ram=True,
+                        )
+                    ),
+                )
+                logger.info(f"   Dimension: {EMBEDDING_DIMENSION}, Metric: cosine, on_disk+int8")
+            except Exception as e:
+                # Concurrent creation race (parallel ingest workers): another
+                # process already created it — tolerate and proceed.
+                if not self.qdrant_client.collection_exists(QDRANT_COLLECTION):
+                    raise
+                logger.info(f"[Qdrant] Collection created concurrently: {QDRANT_COLLECTION}")
         else:
             logger.info(f"[Qdrant] Using existing collection: {QDRANT_COLLECTION}")
 
@@ -668,6 +752,36 @@ class DocumentRAG:
             logger.error("All insert attempts failed")
             return False
 
+    def embed_file_to_vectors(self, file_path: str) -> int:
+        """Parse a file (with OCR), embed its chunks, and upsert ONLY to the vector
+        store — NO chunk_store / registry / light_graph writes. This makes it safe
+        to run from parallel worker processes (Qdrant upserts are concurrent-safe),
+        unlike route_file()/insert_documents() which touch shared local state.
+
+        Returns the number of chunks indexed (0 on parse failure)."""
+        docs = self.add_document(file_path)  # parse + OCR + delete-existing-vectors
+        # add_document accumulates into self.documents; clear it so long-lived
+        # workers don't leak memory across thousands of files.
+        self.documents.clear()
+        if not docs:
+            return 0
+        node_parser = Settings.node_parser
+        nodes = []
+        for doc in docs:
+            nodes.extend(node_parser.get_nodes_from_documents([doc]))
+        if not nodes:
+            return 0
+        embed_model = Settings.embed_model
+        texts = [n.get_content() for n in nodes]
+        embeddings: List[List[float]] = []
+        EMBED_BATCH = 50
+        for i in range(0, len(texts), EMBED_BATCH):
+            embeddings.extend(embed_model.get_text_embedding_batch(texts[i:i + EMBED_BATCH]))
+        for n, e in zip(nodes, embeddings):
+            n.embedding = e
+        self.vector_store.add(nodes)
+        return len(nodes)
+
     def load_index(self) -> bool:
         """Load existing index from the configured vector store backend."""
         try:
@@ -780,6 +894,15 @@ class DocumentRAG:
             logger.info(f"   Scoped to {' + '.join(scope_desc)}")
         else:
             query_engine = self.index.as_query_engine(similarity_top_k=top_k)
+        if Settings.llm is None:
+            # No LlamaIndex LLM configured (e.g. Gemini SDK unavailable locally).
+            # Provider-specific synthesis goes through query_with_provider/llm_client;
+            # this default engine needs an LLM, so fail clearly instead of crashing deep.
+            raise RuntimeError(
+                "Default query engine needs Settings.llm but it is unset "
+                "(Gemini LLM unavailable). Use query_with_provider() / the provider "
+                "synthesis path, or run where the Gemini SDK works (prod Python 3.11)."
+            )
         response = query_engine.query(question)
 
         # Extract sources with proper metadata (no regex!)
@@ -1280,53 +1403,131 @@ class DocumentRAG:
     # deterministic and lets us combine named-doc chunks with semantic
     # neighbours in a single context.
 
+    @staticmethod
+    def _chunk_text_from_payload(md: Dict[str, Any]) -> str:
+        """Extract chunk text from a vector-store payload/metadata dict.
+        LlamaIndex stores the node as JSON under _node_content."""
+        node_content = md.get("_node_content")
+        if node_content:
+            try:
+                import json as _json
+                return _json.loads(node_content).get("text", "")
+            except Exception:
+                return node_content if isinstance(node_content, str) else ""
+        return md.get("text", "") or ""
+
+    def _vector_query(
+        self, qvec: List[float], top_k: int, file_names: Optional[List[str]] = None,
+        payload_filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Backend-agnostic vector search returning [{text, metadata, score}].
+
+        Optional scoping:
+          - file_names: restrict to those documents.
+          - payload_filters: {key: value | [values]} on the scoped-metadata payload
+            (e.g. {"doc_type": "Witness Statement", "project": "Edinburgh Tram"}).
+            Multiple keys are AND-ed; a list value matches ANY of its entries.
+
+        Works with both Pinecone (direct .query) and Qdrant (query_points + filter).
+        """
+        chunks: List[Dict[str, Any]] = []
+        try:
+            if self.backend == "qdrant":
+                from qdrant_client.http import models as qmodels
+                must = []
+                if file_names:
+                    must.append(qmodels.FieldCondition(
+                        key="file_name", match=qmodels.MatchAny(any=list(file_names))))
+                for key, val in (payload_filters or {}).items():
+                    if isinstance(val, (list, tuple, set)):
+                        must.append(qmodels.FieldCondition(
+                            key=key, match=qmodels.MatchAny(any=list(val))))
+                    else:
+                        must.append(qmodels.FieldCondition(
+                            key=key, match=qmodels.MatchValue(value=val)))
+                flt = qmodels.Filter(must=must) if must else None
+                res = self.qdrant_client.query_points(
+                    collection_name=QDRANT_COLLECTION,
+                    query=qvec,
+                    limit=top_k,
+                    query_filter=flt,
+                    with_payload=True,
+                )
+                for p in res.points:
+                    md = p.payload or {}
+                    chunks.append({"text": self._chunk_text_from_payload(md),
+                                   "metadata": md, "score": p.score})
+            else:
+                pc_filter: Dict[str, Any] = {}
+                if file_names:
+                    pc_filter["file_name"] = {"$in": list(file_names)}
+                for key, val in (payload_filters or {}).items():
+                    pc_filter[key] = {"$in": list(val)} if isinstance(val, (list, tuple, set)) else {"$eq": val}
+                kwargs = dict(vector=qvec, top_k=top_k, include_metadata=True,
+                              namespace="__default__")
+                if pc_filter:
+                    kwargs["filter"] = pc_filter
+                res = self.pinecone_index.query(**kwargs)
+                matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
+                for m in matches or []:
+                    md = m.get("metadata") if isinstance(m, dict) else getattr(m, "metadata", {}) or {}
+                    score = m.get("score") if isinstance(m, dict) else getattr(m, "score", None)
+                    chunks.append({"text": self._chunk_text_from_payload(md),
+                                   "metadata": md, "score": score})
+        except Exception as e:
+            logger.warning(f"[VectorQuery] {self.backend} query failed: {e}")
+        return chunks
+
+    def fetch_doc_vectors(self, file_name: str, max_chunks: int = 50) -> List[List[float]]:
+        """Return raw stored chunk vectors for a document (for centroid pooling).
+        Backend-agnostic: Qdrant scroll(with_vectors) or Pinecone zero-vector query."""
+        out: List[List[float]] = []
+        try:
+            if self.backend == "qdrant":
+                from qdrant_client.http import models as qmodels
+                flt = qmodels.Filter(must=[qmodels.FieldCondition(
+                    key="file_name", match=qmodels.MatchValue(value=file_name))])
+                points, _ = self.qdrant_client.scroll(
+                    collection_name=QDRANT_COLLECTION,
+                    scroll_filter=flt, limit=max_chunks,
+                    with_vectors=True, with_payload=False,
+                )
+                for p in points:
+                    vec = p.vector
+                    if isinstance(vec, dict):  # named-vector collections
+                        vec = next(iter(vec.values()), None)
+                    if vec:
+                        out.append(list(vec))
+            else:
+                zero_vec = [0.0] * EMBEDDING_DIMENSION
+                res = self.pinecone_index.query(
+                    vector=zero_vec, top_k=max_chunks, include_values=True,
+                    include_metadata=False, filter={"file_name": {"$eq": file_name}},
+                    namespace="",
+                )
+                matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
+                for m in matches or []:
+                    values = m.get("values") if isinstance(m, dict) else getattr(m, "values", None)
+                    if values:
+                        out.append(list(values))
+        except Exception as e:
+            logger.warning(f"[VectorFetch] {self.backend} fetch failed for {file_name!r}: {e}")
+        return out
+
     def _fetch_named_doc_chunks(
         self, question: str, file_names: List[str], top_k: int = 10,
     ) -> List[Dict[str, Any]]:
         """Fetch top-k chunks for the given file_names, ranked by query similarity.
-
-        Uses the Pinecone API directly (no LlamaIndex). Returns a list of
-        {text, metadata, score} dicts ordered by descending similarity.
-        """
-        if not file_names or self.pinecone_index is None:
+        Returns a list of {text, metadata, score} dicts ordered by descending similarity."""
+        if not file_names:
             return []
         try:
             from llama_index.core import Settings
-            embed_model = Settings.embed_model
-            qvec = embed_model.get_query_embedding(question)
+            qvec = Settings.embed_model.get_query_embedding(question)
         except Exception as e:
             logger.warning(f"[NamedDoc] embed failed: {e}")
             return []
-
-        try:
-            res = self.pinecone_index.query(
-                vector=qvec,
-                top_k=top_k,
-                include_metadata=True,
-                filter={"file_name": {"$in": list(file_names)}},
-                namespace="__default__",
-            )
-        except Exception as e:
-            logger.warning(f"[NamedDoc] pinecone query failed: {e}")
-            return []
-
-        chunks: List[Dict[str, Any]] = []
-        matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
-        for m in matches or []:
-            md = m.get("metadata") if isinstance(m, dict) else getattr(m, "metadata", {}) or {}
-            # llama-index stores chunk text under _node_content as JSON
-            text = ""
-            node_content = md.get("_node_content")
-            if node_content:
-                try:
-                    import json as _json
-                    parsed = _json.loads(node_content)
-                    text = parsed.get("text", "")
-                except Exception:
-                    text = node_content if isinstance(node_content, str) else ""
-            score = m.get("score") if isinstance(m, dict) else getattr(m, "score", None)
-            chunks.append({"text": text, "metadata": md, "score": score})
-        return chunks
+        return self._vector_query(qvec, top_k, file_names=file_names)
 
     def query_named_docs_with_provider(
         self, question: str, provider: str, file_names: List[str],
@@ -1372,25 +1573,7 @@ class DocumentRAG:
             try:
                 from llama_index.core import Settings
                 qvec = Settings.embed_model.get_query_embedding(question)
-                sres = self.pinecone_index.query(
-                    vector=qvec, top_k=top_k_semantic,
-                    include_metadata=True, namespace="__default__",
-                )
-                smatches = (sres.get("matches") if isinstance(sres, dict)
-                            else getattr(sres, "matches", [])) or []
-                for m in smatches:
-                    md = (m.get("metadata") if isinstance(m, dict)
-                          else getattr(m, "metadata", {}) or {})
-                    text = ""
-                    nc = md.get("_node_content")
-                    if nc:
-                        try:
-                            import json as _json
-                            text = _json.loads(nc).get("text", "")
-                        except Exception:
-                            text = nc if isinstance(nc, str) else ""
-                    score = m.get("score") if isinstance(m, dict) else getattr(m, "score", None)
-                    semantic_chunks.append({"text": text, "metadata": md, "score": score})
+                semantic_chunks = self._vector_query(qvec, top_k_semantic)
             except Exception as e:
                 logger.warning(f"[NamedDoc] semantic fetch failed: {e}")
 

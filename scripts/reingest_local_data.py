@@ -28,10 +28,11 @@ DATA_EXTS = {".xlsx", ".xls", ".csv"}
 ALLOWED = DOC_EXTS | EMAIL_EXTS | DATA_EXTS
 
 
-def _gather() -> list[Path]:
+def _gather(source_dirs: list[Path] | None = None) -> list[Path]:
+    if source_dirs is None:
+        source_dirs = [ROOT / "data" / sub for sub in ("documents", "emails", "tables")]
     out: list[Path] = []
-    for sub in ("documents", "emails", "tables"):
-        folder = ROOT / "data" / sub
+    for folder in source_dirs:
         if not folder.exists():
             continue
         for p in sorted(folder.iterdir()):
@@ -41,20 +42,50 @@ def _gather() -> list[Path]:
 
 
 def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Batch re-ingest local source files.")
+    parser.add_argument("--source-dir", action="append", default=None,
+                        help="Directory to ingest from (repeatable). "
+                             "Default: data/{documents,emails,tables}.")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="Only ingest the first N files (validation run).")
+    parser.add_argument("--no-cluster", action="store_true",
+                        help="Skip the final re-cluster step.")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="Skip files already vectorized in the backend (resumable).")
+    args = parser.parse_args()
+
     from src.file_router import route_file
 
-    files = _gather()
+    source_dirs = [Path(d).resolve() for d in args.source_dir] if args.source_dir else None
+    files = _gather(source_dirs)
+    if args.limit:
+        files = files[: args.limit]
     print(f"Found {len(files)} files to ingest")
     print(f"  documents: {sum(1 for f in files if f.suffix.lower() in DOC_EXTS)}")
     print(f"  emails:    {sum(1 for f in files if f.suffix.lower() in EMAIL_EXTS)}")
     print(f"  tables:    {sum(1 for f in files if f.suffix.lower() in DATA_EXTS)}")
     print()
 
+    # Resumability: skip files whose vectors already exist in the backend, so a
+    # long OCR-heavy run can be stopped and re-run without redoing work.
+    _rag = None
+    if args.skip_existing:
+        from src.document_rag import get_document_rag
+        _rag = get_document_rag()
+
     ok = 0
     err = 0
+    skipped = 0
     t0 = time.time()
     for i, fp in enumerate(files, 1):
         rel = fp.relative_to(ROOT)
+        if _rag is not None and _rag.fetch_doc_vectors(fp.name, max_chunks=1):
+            skipped += 1
+            if skipped % 200 == 0:
+                print(f"  [{i:4d}/{len(files)}] … {skipped} already-indexed skipped")
+            continue
         try:
             result = route_file(str(fp))
             tag = "✓" if result.success else "✗"
@@ -77,7 +108,11 @@ def main() -> int:
             err += 1
 
     elapsed = time.time() - t0
-    print(f"\nIngest done: {ok} ok, {err} failed — {elapsed:.1f}s")
+    print(f"\nIngest done: {ok} ok, {err} failed, {skipped} skipped — {elapsed:.1f}s")
+
+    if args.no_cluster:
+        print("Skipping final cluster step (--no-cluster).")
+        return 0 if err == 0 else 1
 
     # Final force re-cluster so the label state is consistent.
     print("\nRunning final cluster_all(force=True)…")

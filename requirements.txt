@@ -5,6 +5,13 @@ llama-index-llms-openai>=0.1.0
 # anthropic SDK used directly (no llama_index wrapper needed)
 llama-index-embeddings-google-genai>=0.1.0
 llama-index-vector-stores-pinecone>=0.1.0
+# Local (free) embeddings, lightweight server default — EMBEDDING_PROVIDER=fastembed
+# runs bge-base-en-v1.5 via ONNX (no torch) so it fits a 2 GB box. Wire-compatible
+# with the sentence-transformers bge corpus (same model + query instruction).
+fastembed>=0.4.0
+# EMBEDDING_PROVIDER=local (torch + sentence-transformers, used for fast M4 bulk
+# ingestion) is NOT installed in the lean server image. For local ingestion:
+#   uv pip install sentence-transformers llama-index-embeddings-huggingface
 
 # Dual-LLM Providers
 openai>=1.10.0
@@ -71,3 +78,8 @@ extract-msg>=0.47.0
 
 # Utilities
 python-dotenv>=1.0.0
+
+# Browser-impersonating HTTP client (scripts/download_edinburgh_tram.py — the
+# inquiry site's WAF filters non-browser TLS fingerprints, so plain
+# requests/urllib get a 403; curl_cffi presents a real Chrome handshake).
+curl_cffi>=0.7.0

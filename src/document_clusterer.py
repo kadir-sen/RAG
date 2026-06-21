@@ -225,42 +225,17 @@ class DocumentClusterer:
         try:
             from .document_rag import get_document_rag
             rag = get_document_rag()
-            pc_index = rag.pinecone_index
         except Exception as e:
             logger.warning(f"[Clusterer] RAG not available: {e}")
             return None
 
-        if pc_index is None:
-            return None
-
-        try:
-            from .config import EMBEDDING_DIMENSION
-            zero_vec = [0.0] * EMBEDDING_DIMENSION
-            # Pinecone serverless: vectors live in the empty-string namespace
-            # (LlamaIndex's PineconeVectorStore default).
-            res = pc_index.query(
-                vector=zero_vec,
-                top_k=max_chunks,
-                include_values=True,
-                include_metadata=False,
-                filter={"file_name": {"$eq": file_name}},
-                namespace="",
-            )
-        except Exception as e:
-            logger.warning(
-                f"[Clusterer] Pinecone query failed for file_name={file_name!r}: {e}"
-            )
-            return None
-
-        matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
+        # Backend-agnostic: fetch raw chunk vectors for this file (Pinecone or Qdrant).
+        raw = rag.fetch_doc_vectors(file_name, max_chunks=max_chunks)
         vectors: List[np.ndarray] = []
-        for m in matches or []:
-            values = m.get("values") if isinstance(m, dict) else getattr(m, "values", None)
+        for values in raw:
             if not values:
                 continue
-            v = np.asarray(values, dtype=np.float32)
-            v = _l2_normalize(v)
-            vectors.append(v)
+            vectors.append(_l2_normalize(np.asarray(values, dtype=np.float32)))
 
         if not vectors:
             return None
