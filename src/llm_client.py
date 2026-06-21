@@ -10,11 +10,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from .config import (
-    GOOGLE_API_KEY, GEMINI_MODEL,
+    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE,
     OPENAI_API_KEY, OPENAI_MODEL,
     ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
     LLM_PRICING, CACHE_DIR, CACHE_TTL_SECONDS, REDIS_URL,
     LLM_TIMEOUT_SECONDS, LLM_MAX_RETRIES, LLM_PROVIDERS,
+    MAX_LLM_CALLS_PER_QUERY,
 )
 from .types import LLMUsage, LLMResponse, DualLLMResponse
 from .logger import logger
@@ -279,7 +280,7 @@ def _gemini_generate_thinking(
 
 
 def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
-               thinking: int = 0):
+               thinking: int = 0, model: str = ""):
     """
     Create a LlamaIndex LLM instance for the given provider.
 
@@ -289,13 +290,17 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
         max_tokens: Max output tokens
         thinking: Extended-thinking token budget (Claude only here; the Gemini
             thinking path bypasses create_llm via _gemini_generate_thinking).
+        model: Optional model override. When empty, the provider default is used.
+            This is how the cheap tier (GEMINI_MODEL_LITE) is selected per call —
+            previously the gemini branch hardcoded GEMINI_MODEL and ignored any
+            override, so model tiering silently never took effect.
 
     Returns:
         Tuple of (llm_instance, model_name)
     """
     if provider == "openai":
         from llama_index.llms.openai import OpenAI
-        model = OPENAI_MODEL
+        model = model or OPENAI_MODEL
         llm = OpenAI(
             api_key=OPENAI_API_KEY,
             model=model,
@@ -304,7 +309,7 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
         )
         return llm, model
     elif provider == "claude":
-        model = ANTHROPIC_MODEL
+        model = model or ANTHROPIC_MODEL
         llm = _AnthropicWrapper(
             api_key=ANTHROPIC_API_KEY,
             model=model,
@@ -315,7 +320,7 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
         return llm, model
     else:
         from llama_index.llms.gemini import Gemini
-        model = GEMINI_MODEL
+        model = model or GEMINI_MODEL
         llm = Gemini(
             api_key=GOOGLE_API_KEY,
             model=model,
@@ -426,6 +431,32 @@ def generate_text(
             ),
         )
 
+    # ── Soft per-query budget (degrade, never block) ──
+    # Cache hits above are always free and already returned. For a real call,
+    # if this query has already burned MAX_LLM_CALLS_PER_QUERY non-cache calls,
+    # force the cheap tier + no thinking instead of dropping the answer. This
+    # bleeds cost out of runaway/pathological queries without losing correctness
+    # on normal multi-step ones (the default budget is generous).
+    try:
+        from .telemetry import get_current_trace
+        _tr = get_current_trace()
+        if _tr is not None:
+            _real_calls = max(0, _tr.llm_calls - _tr.cache_hits)
+            if _real_calls >= MAX_LLM_CALLS_PER_QUERY and provider == "gemini":
+                if model != GEMINI_MODEL_LITE or thinking:
+                    logger.warning(
+                        f"[LLMClient] soft budget hit ({_real_calls} calls) — "
+                        f"degrading to {GEMINI_MODEL_LITE}, thinking=0"
+                    )
+                    if "budget_soft_cap" not in _tr.errors:
+                        _tr.record_error("budget_soft_cap")
+                model = GEMINI_MODEL_LITE
+                thinking = 0
+                use_gemini_thinking = False
+                use_claude_thinking = False
+    except Exception:
+        pass
+
     # ── Create LLM (skipped for the native gemini-thinking path) ──
     if use_gemini_thinking:
         llm = None
@@ -433,6 +464,7 @@ def generate_text(
         llm, model = create_llm(
             provider, temperature, max_tokens,
             thinking=thinking if use_claude_thinking else 0,
+            model=model,
         )
 
     last_error = None

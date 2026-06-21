@@ -16,6 +16,10 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Model settings
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# Cheap tier for low-value reasoning (classification, scope detection, table
+# selection, small-result summaries, answer-verification). Half the flash price
+# (see LLM_PRICING). High-value steps (SQL generation, synthesis) stay on GEMINI_MODEL.
+GEMINI_MODEL_LITE = os.getenv("GEMINI_MODEL_LITE", "gemini-2.5-flash-lite")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")  # claude-sonnet-4-20250514 or claude-3-5-sonnet-20241022
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -125,7 +129,12 @@ OCR_IMAGE_COVERAGE_THRESHOLD = float(os.getenv("OCR_IMAGE_COVERAGE", "0.7"))  # 
 Path(OCR_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 # ── LLM Call Budget & Safety ────────────────────────────────
-MAX_LLM_CALLS_PER_QUERY = int(os.getenv("MAX_LLM_CALLS", "4"))
+# SOFT budget (not a hard cap): once a single query has made this many real
+# (non-cache) LLM calls, further calls are degraded to the cheap tier + no
+# thinking rather than blocked — answers are never dropped, runaway cost is bled
+# out. 4 was unrealistic (a complex HYBRID query legitimately makes 10-15 calls);
+# 8 lets normal multi-step queries through and only bites pathological ones.
+MAX_LLM_CALLS_PER_QUERY = int(os.getenv("MAX_LLM_CALLS", "8"))
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT", "30"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "1"))
 

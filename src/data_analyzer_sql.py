@@ -20,7 +20,7 @@ import duckdb
 import pandas as pd
 
 from .config import (
-    GOOGLE_API_KEY, GEMINI_MODEL, MAX_UI_DISPLAY_ROWS,
+    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE, MAX_UI_DISPLAY_ROWS,
     SQL_LAZY_SUMMARY_MAX_ROWS, SQL_LAZY_SUMMARY_MAX_CELLS,
     ENABLE_THINKING, THINKING_BUDGET_SQL,
 )
@@ -2052,7 +2052,10 @@ class DataAnalyzerSQL:
         )
         system = build_system_prompt("You are a construction data analyst. Provide meaningful answers.")
 
-        resp = llm_client.generate_text(prompt, system=system, max_tokens=512, provider=provider)
+        # Result summarisation is low-value reasoning (the SQL already did the work)
+        # → cheap tier. The lazy no-LLM path above already skips this for tiny results.
+        resp = llm_client.generate_text(prompt, system=system, max_tokens=512,
+                                        provider=provider, model=GEMINI_MODEL_LITE)
 
         from .telemetry import get_current_trace
         trace = get_current_trace()
@@ -2659,7 +2662,17 @@ class DataAnalyzerSQL:
                 provider="gemini",
                 temperature=0.0,
                 max_tokens=100,
+                model=GEMINI_MODEL_LITE,  # table selection is low-value → cheap tier
             )
+            # Instrument: this was the one SQL-path LLM call missing from telemetry,
+            # so per-query cost under-reported. Record it like the other SQL sites.
+            try:
+                from .telemetry import get_current_trace
+                _tr = get_current_trace()
+                if _tr:
+                    _tr.record_llm_call(response.usage)
+            except Exception:
+                pass
             selected = response.text.strip().strip('"').strip("'").strip('`')
             if selected in search_space:
                 logger.info(f"[TableSelect] LLM selected: {selected}")

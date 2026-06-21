@@ -127,12 +127,18 @@ def route_file(file_path: str) -> ProcessingResult:
     return result
 
 
-def _enrich_document_llm(file_path: str, full_text: str) -> None:
+def _enrich_document_llm(file_path: str, full_text: str,
+                         notice_summary: Optional[dict] = None) -> None:
     """Generate a one-line summary + 3-5 topic tags for a document at ingest time.
 
     Phase 2 enrichment: a single cheap, cached LLM call over the first ~2k chars.
     Stored on the registry record (llm_summary / llm_topics) and later fed to the
     LLM router's document-topic context to reduce misrouting/hallucination.
+
+    Beyond routing, the same call's structured outputs are wired live at ingest:
+      - events[]   → event_timeline store (chronological/excuse questions)
+      - doc_type   → vector payload scope (scoped retrieval filters)
+      - date       → vector payload scope (from the already-extracted notice)
     Failures are non-fatal — ingest must never break because enrichment failed.
     """
     text = (full_text or "").strip()
@@ -142,7 +148,7 @@ def _enrich_document_llm(file_path: str, full_text: str) -> None:
     try:
         import hashlib
         from . import llm_client
-        from .document_rag import generate_doc_id
+        from .document_rag import generate_doc_id, get_document_rag
         from .document_registry import get_document_registry
 
         # One unified, cheap call returns everything the downstream layers need:
@@ -192,16 +198,38 @@ def _enrich_document_llm(file_path: str, full_text: str) -> None:
         # consume. Kept separate so this stays a single cheap call per document.
         events = [e for e in (data.get("events") or []) if isinstance(e, dict)]
         new_terms = [t for t in (data.get("new_terms") or []) if isinstance(t, dict)]
+        doc_id = generate_doc_id(file_path)
+        file_name = Path(file_path).name
         if doc_type or events or new_terms:
             _save_doc_enrichment(file_path, {
-                "doc_id": generate_doc_id(file_path),
-                "file_name": Path(file_path).name,
+                "doc_id": doc_id,
+                "file_name": file_name,
                 "doc_type": doc_type,
                 "summary": summary or "",
                 "topics": topics,
                 "events": events,
                 "new_terms": new_terms,
             })
+
+        # ── Wire the structured outputs LIVE (was previously written-then-ignored) ──
+        # 1) events → chronological store, straight from ingest (no offline script).
+        _persist_events_to_timeline(doc_id, file_name, project="", events=events)
+
+        # 1b) new_terms → jargon dictionary (auto onboarding, feedback-free).
+        _learn_jargon_from_terms(new_terms)
+
+        # 2) doc_type + document date → vector payload, so scoped retrieval filters
+        #    have something to match. Date comes from the notice already extracted
+        #    upstream (no new parsing). Empty values are dropped by update_payload_scope.
+        doc_date = ""
+        if isinstance(notice_summary, dict):
+            doc_date = str(notice_summary.get("date") or "").strip()
+        scope = {"doc_type": doc_type, "date": doc_date}
+        if any(scope.values()):
+            try:
+                get_document_rag().update_payload_scope(doc_id, scope)
+            except Exception as e:
+                logger.debug(f"[FileRouter] scope payload skipped: {e}")
     except Exception as e:
         logger.warning(f"[FileRouter] LLM document enrichment skipped: {e}")
 
@@ -218,6 +246,64 @@ def _save_doc_enrichment(file_path: str, payload: dict) -> None:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         logger.warning(f"[FileRouter] enrichment save skipped: {e}")
+
+
+def _persist_events_to_timeline(doc_id: str, file_name: str, project: str,
+                                events: list) -> None:
+    """Load a document's enrichment events straight into the event-timeline store
+    at ingest, so chronological questions work without the offline batch script.
+    Mirrors the mapping in scripts/build_event_timeline.py. Idempotent (stable
+    event ids) and non-fatal — ingest must never break on this."""
+    if not events:
+        return
+    try:
+        from .event_timeline import get_event_timeline
+        rows = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            rows.append({
+                "doc_id": doc_id,
+                "file_name": file_name,
+                "project": project or "",
+                "date": ev.get("date", ""),
+                "event_type": ev.get("type", ""),
+                "actor": ev.get("actor", ""),
+                "reason": ev.get("reason", "") or ev.get("description", ""),
+                "severity": ev.get("severity", ""),
+                "status": ev.get("status", ""),
+                "description": ev.get("description", ""),
+                "source": "ingest",
+            })
+        get_event_timeline().add_events(rows)
+    except Exception as e:
+        logger.warning(f"[FileRouter] event timeline persist skipped: {e}")
+
+
+def _learn_jargon_from_terms(new_terms: list) -> None:
+    """Feed acronyms/jargon the enrichment mined from a document straight into the
+    jargon dictionary, so a new client's vocabulary self-populates at ingest (no
+    manual entry, no 👍 feedback needed). Built-ins/dupes raise and are skipped —
+    same posture as flywheel._learn_jargon."""
+    if not new_terms:
+        return
+    try:
+        from .jargon_manager import get_jargon_manager
+        jm = get_jargon_manager()
+        for t in new_terms:
+            if not isinstance(t, dict):
+                continue
+            term = str(t.get("term", "")).strip()
+            definition = str(t.get("definition", "")).strip().rstrip(".").strip()
+            if not term or len(definition) < 3:
+                continue
+            try:
+                jm.add_custom_term(term, definition)
+                logger.info(f"[FileRouter] learned jargon: {term} → {definition}")
+            except Exception:
+                pass  # built-in or duplicate — skip silently
+    except Exception as e:
+        logger.warning(f"[FileRouter] jargon learning skipped: {e}")
 
 
 def _process_document(file_path: str) -> ProcessingResult:
@@ -277,8 +363,10 @@ def _process_document(file_path: str) -> ProcessingResult:
                     doc_full_text[:200].strip() + "..." if len(doc_full_text) > 200 else doc_full_text
                 )
 
-            # LLM enrichment (Phase 2): one-line summary + topic tags for routing
-            _enrich_document_llm(file_path, doc_full_text)
+            # LLM enrichment (Phase 2): one-line summary + topic tags for routing,
+            # plus live event-timeline + scoped-payload wiring (uses the notice date).
+            _enrich_document_llm(file_path, doc_full_text,
+                                 notice_summary=result.notice_summary)
 
             # Table extraction for PDFs (direct — skips duplicate OCR analysis).
             # Gated: skip on fast bulk embedding runs (INGEST_EXTRACT_TABLES=false).

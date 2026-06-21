@@ -145,6 +145,36 @@ class EventTimeline:
                 "description", "file_name"]
         return [dict(zip(cols, row)) for row in self._con.execute(sql, params).fetchall()]
 
+    def timeline_context(self, event_type: Optional[str] = None,
+                         actor: Optional[str] = None, project: Optional[str] = None,
+                         date_from: Optional[str] = None, date_to: Optional[str] = None,
+                         limit: int = 60) -> List[Dict]:
+        """Like timeline() but adds optional date-range filtering (on the sortable
+        date_sort key) and returns doc_id too, so a synthesizer can cite evidence.
+        Used by the live chronological query path. Date bounds are ISO 'YYYY-MM-DD'
+        (or any prefix); free-form bounds are normalised through _date_sort_key."""
+        where, params = [], []
+        if event_type:
+            where.append("LOWER(event_type) = ?"); params.append(event_type.lower())
+        if actor:
+            where.append("LOWER(actor) LIKE ?"); params.append(f"%{actor.lower()}%")
+        if project:
+            where.append("LOWER(project) LIKE ?"); params.append(f"%{project.lower()}%")
+        if date_from:
+            where.append("date_sort >= ?"); params.append(_date_sort_key(date_from))
+        if date_to:
+            where.append("date_sort <= ?"); params.append(_date_sort_key(date_to))
+        sql = ("SELECT date, event_type, actor, reason, severity, status, description, "
+               "file_name, doc_id FROM events")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY date_sort LIMIT ?"
+        params.append(limit)
+        cols = ["date", "event_type", "actor", "reason", "severity", "status",
+                "description", "file_name", "doc_id"]
+        with self._db_lock:
+            return [dict(zip(cols, row)) for row in self._con.execute(sql, params).fetchall()]
+
     def type_counts(self) -> Dict[str, int]:
         rows = self._con.execute(
             "SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY 2 DESC"

@@ -809,9 +809,14 @@ class DocumentRAG:
         top_k: int = 10,
         doc_ids: Optional[List[str]] = None,
         file_names: Optional[List[str]] = None,
+        payload_filters: Optional[Dict[str, Any]] = None,
     ) -> dict:
         """Query documents with proper page-level citations.
         If doc_ids is provided, only search within those documents.
+        payload_filters scope retrieval by scoped-metadata (e.g. {"doc_type":
+        "delay notice"}); when a scoped query returns nothing we retry once
+        unscoped so over-tight scope (or not-yet-backfilled payloads) never turns
+        a real answer into "not found".
         """
         log_separator("Document Query")
         logger.info(f"🔍 Question: {question[:100]}...")
@@ -851,38 +856,24 @@ class DocumentRAG:
                     question=question,               # jargon/concept-expanded (dense)
                     raw_question=original_question,   # cleaner text for lexical + rerank
                     top_k=top_k, doc_ids=doc_ids, file_names=file_names,
+                    payload_filters=payload_filters,
                 )
+                # Empty-scope safety net: a scoped query that found nothing retries
+                # once unscoped rather than reporting "not found".
+                if hybrid is not None and not hybrid.get("sources") and payload_filters:
+                    logger.info("   Scoped hybrid empty → retrying unscoped")
+                    hybrid = self._hybrid_query(
+                        question=question, raw_question=original_question,
+                        top_k=top_k, doc_ids=doc_ids, file_names=file_names,
+                    )
                 if hybrid is not None:
                     return hybrid
             except Exception as e:
                 logger.warning(f"   Hybrid retrieval failed → dense fallback: {e}")
 
         logger.info(f"   Retrieving top {top_k} matches...")
-        filter_specs = []
-        if doc_ids:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, MetadataFilter, FilterOperator,
-            )
-            filter_specs.append(
-                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
-            )
-        if file_names:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, MetadataFilter, FilterOperator,
-            )
-            filter_specs.append(
-                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN)
-            )
-        if filter_specs:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, FilterCondition,
-            )
-            # Multiple filters combined with OR — either explicit doc_ids OR
-            # filename-resolved files match.
-            filters = MetadataFilters(
-                filters=filter_specs,
-                condition=FilterCondition.OR if len(filter_specs) > 1 else None,
-            )
+        filters = self._build_metadata_filters(doc_ids, file_names, payload_filters)
+        if filters is not None:
             query_engine = self.index.as_query_engine(
                 similarity_top_k=top_k, filters=filters,
             )
@@ -891,6 +882,8 @@ class DocumentRAG:
                 scope_desc.append(f"{len(doc_ids)} doc_ids")
             if file_names:
                 scope_desc.append(f"{len(file_names)} file_names")
+            if payload_filters:
+                scope_desc.append(f"scope={list(payload_filters.keys())}")
             logger.info(f"   Scoped to {' + '.join(scope_desc)}")
         else:
             query_engine = self.index.as_query_engine(similarity_top_k=top_k)
@@ -904,6 +897,12 @@ class DocumentRAG:
                 "synthesis path, or run where the Gemini SDK works (prod Python 3.11)."
             )
         response = query_engine.query(question)
+        # Empty-scope safety net (dense fallback path): retry unscoped if a scoped
+        # query produced no source nodes.
+        if payload_filters and not getattr(response, "source_nodes", None):
+            logger.info("   Scoped dense query empty → retrying unscoped")
+            response = self.index.as_query_engine(
+                similarity_top_k=top_k).query(question)
 
         # Extract sources with proper metadata (no regex!)
         sources = []
@@ -961,16 +960,23 @@ class DocumentRAG:
     # ── Hybrid retrieval helpers (Phase 1) ──────────────────────────────
     def _hybrid_query(self, question: str, raw_question: str, top_k: int,
                       doc_ids: Optional[List[str]] = None,
-                      file_names: Optional[List[str]] = None) -> Optional[dict]:
+                      file_names: Optional[List[str]] = None,
+                      payload_filters: Optional[Dict[str, Any]] = None) -> Optional[dict]:
         """Dense + lexical candidate fusion (RRF) + optional LLM rerank, then
         synthesize an answer from the final chunks. Returns None when there are
-        no candidates at all (caller falls back to the dense path)."""
+        no candidates at all (caller falls back to the dense path).
+
+        payload_filters scope the DENSE lane (its payload carries doc_type/project);
+        the lexical lane stays unscoped because the chunk store doesn't mirror those
+        keys — fusion + rerank still surface the in-scope chunks, and an empty-result
+        unfiltered retry in query() protects recall."""
         from .config import RAG_CANDIDATE_K, RAG_RERANK_K, RAG_FINAL_K, ENABLE_RERANK
 
         final_k = top_k or RAG_FINAL_K
 
         # 1. Dense candidates (existing vector lane, widened pool)
-        dense = self._dense_candidates(question, RAG_CANDIDATE_K, doc_ids, file_names)
+        dense = self._dense_candidates(question, RAG_CANDIDATE_K, doc_ids, file_names,
+                                       payload_filters)
 
         # 2. Lexical candidates (BM25 over chunk store) + doc-keyword boost
         lexical: List[Dict] = []
@@ -1024,34 +1030,65 @@ class DocumentRAG:
         )
         return {"answer": answer, "sources": sources}
 
+    @staticmethod
+    def _build_metadata_filters(doc_ids: Optional[List[str]],
+                                file_names: Optional[List[str]],
+                                payload_filters: Optional[Dict[str, Any]] = None):
+        """Compose a LlamaIndex MetadataFilters from (doc_ids OR file_names) AND
+        scope (doc_type / project / …). The document selector stays OR (either an
+        explicit doc_id or a filename-resolved file matches), but scope is AND-ed
+        on top so 'only delay notices' genuinely narrows the pool. Returns None
+        when nothing constrains (today's behaviour). Scope values that are empty
+        are dropped so a blank scope never over-filters."""
+        from llama_index.core.vector_stores.types import (
+            MetadataFilter, MetadataFilters, FilterOperator, FilterCondition,
+        )
+        doc_file_specs = []
+        if doc_ids:
+            doc_file_specs.append(
+                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN))
+        if file_names:
+            doc_file_specs.append(
+                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN))
+
+        scope_specs = []
+        for key, val in (payload_filters or {}).items():
+            if val in (None, "", [], {}):
+                continue
+            if isinstance(val, (list, tuple, set)):
+                scope_specs.append(MetadataFilter(key=key, value=list(val),
+                                                  operator=FilterOperator.IN))
+            else:
+                scope_specs.append(MetadataFilter(key=key, value=val,
+                                                  operator=FilterOperator.EQ))
+
+        if not doc_file_specs and not scope_specs:
+            return None
+        if doc_file_specs and not scope_specs:
+            # Pure document selector — preserve the original OR semantics.
+            return MetadataFilters(
+                filters=doc_file_specs,
+                condition=FilterCondition.OR if len(doc_file_specs) > 1 else None,
+            )
+        if scope_specs and not doc_file_specs:
+            return MetadataFilters(filters=scope_specs, condition=FilterCondition.AND)
+        # Both present: (doc_id OR file_name) AND scope1 AND scope2 …
+        doc_group = MetadataFilters(
+            filters=doc_file_specs,
+            condition=FilterCondition.OR if len(doc_file_specs) > 1 else None,
+        )
+        return MetadataFilters(filters=[doc_group] + scope_specs,
+                               condition=FilterCondition.AND)
+
     def _dense_candidates(self, question: str, candidate_k: int,
                           doc_ids: Optional[List[str]],
-                          file_names: Optional[List[str]]) -> List[Dict]:
+                          file_names: Optional[List[str]],
+                          payload_filters: Optional[Dict[str, Any]] = None) -> List[Dict]:
         """Retrieve dense candidates as normalized node dicts."""
         retriever_kwargs = {"similarity_top_k": candidate_k}
-        filter_specs = []
-        if doc_ids:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilter, FilterOperator,
-            )
-            filter_specs.append(
-                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
-            )
-        if file_names:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilter, FilterOperator,
-            )
-            filter_specs.append(
-                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN)
-            )
-        if filter_specs:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, FilterCondition,
-            )
-            retriever_kwargs["filters"] = MetadataFilters(
-                filters=filter_specs,
-                condition=FilterCondition.OR if len(filter_specs) > 1 else None,
-            )
+        flt = self._build_metadata_filters(doc_ids, file_names, payload_filters)
+        if flt is not None:
+            retriever_kwargs["filters"] = flt
         try:
             nodes = self.index.as_retriever(**retriever_kwargs).retrieve(question)
         except Exception as e:
@@ -1415,6 +1452,61 @@ class DocumentRAG:
             except Exception:
                 return node_content if isinstance(node_content, str) else ""
         return md.get("text", "") or ""
+
+    def update_payload_scope(self, doc_id: str, scope: Dict[str, Any]) -> bool:
+        """Stamp scoped-metadata keys (doc_type / project / date / …) onto every
+        vector of a document, in-place, without re-embedding. This is what makes
+        the `payload_filters` lane of `_vector_query` (and the live retrieval
+        filters) actually usable — at ingest we know a document's doc_type/date,
+        so we write them to the payload here.
+
+        Best-effort and idempotent (set_payload merges). Returns True on success.
+        Empty/None scope values are dropped so we never overwrite with blanks.
+        """
+        clean = {k: v for k, v in (scope or {}).items() if v not in (None, "", [], {})}
+        if not doc_id or not clean:
+            return False
+        try:
+            if self.backend == "qdrant":
+                from qdrant_client.http import models as qmodels
+                flt = qmodels.Filter(must=[qmodels.FieldCondition(
+                    key="doc_id", match=qmodels.MatchValue(value=doc_id))])
+                self.qdrant_client.set_payload(
+                    collection_name=QDRANT_COLLECTION,
+                    payload=clean,
+                    points=qmodels.FilterSelector(filter=flt),
+                )
+            else:
+                # Pinecone has no filter-based metadata update; fetch the doc's
+                # chunk ids then update each. Reuse the by-doc_id id lookup.
+                ids = self._pinecone_ids_for_doc(doc_id)
+                for cid in ids:
+                    self.pinecone_index.update(id=cid, set_metadata=clean,
+                                               namespace="__default__")
+            logger.info(f"[ScopePayload] {doc_id[:12]} += {list(clean.keys())}")
+            return True
+        except Exception as e:
+            logger.warning(f"[ScopePayload] update skipped for {doc_id[:12]}: {e}")
+            return False
+
+    def _pinecone_ids_for_doc(self, doc_id: str) -> List[str]:
+        """Best-effort list of Pinecone vector ids for a document (metadata-only
+        query). Used by update_payload_scope on the Pinecone backend."""
+        try:
+            res = self.pinecone_index.query(
+                vector=[0.0] * EMBEDDING_DIMENSION, top_k=10000,
+                include_metadata=False, filter={"doc_id": {"$eq": doc_id}},
+                namespace="__default__",
+            )
+            matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
+            out = []
+            for m in matches or []:
+                mid = m.get("id") if isinstance(m, dict) else getattr(m, "id", None)
+                if mid:
+                    out.append(mid)
+            return out
+        except Exception:
+            return []
 
     def _vector_query(
         self, qvec: List[float], top_k: int, file_names: Optional[List[str]] = None,

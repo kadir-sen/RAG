@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Tuple, Dict, Any, List, Optional
 
 from .config import (
-    GOOGLE_API_KEY, GEMINI_MODEL, ENABLE_TIMELINE,
+    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE, ENABLE_TIMELINE,
     ENABLE_THINKING, THINKING_BUDGET_SYNTHESIS,
 )
 from .types import QueryType, RouterDecision, LLMUsage
@@ -1141,17 +1141,39 @@ class QueryRouter:
                 f"{_norm_q}|{mode or ''}|{_inv_sig}".encode()
             ).hexdigest()[:32]
 
-            resp = llm_client.generate_text(
-                prompt, system=system, max_tokens=16,
-                cache_key=_cls_key,
-            )
-            result = resp.text.strip().upper()
+            # Semantic cache (paraphrase reuse). Scoped by the inventory signature
+            # so a changed file/table set never serves a stale route. Embedding is
+            # free (local fastembed); the exact-hash cache above still handles
+            # identical text. Classification is paraphrase-stable and low-risk —
+            # a rare miss is caught by the existing low-confidence fallbacks.
+            _qvec = None
+            try:
+                from . import semantic_cache
+                _qvec = semantic_cache.embed_query(_norm_q)
+                _sem_hit = semantic_cache.lookup(_inv_sig, _qvec, threshold=0.97)
+            except Exception:
+                _sem_hit = None
+            if _sem_hit:
+                result = _sem_hit.strip().upper()
+            else:
+                resp = llm_client.generate_text(
+                    prompt, system=system, max_tokens=16,
+                    cache_key=_cls_key,
+                    model=GEMINI_MODEL_LITE,  # classification is low-value → cheap tier
+                )
+                result = resp.text.strip().upper()
 
-            # Record telemetry
-            from .telemetry import get_current_trace
-            trace = get_current_trace()
-            if trace:
-                trace.record_llm_call(resp.usage)
+                # Record telemetry
+                from .telemetry import get_current_trace
+                trace = get_current_trace()
+                if trace:
+                    trace.record_llm_call(resp.usage)
+
+                try:
+                    if _qvec:
+                        semantic_cache.put(_inv_sig, _qvec, result)
+                except Exception:
+                    pass
 
             # Parse result — check FILE_LIST first (contains "DATA" substring).
             # Default to DOCUMENT when the LLM output is unparseable: an empty/garbled
@@ -1559,11 +1581,29 @@ class QueryRouter:
         else:
             top_k = 10
 
+        # Scoped retrieval: when the user did NOT name a specific document, let the
+        # LLM derive a doc_type/project scope so a question like "drawing-process
+        # delays" narrows to the right slice instead of the whole corpus. Skipped
+        # when filename hints already pin the target. The query() retry-unscoped
+        # safety net covers over-tight scope / not-yet-backfilled payloads.
+        payload_filters = None
+        if not filename_hints:
+            try:
+                scope = self.compute_query_scope(query)
+                pf = {k: scope[k] for k in ("doc_type", "project")
+                      if scope.get(k)}
+                payload_filters = pf or None
+                if payload_filters:
+                    logger.info(f"[DocQuery] scope filter: {payload_filters}")
+            except Exception as e:
+                logger.debug(f"[DocQuery] scope skipped: {e}")
+
         result = self.document_rag.query(
             search_topic,
             top_k=top_k,
             doc_ids=doc_ids if doc_ids else None,
             file_names=filename_hints if filename_hints else None,
+            payload_filters=payload_filters,
         )
 
         # 3. Merge sources — metadata first, then RAG (deduplicated)
@@ -1795,7 +1835,14 @@ class QueryRouter:
         logger.info("Routing to BOTH handlers (decompose + raw-result synthesis)...")
 
         sub = self._decompose_hybrid(query)
-        doc_result = self.document_rag.query(sub["doc"], doc_ids=doc_ids)
+        _pf = None
+        if not doc_ids:
+            try:
+                _scope = self.compute_query_scope(sub["doc"])
+                _pf = {k: _scope[k] for k in ("doc_type", "project") if _scope.get(k)} or None
+            except Exception:
+                pass
+        doc_result = self.document_rag.query(sub["doc"], doc_ids=doc_ids, payload_filters=_pf)
         allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
         data_result = self.data_analyzer.query(sub["data"], allowed_tables=allowed_tables)
 
@@ -2710,6 +2757,191 @@ class QueryRouter:
 
         return "\n".join(lines)
 
+    # Controlled vocabularies the LLM maps natural language onto. Kept in sync with
+    # the ingest enrichment (file_router._enrich_document_llm) and event_timeline.
+    _SCOPE_DOC_TYPES = ("correspondence, contract, variation, claim, delay notice, "
+                        "payment certificate, BOQ, drawing, report, meeting minutes, "
+                        "witness statement, transcript, other")
+    _SCOPE_EVENT_TYPES = "delay, disruption, excuse, decision, milestone, claim"
+
+    def compute_query_scope(self, query: str) -> Dict[str, Any]:
+        """LLM-derived retrieval SCOPE for a question → controlled values the
+        structured layers can filter on. Shared by the chronological route
+        (event_type / actor / date range) and scoped document retrieval
+        (doc_type / project / date). ONE cheap cached call; returns {} on any
+        failure so callers degrade to today's unscoped behaviour. No keyword
+        rules — the LLM maps natural language onto the vocabularies below.
+        """
+        from . import llm_client
+        from .prompt_security import build_system_prompt
+        import hashlib
+
+        q = (query or "").strip()
+        if not q:
+            return {}
+        cache_key = "scope:" + hashlib.sha256(q.lower().encode()).hexdigest()[:32]
+
+        # Few-shots the Teacher (KOL C) distilled from past weak answers — the
+        # system teaching itself which scope a question implies. Feedback-free.
+        learned_block = ""
+        try:
+            from .teacher import get_scope_examples
+            exs = get_scope_examples(limit=6)
+            if exs:
+                import json as _json
+                lines = [f'Q: "{e["question"]}" -> {_json.dumps(e["scope"], ensure_ascii=False)}'
+                         for e in exs]
+                learned_block = ("LEARNED EXAMPLES (question -> scope):\n"
+                                 + "\n".join(lines) + "\n\n")
+        except Exception:
+            pass
+
+        prompt = (
+            learned_block
+            + "Extract a retrieval SCOPE from the user question as ONE JSON object.\n"
+            "Use null for any field not CLEARLY implied — do not guess.\n"
+            "{\n"
+            f'  "doc_type": <one of: {self._SCOPE_DOC_TYPES} | null>,\n'
+            f'  "event_type": <one of: {self._SCOPE_EVENT_TYPES} | null>,\n'
+            '  "actor": <a person/organisation named in the question, or null>,\n'
+            '  "project": <project / area / region named, or null>,\n'
+            '  "topic": <short subject phrase, or null>,\n'
+            '  "date_from": <ISO YYYY-MM-DD or a year, or null>,\n'
+            '  "date_to": <ISO YYYY-MM-DD or a year, or null>\n'
+            "}\n"
+            "Output JSON only.\n\n"
+            f"QUESTION: {q}"
+        )
+        try:
+            resp = llm_client.generate_json(
+                prompt,
+                system=build_system_prompt("You extract precise query scope. JSON only."),
+                cache_key=cache_key,
+                model=GEMINI_MODEL_LITE,  # scope detection is low-value → cheap tier
+            )
+            data = resp.raw if isinstance(resp.raw, dict) else {}
+        except Exception as e:
+            logger.debug(f"[Scope] compute_query_scope failed: {e}")
+            return {}
+
+        out: Dict[str, Any] = {}
+        for k in ("doc_type", "event_type", "actor", "project", "topic",
+                  "date_from", "date_to"):
+            v = data.get(k)
+            if v not in (None, "", "null", "None"):
+                out[k] = str(v).strip()
+        return out
+
+    def _verify_answer(self, query: str, result: Dict[str, Any]) -> str:
+        """Cheap, CONDITIONAL answer self-check → a verdict that (a) feeds the
+        feedback-free learning loop and the teacher's curriculum, and (b) lets the
+        UI/refusal logic stay clean. Token-efficient: a strong answer (real sources
+        + substantial text) returns 'OK' with NO LLM call; only a weak/empty answer
+        spends one cheap lite call to tell EKSIK (answerable, just incomplete) from
+        KONU-DIŞI (out of corpus → honest refusal).
+        Verdicts: OK | WEAK | OFFTOPIC | EMPTY.
+        """
+        answer = (result.get("answer") or "").strip()
+        sources = result.get("sources") or []
+        a_low = answer.lower()
+        looks_weak = (
+            not sources and (
+                len(answer) < 40
+                or "not found" in a_low
+                or "no relevant" in a_low
+                or "no documents" in a_low
+                or "couldn't find" in a_low
+                or "could not find" in a_low
+            )
+        )
+        if not looks_weak:
+            return "OK"  # strong answer — no verify call spent
+        try:
+            from . import llm_client
+            from .prompt_security import build_system_prompt
+            prompt = (
+                "A user asked a question; the system produced a weak/empty draft. "
+                "Reply with EXACTLY ONE token:\n"
+                "EKSIK — the question is answerable from construction-project documents "
+                "but the draft is incomplete;\n"
+                "KONU_DISI — the question is outside the document corpus (should be refused);\n"
+                "TAMAM — the draft is actually acceptable.\n\n"
+                f"QUESTION: {query}\n\nDRAFT: {answer[:600] or '(empty)'}"
+            )
+            resp = llm_client.generate_text(
+                prompt,
+                system=build_system_prompt("You judge answer completeness. One token."),
+                max_tokens=8, model=GEMINI_MODEL_LITE,
+            )
+            try:
+                from .telemetry import get_current_trace
+                tr = get_current_trace()
+                if tr:
+                    tr.record_llm_call(resp.usage)
+            except Exception:
+                pass
+            v = resp.text.strip().upper()
+            if "KONU" in v:
+                return "OFFTOPIC"
+            if "EKSIK" in v:
+                return "WEAK"
+            return "OK"
+        except Exception:
+            return "EMPTY"
+
+    def _synthesize_temporal_answer(self, query: str, event_rows: List[Dict],
+                                    notice_context: str = "") -> str:
+        """One LLM call that turns STRUCTURED, date-sorted events (with reason +
+        actor + evidence) — optionally cross-referenced with correspondence
+        context — into a chronological, evidence-cited narrative. Feeding the
+        model structured rows (not raw nodes) keeps the prompt small and the
+        answer grounded ('X delayed on D BECAUSE … per <file>')."""
+        from . import llm_client
+        from .prompt_security import build_system_prompt
+
+        lines = []
+        for e in event_rows[:60]:
+            date = e.get("date") or "(undated)"
+            etype = e.get("event_type", "")
+            actor = e.get("actor") or ""
+            reason = e.get("reason") or e.get("description") or ""
+            fname = e.get("file_name") or ""
+            seg = f"- {date} [{etype}]"
+            if actor:
+                seg += f" {actor}:"
+            seg += f" {reason}"
+            if fname:
+                seg += f"  (evidence: {fname})"
+            lines.append(seg)
+        events_block = "\n".join(lines) if lines else "(no structured events)"
+
+        prompt = (
+            "You answer a chronological question about a construction project using "
+            "the STRUCTURED EVENTS below (already date-sorted). Build a clear timeline: "
+            "what happened, WHEN, WHO, and crucially WHY (the reason/excuse), and cite "
+            "the evidence file for each point. Only use the data provided — never invent "
+            "dates, figures, or causes. If the events don't answer the question, say so.\n\n"
+            f"QUESTION: {query}\n\n"
+            f"STRUCTURED EVENTS (date-sorted):\n{events_block}\n"
+        )
+        if notice_context:
+            prompt += f"\nRELATED CORRESPONDENCE (for cross-reference):\n{notice_context[:2500]}\n"
+
+        _syn_think = THINKING_BUDGET_SYNTHESIS if ENABLE_THINKING else 0
+        resp = llm_client.generate_text(
+            prompt,
+            system=build_system_prompt("You synthesize grounded, chronological answers."),
+            thinking=_syn_think,
+        )
+        try:
+            from .telemetry import get_current_trace
+            tr = get_current_trace()
+            if tr:
+                tr.record_llm_call(resp.usage)
+        except Exception:
+            pass
+        return resp.text.strip()
+
     def _handle_timeline_query(self, query: str) -> Dict[str, Any]:
         """Handle timeline/notice-based query using light graph with enhanced capabilities."""
         logger.info("Routing to Timeline/Graph handler...")
@@ -2742,6 +2974,50 @@ class QueryRouter:
                     "answer": summary,
                     "sources": [],
                 }
+
+            # === Structured event store (delay / excuse / decision chronology) ===
+            # The rich events carry reason + actor + date + evidence, so answer
+            # "what was delayed and WHY / give the chronology" from the structured
+            # store FIRST. Empty store (fresh corpus) → fall through to notices.
+            try:
+                from .event_timeline import get_event_timeline
+                store = get_event_timeline()
+                if store.count() > 0:
+                    scope = self.compute_query_scope(query)
+                    ev_rows = store.timeline_context(
+                        event_type=scope.get("event_type"),
+                        actor=scope.get("actor"),
+                        project=scope.get("project"),
+                        date_from=scope.get("date_from"),
+                        date_to=scope.get("date_to"),
+                    )
+                    if ev_rows:
+                        # Cross-reference correspondence — finally call the
+                        # never-before-called light_graph.timeline(...).
+                        notice_ctx = ""
+                        try:
+                            tl = graph.timeline(
+                                start_date=scope.get("date_from"),
+                                end_date=scope.get("date_to"),
+                                party_filter=scope.get("actor"),
+                                topic_filter=scope.get("topic"),
+                            )
+                            notice_ctx = "\n".join(
+                                f"- {n.get('date','')} {n.get('sender','')}"
+                                f"→{n.get('recipient','')}: {n.get('subject','')}"
+                                for n in (tl or [])[:25]
+                            )
+                        except Exception:
+                            pass
+                        answer = self._synthesize_temporal_answer(query, ev_rows, notice_ctx)
+                        return {
+                            "query": query,
+                            "query_type": QueryType.TIMELINE.value,
+                            "answer": answer,
+                            "sources": self._build_event_sources(ev_rows),
+                        }
+            except Exception as e:
+                logger.warning(f"   Event-store timeline failed, falling through: {e}")
 
             # === 0. Compound queries: semantic intent + document scope ===
             intent = self._parse_compound_intent(query_lower)
@@ -2986,6 +3262,34 @@ class QueryRouter:
             }
 
     # ── Helper methods ────────────────────────────────────────
+
+    def _build_event_sources(self, event_rows: List[Dict]) -> List[Dict[str, Any]]:
+        """Clickable sources for a chronological answer — one per distinct evidence
+        document, deduped, with the cited event text as the highlight so the right
+        panel can open the excerpt (PDF page image or chunk-text fallback)."""
+        seen: set = set()
+        sources: List[Dict[str, Any]] = []
+        for e in event_rows:
+            fname = e.get("file_name") or ""
+            doc_id = e.get("doc_id") or ""
+            key = fname or doc_id
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            reg = self.document_rag.file_registry.get(fname, {})
+            sources.append({
+                "type": "event",
+                "file_name": fname or doc_id,
+                "doc_id": doc_id,
+                "file_path": reg.get("file_path", ""),
+                "page_number": 1,
+                "total_pages": reg.get("page_count", 1),
+                "date": e.get("date", ""),
+                "highlight_text": (e.get("reason") or e.get("description") or "")[:300],
+            })
+            if len(sources) >= 12:
+                break
+        return sources
 
     def _build_source(self, doc_id: str, node: Dict, notices_dir: Path) -> Dict[str, Any]:
         """Build source entry with evidence from notice file, including file_path for clickability."""
@@ -3440,7 +3744,16 @@ class QueryRouter:
                 "used_llm": decision.used_llm,
             }
 
-            logger.info(f"Query complete - {len(result.get('sources', []))} sources")
+            # Cheap, conditional self-verify → feeds the feedback-free learning loop
+            # (logged by the orchestrator) and marks out-of-corpus answers. Strong
+            # answers cost nothing here.
+            try:
+                result["verify_verdict"] = self._verify_answer(query, result)
+            except Exception:
+                result["verify_verdict"] = ""
+
+            logger.info(f"Query complete - {len(result.get('sources', []))} sources "
+                        f"[verify={result.get('verify_verdict','')}]")
             return result
 
         finally:

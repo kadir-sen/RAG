@@ -142,6 +142,25 @@ class ChatOrchestrator:
         # 5. Map to response contract
         response = build_chat_response(raw_result, is_dual=is_dual)
 
+        # 5b. Feedback-free learning substrate: log the answered query + the docs
+        # that surfaced together (co-retrieval graph). Best-effort, never blocks.
+        try:
+            srcs = raw_result.get("sources") or []
+            src_files = [s.get("file_name") for s in srcs
+                         if isinstance(s, dict) and s.get("file_name")]
+            from src.interaction_log import get_interaction_log
+            get_interaction_log().log(
+                query=query,
+                route=raw_result.get("query_type", ""),
+                source_files=src_files,
+                username=username or "",
+                scope=raw_result.get("scope") or {},
+                verdict=raw_result.get("verify_verdict", ""),
+                ts=datetime.now().isoformat(),
+            )
+        except Exception:
+            pass
+
         # 6. Save assistant message
         assistant_msg = Message(
             role="assistant",
