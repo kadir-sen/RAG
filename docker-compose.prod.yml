@@ -25,12 +25,35 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./data:/app/data
+    depends_on:
+      qdrant:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Self-hosted vector store (replaces Pinecone). Reachable only on the internal
+  # compose network as http://qdrant:6333 — NOT published to the host/public.
+  # On-disk vectors + int8 quantization (set at collection-create in document_rag.py)
+  # keep RAM use small enough for the 2 GB Lightsail box.
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    container_name: mvp-qdrant
+    restart: unless-stopped
+    # Bound to loopback only (for SSH-tunnel ingestion); the API talks to it over
+    # the internal compose network, so no public exposure.
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
     logging:
       driver: json-file
       options:

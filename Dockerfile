@@ -15,9 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set Tesseract environment variable
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
-# Copy requirements first for caching
+# Copy requirements first for caching. No torch — server query embedding uses
+# fastembed (ONNX), keeping the image small and RAM low enough for a 2 GB box.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Pre-bake the fastembed bge model into the image so query-time embedding works
+# offline (no first-request download). Keep in sync with LOCAL_EMBEDDING_MODEL.
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-base-en-v1.5')"
 
 # Build frontend
 COPY frontend/package.json frontend/package-lock.json ./frontend/
