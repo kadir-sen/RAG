@@ -155,6 +155,31 @@ class DocumentService:
         except Exception:
             pass
 
+        # Fallback: serve the chunk text from the chunk_store. This rescues the
+        # right-panel viewer for corpora ingested vectors-only (no registry entry,
+        # no PDF on disk) — the cited excerpt still opens, just as text not a page
+        # image. Matches the source's doc_id (or file_name) against the mirrored
+        # chunks; prefers the anchored page, else the whole document's text.
+        try:
+            from src.chunk_store import get_chunk_store
+            con = get_chunk_store().connection()
+            rows = con.execute(
+                "SELECT file_name, page_number, text FROM chunks "
+                "WHERE doc_id = ? OR file_name = ? OR file_name = ? "
+                "ORDER BY page_number",
+                [doc_id, doc_id, f"{doc_id}.pdf"],
+            ).fetchall()
+            if rows:
+                page = self._parse_anchor_page(anchor)
+                fname = rows[0][0]
+                total = max(int(r[1] or 1) for r in rows)
+                page_rows = [r for r in rows if int(r[1] or 1) == page] or rows
+                text = "\n\n".join((r[2] or "") for r in page_rows)[:8000]
+                return DocContent(type="text", file_name=fname, page=page,
+                                  total_pages=total, text=text)
+        except Exception:
+            pass
+
         return DocContent(type="text", error="Document not found")
 
     def _serve_by_extension(self, file_path: str, anchor: str = "") -> DocContent:
