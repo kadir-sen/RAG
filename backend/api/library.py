@@ -1,7 +1,8 @@
 """Library endpoints — global document registry."""
 
+import os
 import threading
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from fastapi import APIRouter, HTTPException
 
@@ -12,6 +13,49 @@ from backend.models.responses import (
 )
 
 router = APIRouter()
+
+# Cap how many vectors-only (chunk-store) documents we surface in the library so
+# a very large corpus (e.g. 7k+ Edinburgh Tram PDFs) doesn't render thousands of
+# DOM nodes in the sidebar at once. Raise via env when a real search/filter lands.
+_VECTORS_ONLY_LIMIT = int(os.getenv("LIBRARY_VECTORS_ONLY_LIMIT", "1000"))
+
+_EMAIL_EXTS = {".eml", ".msg"}
+_DATA_EXTS = {".xlsx", ".xls", ".csv"}
+
+
+def _vectors_only_library_docs(known_names: Set[str],
+                               limit: int = _VECTORS_ONLY_LIMIT) -> List[LibraryDocument]:
+    """Documents that live only in the vector/chunk store (ingested without a
+    registry entry — e.g. a bulk vectors-only corpus). They are NOT in the
+    document registry, so the normal /library list misses them. We synthesise
+    library entries straight from the chunk store's distinct file names. The
+    viewer resolves them by file_name via its chunk-text fallback, so we set
+    doc_id := file_name to make the click round-trip without a registry record.
+    Read-only on the chunk store — no registry writes, safe under concurrency."""
+    from src.chunk_store import get_chunk_store
+    con = get_chunk_store().connection()
+    rows = con.execute(
+        "SELECT file_name FROM chunks "
+        "WHERE file_name IS NOT NULL AND file_name <> '' "
+        "GROUP BY file_name ORDER BY file_name"
+    ).fetchall()
+    out: List[LibraryDocument] = []
+    for (file_name,) in rows:
+        if file_name in known_names:
+            continue
+        ext = os.path.splitext(file_name)[1].lower()
+        ftype = ("email" if ext in _EMAIL_EXTS
+                 else "data" if ext in _DATA_EXTS else "document")
+        out.append(LibraryDocument(
+            doc_id=file_name,          # viewer chunk-text fallback matches file_name
+            file_name=file_name,
+            file_type=ftype,
+            extension=ext,
+            status="completed",
+        ))
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _load_notice_metadata(doc_id: str) -> Optional[NoticeMetadataOut]:
@@ -58,10 +102,18 @@ def _build_library_doc(r, include_notice: bool = True) -> LibraryDocument:
 
 @router.get("/library", response_model=List[LibraryDocument])
 async def list_library():
-    """List all completed documents in the global library."""
+    """List all completed documents in the global library — registry records plus
+    any vectors-only documents (bulk-ingested without a registry entry) so a large
+    corpus is browsable and clickable in the sidebar."""
     from src.document_registry import get_document_registry
     registry = get_document_registry()
-    return [_build_library_doc(r) for r in registry.get_completed()]
+    docs = [_build_library_doc(r) for r in registry.get_completed()]
+    try:
+        known = {d.file_name for d in docs}
+        docs += _vectors_only_library_docs(known)
+    except Exception:
+        pass  # never break the core list if the chunk store is unavailable
+    return docs
 
 
 @router.get("/library/summary")
