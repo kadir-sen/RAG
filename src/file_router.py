@@ -128,7 +128,8 @@ def route_file(file_path: str) -> ProcessingResult:
 
 
 def _enrich_document_llm(file_path: str, full_text: str,
-                         notice_summary: Optional[dict] = None) -> None:
+                         notice_summary: Optional[dict] = None,
+                         set_scope_payload: bool = True) -> None:
     """Generate a one-line summary + 3-5 topic tags for a document at ingest time.
 
     Phase 2 enrichment: a single cheap, cached LLM call over the first ~2k chars.
@@ -224,10 +225,13 @@ def _enrich_document_llm(file_path: str, full_text: str,
         doc_date = ""
         if isinstance(notice_summary, dict):
             doc_date = str(notice_summary.get("date") or "").strip()
+        # Per-doc payload write is fine for single uploads but too slow for a
+        # bulk backfill (one filtered set_payload per doc) — bulk runs disable it
+        # and use the dedicated scripts/enrich_payload.py (which indexes first).
         scope = {"doc_type": doc_type, "date": doc_date}
-        if any(scope.values()):
+        if set_scope_payload and any(scope.values()):
             try:
-                get_document_rag().update_payload_scope(doc_id, scope)
+                get_document_rag().update_payload_scope(file_name, scope)
             except Exception as e:
                 logger.debug(f"[FileRouter] scope payload skipped: {e}")
     except Exception as e:

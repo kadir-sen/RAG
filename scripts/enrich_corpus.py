@@ -70,7 +70,10 @@ def main() -> int:
             continue
         # _enrich_document_llm derives doc_id from its first arg via generate_doc_id,
         # so passing file_name keeps the side-store id stable and PDF-free.
-        file_router._enrich_document_llm(file_name, text)
+        # set_scope_payload=False: a per-doc Qdrant set_payload across the whole
+        # collection would time out over thousands of docs — scope payloads are
+        # backfilled separately via scripts/enrich_payload.py (which indexes first).
+        file_router._enrich_document_llm(file_name, text, set_scope_payload=False)
         done += 1
         if i % 100 == 0:
             print(f"  [{i}/{len(items)}] {done} enriched, {skipped} skipped")

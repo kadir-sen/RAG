@@ -1453,24 +1453,25 @@ class DocumentRAG:
                 return node_content if isinstance(node_content, str) else ""
         return md.get("text", "") or ""
 
-    def update_payload_scope(self, doc_id: str, scope: Dict[str, Any]) -> bool:
+    def update_payload_scope(self, file_name: str, scope: Dict[str, Any]) -> bool:
         """Stamp scoped-metadata keys (doc_type / project / date / …) onto every
         vector of a document, in-place, without re-embedding. This is what makes
-        the `payload_filters` lane of `_vector_query` (and the live retrieval
-        filters) actually usable — at ingest we know a document's doc_type/date,
-        so we write them to the payload here.
+        the `payload_filters` lane of retrieval usable — at ingest we know a
+        document's doc_type/date, so we write them to the payload here.
 
-        Best-effort and idempotent (set_payload merges). Returns True on success.
-        Empty/None scope values are dropped so we never overwrite with blanks.
+        Filters by file_name, which is the reliable, INDEXED payload key (the
+        per-document doc_id is not unique across chunks and is unindexed, so a
+        doc_id filter would full-scan and time out on a large collection).
+        Best-effort and idempotent (set_payload merges). Empty values dropped.
         """
         clean = {k: v for k, v in (scope or {}).items() if v not in (None, "", [], {})}
-        if not doc_id or not clean:
+        if not file_name or not clean:
             return False
         try:
             if self.backend == "qdrant":
                 from qdrant_client.http import models as qmodels
                 flt = qmodels.Filter(must=[qmodels.FieldCondition(
-                    key="doc_id", match=qmodels.MatchValue(value=doc_id))])
+                    key="file_name", match=qmodels.MatchValue(value=file_name))])
                 self.qdrant_client.set_payload(
                     collection_name=QDRANT_COLLECTION,
                     payload=clean,
@@ -1478,24 +1479,24 @@ class DocumentRAG:
                 )
             else:
                 # Pinecone has no filter-based metadata update; fetch the doc's
-                # chunk ids then update each. Reuse the by-doc_id id lookup.
-                ids = self._pinecone_ids_for_doc(doc_id)
+                # chunk ids by file_name then update each.
+                ids = self._pinecone_ids_for_file(file_name)
                 for cid in ids:
                     self.pinecone_index.update(id=cid, set_metadata=clean,
                                                namespace="__default__")
-            logger.info(f"[ScopePayload] {doc_id[:12]} += {list(clean.keys())}")
+            logger.info(f"[ScopePayload] {file_name[:40]} += {list(clean.keys())}")
             return True
         except Exception as e:
-            logger.warning(f"[ScopePayload] update skipped for {doc_id[:12]}: {e}")
+            logger.warning(f"[ScopePayload] update skipped for {file_name[:40]}: {e}")
             return False
 
-    def _pinecone_ids_for_doc(self, doc_id: str) -> List[str]:
+    def _pinecone_ids_for_file(self, file_name: str) -> List[str]:
         """Best-effort list of Pinecone vector ids for a document (metadata-only
         query). Used by update_payload_scope on the Pinecone backend."""
         try:
             res = self.pinecone_index.query(
                 vector=[0.0] * EMBEDDING_DIMENSION, top_k=10000,
-                include_metadata=False, filter={"doc_id": {"$eq": doc_id}},
+                include_metadata=False, filter={"file_name": {"$eq": file_name}},
                 namespace="__default__",
             )
             matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
