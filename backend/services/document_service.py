@@ -34,6 +34,10 @@ _DATA_FALLBACK_ROOTS = (
     _PROJECT_ROOT / "data" / "documents",
     _PROJECT_ROOT / "data" / "emails",
     _PROJECT_ROOT / "data" / "tables",
+    # Bulk corpus PDFs synced to the server disk (e.g. the Edinburgh Tram set).
+    # Kept in their own dir so a 7k-file corpus doesn't mix with demo uploads;
+    # _resolve_path's direct `root / name` lookup stays O(1) regardless of size.
+    _PROJECT_ROOT / "data" / "edinburgh_pdfs",
     _PROJECT_ROOT / "data",
 )
 
@@ -152,6 +156,18 @@ class DocumentService:
             if rec and rec.file_path:
                 file_path = self._resolve_path(rec.file_path)
                 return self._serve_by_extension(file_path, anchor)
+        except Exception:
+            pass
+
+        # Before the text fallback: if a real file with this name is on disk, serve
+        # it as a proper page image (PDF) / native preview. Bulk vectors-only docs
+        # carry doc_id == file_name (see the library merge), so once their PDFs are
+        # synced to the data dir this resolves them to the actual page render instead
+        # of plain text. Hash-style doc_ids of older docs won't match a file → skip.
+        try:
+            resolved = self._resolve_path(doc_id)
+            if resolved and Path(resolved).is_file():
+                return self._serve_by_extension(resolved, anchor)
         except Exception:
             pass
 

@@ -145,6 +145,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [docSearch, setDocSearch] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [openSections, setOpenSections] = useState<Record<'documents' | 'correspondence' | 'spreadsheet', boolean>>({
     documents: false,
@@ -312,6 +313,15 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
     })
     .sort((a, b) => a.file_name.localeCompare(b.file_name));
 
+  // Search filter + render cap. A large corpus (thousands of PDFs) is browsed by
+  // typing; we render at most 500 rows so the DOM stays light. The search box
+  // narrows the list, so the cap is rarely hit once the user types.
+  const _docQuery = docSearch.trim().toLowerCase();
+  const filteredDocumentDocs = (_docQuery
+    ? documentLibraryDocs.filter((d) => d.file_name.toLowerCase().includes(_docQuery))
+    : documentLibraryDocs
+  ).slice(0, 500);
+
   return (
     <>
       {sidebarOpen && (
@@ -372,26 +382,40 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             onClick={() => toggleSection('documents')}
           />
           {openSections.documents && (
-            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-0.5">
-              {documentLibraryDocs.length === 0 ? (
-                <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">
-                  {libraryQuery.isLoading ? 'Loading…' : 'Empty'}
-                </p>
-              ) : (
-                documentLibraryDocs.map((d) => (
-                  <button
-                    key={d.doc_id}
-                    type="button"
-                    onClick={() => openDocument({ docId: d.doc_id, fileName: d.file_name })}
-                    className="w-full flex items-center gap-2 px-1.5 py-1 rounded text-left hover:bg-[var(--bg-hover)] transition-colors group"
-                  >
-                    <FileTypeBadge fileType={d.file_type} />
-                    <span className="text-[11px] truncate text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] flex-1">
-                      {d.file_name}
-                    </span>
-                  </button>
-                ))
-              )}
+            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-1">
+              {/* Search box — filters the (potentially huge) document list. */}
+              <input
+                type="text"
+                value={docSearch}
+                onChange={(e) => setDocSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') setDocSearch(''); }}
+                placeholder="Search documents…"
+                aria-label="Search documents"
+                className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded px-2 py-1 text-[11px] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--border-light)]"
+              />
+              {/* Scrollable list — bounded height so a large corpus scrolls within
+                  its own window instead of overflowing the sidebar. */}
+              <div className="max-h-[50vh] overflow-y-auto pr-1 space-y-0.5">
+                {filteredDocumentDocs.length === 0 ? (
+                  <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">
+                    {libraryQuery.isLoading ? 'Loading…' : _docQuery ? 'No matches' : 'Empty'}
+                  </p>
+                ) : (
+                  filteredDocumentDocs.map((d) => (
+                    <button
+                      key={d.doc_id}
+                      type="button"
+                      onClick={() => openDocument({ docId: d.doc_id, fileName: d.file_name })}
+                      className="w-full flex items-center gap-2 px-1.5 py-1 rounded text-left hover:bg-[var(--bg-hover)] transition-colors group"
+                    >
+                      <FileTypeBadge fileType={d.file_type} />
+                      <span className="text-[11px] truncate text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] flex-1">
+                        {d.file_name}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
             </div>
           )}
           <SidebarItem
@@ -403,7 +427,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             onClick={() => toggleSection('correspondence')}
           />
           {openSections.correspondence && (
-            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-0.5">
+            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-0.5 max-h-[50vh] overflow-y-auto pr-1">
               {emailDocs.length === 0 ? (
                 <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">
                   {libraryQuery.isLoading ? 'Loading…' : 'Empty'}
@@ -452,7 +476,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             onClick={() => toggleSection('spreadsheet')}
           />
           {openSections.spreadsheet && (
-            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1">
+            <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 max-h-[50vh] overflow-y-auto pr-1">
               {spreadsheetFiles.length === 0 ? (
                 <p className="text-[11px] text-[var(--text-muted)] italic px-1 py-1">Empty</p>
               ) : (
