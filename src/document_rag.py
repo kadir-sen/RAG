@@ -50,18 +50,22 @@ def generate_doc_id(file_path: str) -> str:
     return hashlib.md5(file_path.encode()).hexdigest()[:16]
 
 
+from contextvars import ContextVar
+
+# Set by the chat orchestrator (in the request's async task, BEFORE the query is
+# dispatched to a worker thread) so it reliably propagates via asyncio.to_thread.
+# We don't read backend's auth contextvar directly because FastAPI runs the sync
+# auth dependency in a separate threadpool whose context isn't the request task's,
+# so that value doesn't reach the query thread.
+corpus_var: ContextVar[str] = ContextVar("corpus", default="")
+
+
 def _current_user_corpus() -> str:
-    """The active request user's document corpus ('edinburgh' | 'demo' | ''),
-    read from the auth contextvar (propagated into the query thread by
-    asyncio.to_thread). Used to isolate retrieval per account so admin2's queries
-    only see the Edinburgh corpus and admin's only the demo corpus. Empty for
+    """The active request user's document corpus ('edinburgh' | 'demo' | '').
+    Isolates retrieval per account: admin2 → edinburgh, admin → demo. Empty for
     scripts / unauthenticated work → no corpus filter (unchanged behaviour)."""
     try:
-        from backend.core.security import current_user_var
-        u = current_user_var.get()
-        if not u:
-            return ""
-        return str((getattr(u, "features", None) or {}).get("corpus") or "").lower()
+        return (corpus_var.get() or "").lower()
     except Exception:
         return ""
 

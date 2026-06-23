@@ -92,6 +92,21 @@ class ChatOrchestrator:
         if not doc_ids:
             doc_ids = store.get_document_ids(conversation_id) or None
 
+        # Per-user corpus isolation: stamp the user's corpus on a contextvar in
+        # THIS async task so it propagates into the query worker thread (the auth
+        # dependency's contextvar runs in a separate threadpool and doesn't reach
+        # here). Retrieval/timeline read it to scope to the user's documents.
+        try:
+            from src.document_rag import corpus_var
+            _corpus = ""
+            if username:
+                from src.user_store import get_user_store
+                _u = get_user_store().get_user(username)
+                _corpus = str(((_u or {}).get("features") or {}).get("corpus") or "").lower()
+            corpus_var.set(_corpus)
+        except Exception:
+            pass
+
         is_dual = ENABLE_DUAL_PROVIDER and len(LLM_PROVIDERS) >= 2
         try:
             if is_dual:
