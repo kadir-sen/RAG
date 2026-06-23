@@ -917,12 +917,16 @@ class DocumentRAG:
                 "synthesis path, or run where the Gemini SDK works (prod Python 3.11)."
             )
         response = query_engine.query(question)
-        # Empty-scope safety net (dense fallback path): retry unscoped if a scoped
-        # query produced no source nodes.
+        # Empty-scope safety net (dense fallback path): retry if a scoped query
+        # produced no source nodes — but KEEP the per-user corpus filter (drop only
+        # the doc_type/project scope), so the retry never leaks another corpus.
         if payload_filters and not getattr(response, "source_nodes", None):
-            logger.info("   Scoped dense query empty → retrying unscoped")
-            response = self.index.as_query_engine(
-                similarity_top_k=top_k).query(question)
+            logger.info("   Scoped dense query empty → retrying (corpus-only)")
+            retry_filters = self._build_metadata_filters(doc_ids, file_names, None)
+            engine = (self.index.as_query_engine(similarity_top_k=top_k, filters=retry_filters)
+                      if retry_filters is not None
+                      else self.index.as_query_engine(similarity_top_k=top_k))
+            response = engine.query(question)
 
         # Extract sources with proper metadata (no regex!)
         sources = []
