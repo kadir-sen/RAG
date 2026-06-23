@@ -109,6 +109,11 @@ INGEST_EXTRACT_TABLES = os.getenv("INGEST_EXTRACT_TABLES", "true").lower() in ("
 # event-timeline / graph in a dedicated optimized batch afterward (Faz 2).
 INGEST_EXTRACT_NOTICES = os.getenv("INGEST_EXTRACT_NOTICES", "true").lower() in ("1", "true", "yes")
 
+# Max heavy indexing jobs (OCR + embed) running at once. Several PDFs uploaded
+# together would otherwise spawn parallel OCR/embedding in the threadpool and
+# blow CPU/RAM on a small (2 GB) box. Extra files queue and show "queued".
+INGEST_MAX_CONCURRENCY = int(os.getenv("INGEST_MAX_CONCURRENCY", "2"))
+
 # SQL settings
 MAX_UI_DISPLAY_ROWS = 5000  # Only for UI payload truncation, never for SQL LIMIT
 
