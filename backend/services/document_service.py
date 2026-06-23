@@ -188,6 +188,15 @@ class DocumentService:
             if rows:
                 page = self._parse_anchor_page(anchor)
                 fname = rows[0][0]
+                # Bulk-ingested corpora carry doc_id == md5(file_path) hash (see
+                # generate_doc_id), so the disk probe above (keyed on doc_id) can
+                # never match their PDFs. Now that the chunk row gives us the real
+                # file_name, resolve THAT on disk: if the PDF is present, serve the
+                # actual page image instead of falling back to raw chunk/OCR text.
+                if fname:
+                    resolved = self._resolve_path(fname)
+                    if resolved and Path(resolved).is_file():
+                        return self._serve_by_extension(resolved, anchor)
                 total = max(int(r[1] or 1) for r in rows)
                 page_rows = [r for r in rows if int(r[1] or 1) == page] or rows
                 text = "\n\n".join((r[2] or "") for r in page_rows)[:8000]
