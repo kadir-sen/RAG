@@ -319,12 +319,21 @@ def _process_document(file_path: str) -> ProcessingResult:
     filename = Path(file_path).name
 
     try:
+        from backend.tasks.progress import report
+    except Exception:
+        def report(*_a, **_k):  # ingest run outside the API (scripts) → no-op
+            pass
+
+    try:
         rag = get_document_rag()
+        report("extracting", 0.10)          # OCR / text extraction (slowest stage for scans)
         new_docs = rag.add_document(file_path)
 
         if new_docs:
+            report("embedding", 0.55)        # chunk + local embed + Qdrant upsert + lexical
             rag.insert_documents(new_docs)
             result.success = True
+            report("searchable", 0.78)       # ← document is now queryable; tail is enrichment only
 
             # OCR stats
             file_info = rag.file_registry.get(filename, {})
@@ -369,6 +378,7 @@ def _process_document(file_path: str) -> ProcessingResult:
 
             # LLM enrichment (Phase 2): one-line summary + topic tags for routing,
             # plus live event-timeline + scoped-payload wiring (uses the notice date).
+            report("enriching", 0.88)
             _enrich_document_llm(file_path, doc_full_text,
                                  notice_summary=result.notice_summary)
 
@@ -376,6 +386,7 @@ def _process_document(file_path: str) -> ProcessingResult:
             # Gated: skip on fast bulk embedding runs (INGEST_EXTRACT_TABLES=false).
             from .config import INGEST_EXTRACT_TABLES
             if INGEST_EXTRACT_TABLES and filename.lower().endswith(".pdf"):
+                report("tables", 0.95)
                 try:
                     from .pdf_table_extractor import extract_pdf_tables
                     tables = extract_pdf_tables(file_path, save_parquet=True)

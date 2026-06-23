@@ -1,6 +1,7 @@
 """Thread-safe in-memory indexing progress store."""
 
 import threading
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -63,3 +64,23 @@ class IndexingProgress:
 
 
 indexing_progress = IndexingProgress()
+
+
+# The file currently being indexed in THIS worker thread. Set by
+# index_file_background before route_file runs, so the deep ingest code
+# (src/file_router, src/document_rag) can report granular stage progress
+# without threading file_id through every function signature. Per-thread:
+# concurrent indexing jobs each see their own value.
+current_file_var: ContextVar[str] = ContextVar("indexing_file", default="")
+
+
+def report(stage: str, pct: float) -> None:
+    """Report a granular indexing stage for the current file (best-effort).
+    `stage` is a short label (e.g. 'ocr', 'searchable', 'enriching'); `pct` is
+    0.0–1.0. No-op outside an indexing job (e.g. bulk scripts)."""
+    try:
+        fid = current_file_var.get()
+        if fid:
+            indexing_progress.update(fid, float(pct), stage=stage)
+    except Exception:
+        pass

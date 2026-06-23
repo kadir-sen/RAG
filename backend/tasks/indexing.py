@@ -1,7 +1,7 @@
 """Background file indexing — wraps existing src/file_router.route_file()."""
 
 from pathlib import Path
-from backend.tasks.progress import indexing_progress
+from backend.tasks.progress import indexing_progress, current_file_var
 
 
 def index_file_background(file_id: str, file_path: str):
@@ -11,6 +11,8 @@ def index_file_background(file_id: str, file_path: str):
 
     registry = get_document_registry()
     indexing_progress.start(file_id, Path(file_path).name)
+    # Stamp this thread so the deep ingest code can report granular progress.
+    current_file_var.set(file_id)
 
     try:
         result = route_file(file_path)
