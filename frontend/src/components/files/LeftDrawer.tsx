@@ -32,7 +32,11 @@ export default function LeftDrawer() {
   const indexing = useQuery({
     queryKey: ['indexingStatus'],
     queryFn: getIndexingStatus,
-    refetchInterval: leftDrawerTab === 'library' ? 5000 : false,
+    // Poll quickly while anything is still indexing so the granular bar feels live,
+    // otherwise back off to 5s.
+    refetchInterval: leftDrawerTab === 'library'
+      ? (q) => ((q.state.data ?? []).some((s) => s.status === 'indexing') ? 1500 : 5000)
+      : false,
     enabled: leftDrawerTab === 'library',
   });
 
@@ -241,6 +245,23 @@ export default function LeftDrawer() {
                     <span className="text-xs text-[var(--text-primary)] flex-1 truncate">
                       {s.filename}
                     </span>
+                    {/* Stage label — 'searchable' onward the doc is already queryable. */}
+                    {s.status === 'indexing' && typeof s.details?.stage === 'string' && (
+                      <span
+                        className={`text-[9px] uppercase tracking-wider ${
+                          ['searchable', 'enriching', 'tables'].includes(s.details.stage as string)
+                            ? 'text-[var(--accent)]'
+                            : 'text-[var(--text-muted)]'
+                        }`}
+                        title={
+                          ['searchable', 'enriching', 'tables'].includes(s.details.stage as string)
+                            ? 'Document is searchable — finishing enrichment in the background'
+                            : 'Indexing…'
+                        }
+                      >
+                        {s.details.stage as string}
+                      </span>
+                    )}
                     <Badge label={s.status} />
                     {s.status === 'indexing' && (
                       <div className="w-16 h-1 bg-[var(--bg-surface)] rounded-full overflow-hidden">
