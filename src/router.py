@@ -2995,6 +2995,14 @@ class QueryRouter:
                         date_from=scope.get("date_from"),
                         date_to=scope.get("date_to"),
                     )
+                    # Per-user corpus isolation: the event store is extracted from
+                    # the bulk (edinburgh) corpus, so demo-corpus users see none.
+                    try:
+                        from .document_rag import _current_user_corpus
+                        if _current_user_corpus() == "demo":
+                            ev_rows = []
+                    except Exception:
+                        pass
                     if ev_rows:
                         # Cross-reference correspondence — finally call the
                         # never-before-called light_graph.timeline(...).

@@ -50,6 +50,22 @@ def generate_doc_id(file_path: str) -> str:
     return hashlib.md5(file_path.encode()).hexdigest()[:16]
 
 
+def _current_user_corpus() -> str:
+    """The active request user's document corpus ('edinburgh' | 'demo' | ''),
+    read from the auth contextvar (propagated into the query thread by
+    asyncio.to_thread). Used to isolate retrieval per account so admin2's queries
+    only see the Edinburgh corpus and admin's only the demo corpus. Empty for
+    scripts / unauthenticated work → no corpus filter (unchanged behaviour)."""
+    try:
+        from backend.core.security import current_user_var
+        u = current_user_var.get()
+        if not u:
+            return ""
+        return str((getattr(u, "features", None) or {}).get("corpus") or "").lower()
+    except Exception:
+        return ""
+
+
 
 class DocumentRAG:
     """
@@ -978,24 +994,28 @@ class DocumentRAG:
         dense = self._dense_candidates(question, RAG_CANDIDATE_K, doc_ids, file_names,
                                        payload_filters)
 
-        # 2. Lexical candidates (BM25 over chunk store) + doc-keyword boost
+        # 2. Lexical candidates (BM25 over chunk store) + doc-keyword boost.
+        # The chunk store mirrors only the bulk (edinburgh) corpus, so skip the
+        # lexical lane for demo users — otherwise it would leak edinburgh chunks
+        # past the dense corpus filter. dense already honours the corpus filter.
         lexical: List[Dict] = []
         doc_boost: Dict[str, float] = {}
-        try:
-            from .lexical_index import get_lexical_index
-            li = get_lexical_index()
-            lexical = li.search_chunks(raw_question, RAG_CANDIDATE_K)
-            if doc_ids:
-                ids = set(doc_ids)
-                lexical = [c for c in lexical if c.get("doc_id") in ids]
-            if file_names:
-                fns = set(file_names)
-                lexical = [c for c in lexical if c.get("file_name") in fns]
-            for c in lexical:
-                c["key"] = f"{c.get('file_name')}::{c.get('page_number')}"
-            doc_boost = li.match_docs(self._lexical_terms(raw_question))
-        except Exception as e:
-            logger.debug(f"   Lexical lane skipped: {e}")
+        if _current_user_corpus() != "demo":
+            try:
+                from .lexical_index import get_lexical_index
+                li = get_lexical_index()
+                lexical = li.search_chunks(raw_question, RAG_CANDIDATE_K)
+                if doc_ids:
+                    ids = set(doc_ids)
+                    lexical = [c for c in lexical if c.get("doc_id") in ids]
+                if file_names:
+                    fns = set(file_names)
+                    lexical = [c for c in lexical if c.get("file_name") in fns]
+                for c in lexical:
+                    c["key"] = f"{c.get('file_name')}::{c.get('page_number')}"
+                doc_boost = li.match_docs(self._lexical_terms(raw_question))
+            except Exception as e:
+                logger.debug(f"   Lexical lane skipped: {e}")
 
         if not dense and not lexical:
             return None
@@ -1061,6 +1081,14 @@ class DocumentRAG:
             else:
                 scope_specs.append(MetadataFilter(key=key, value=val,
                                                   operator=FilterOperator.EQ))
+
+        # Always-on per-user corpus isolation. Read here (not from payload_filters)
+        # so it survives the unfiltered-retry path and applies to every caller —
+        # admin2 → edinburgh vectors only, admin → demo vectors only.
+        corpus = _current_user_corpus()
+        if corpus:
+            scope_specs.append(MetadataFilter(key="corpus", value=corpus,
+                                              operator=FilterOperator.EQ))
 
         if not doc_file_specs and not scope_specs:
             return None
@@ -1538,6 +1566,10 @@ class DocumentRAG:
                     else:
                         must.append(qmodels.FieldCondition(
                             key=key, match=qmodels.MatchValue(value=val)))
+                _corpus = _current_user_corpus()  # per-user isolation (named-doc path)
+                if _corpus:
+                    must.append(qmodels.FieldCondition(
+                        key="corpus", match=qmodels.MatchValue(value=_corpus)))
                 flt = qmodels.Filter(must=must) if must else None
                 res = self.qdrant_client.query_points(
                     collection_name=QDRANT_COLLECTION,
