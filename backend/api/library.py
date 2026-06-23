@@ -132,12 +132,37 @@ async def list_library(user: UserContext = Depends(get_current_user)):
 
 
 @router.get("/library/summary")
-async def library_summary():
-    """Document classification summary — count by doc_type and file_type."""
+async def library_summary(user: UserContext = Depends(get_current_user)):
+    """Document classification summary — count by doc_type and file_type, scoped to
+    the current user's corpus (mirrors /library and /files)."""
     from src.document_registry import get_document_registry
     from collections import Counter
 
     registry = get_document_registry()
+
+    # 'edinburgh' users: stats from the bulk vectors-only corpus (chunk store),
+    # so the home PROJECT LIBRARY widget reflects their own documents, not the demo.
+    if _corpus_of(user) == "edinburgh":
+        n = 0
+        try:
+            from src.chunk_store import get_chunk_store
+            reg_names = {r.file_name for r in registry.get_completed()}
+            con = get_chunk_store().connection()
+            rows = con.execute(
+                "SELECT DISTINCT file_name FROM chunks "
+                "WHERE file_name IS NOT NULL AND file_name <> ''"
+            ).fetchall()
+            n = sum(1 for (fn,) in rows if fn not in reg_names)
+        except Exception:
+            n = 0
+        return {
+            "total_files": n,
+            "by_file_type": {"document": n} if n else {},
+            "by_doc_type": {},     # no emails/letters/data → all roll into OTHER
+            "total_tables": 0,     # bulk corpus has no spreadsheets
+        }
+
+    # demo / default: registry stats (unchanged)
     completed = registry.get_completed()
 
     # Count by file_type (document/email/data)
