@@ -1533,13 +1533,21 @@ class QueryRouter:
         except Exception as e:
             logger.warning(f"[FilenameResolve] failed: {e}")
 
+        # Per-user corpus: the light_graph (notices) and the SQL tables hold ONLY
+        # the demo corpus — the Edinburgh corpus is vectors-only. So for an
+        # 'edinburgh' user, suppress both the notice metadata search and the table
+        # enrichment; otherwise their "Related Documents" leak demo files.
+        from .document_rag import _current_user_corpus
+        _corpus = _current_user_corpus()
+        _demo_only_sources = _corpus != "edinburgh"
+
         # 1. DuckDB metadata search — find matching doc_ids from notices
         metadata_sources = []
         metadata_doc_ids = []
         try:
             from src.light_graph import get_light_graph
             graph = get_light_graph()
-            meta_results = graph.search_by_topic(search_topic, limit=20)
+            meta_results = graph.search_by_topic(search_topic, limit=20) if _demo_only_sources else []
             if meta_results:
                 metadata_doc_ids = [r["doc_id"] for r in meta_results if r.get("doc_id")]
                 for r in meta_results:
@@ -1627,10 +1635,13 @@ class QueryRouter:
                 final_sources, filename_hints, metadata_doc_ids
             )
 
-        # 3b. Find related Excel/data tables for this topic (scoped)
+        # 3b. Find related Excel/data tables for this topic (scoped). Tables belong
+        # to the demo corpus only → skip for edinburgh users (no demo-table leak).
         try:
             _allowed = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
-            related_tables = self.data_analyzer.select_tables(search_topic, max_tables=3, allowed_tables=_allowed)
+            related_tables = (self.data_analyzer.select_tables(
+                search_topic, max_tables=3, allowed_tables=_allowed)
+                if _demo_only_sources else [])
             for tname in related_tables:
                 tinfo = self.data_analyzer.tables.get(tname, {})
                 fname = tinfo.get("file_name", tname)
@@ -2979,6 +2990,8 @@ class QueryRouter:
             # The rich events carry reason + actor + date + evidence, so answer
             # "what was delayed and WHY / give the chronology" from the structured
             # store FIRST. Empty store (fresh corpus) → fall through to notices.
+            from .document_rag import _current_user_corpus
+            _tl_corpus = _current_user_corpus()
             try:
                 from .event_timeline import get_event_timeline
                 store = get_event_timeline()
@@ -2997,30 +3010,28 @@ class QueryRouter:
                     )
                     # Per-user corpus isolation: the event store is extracted from
                     # the bulk (edinburgh) corpus, so demo-corpus users see none.
-                    try:
-                        from .document_rag import _current_user_corpus
-                        if _current_user_corpus() == "demo":
-                            ev_rows = []
-                    except Exception:
-                        pass
+                    if _tl_corpus == "demo":
+                        ev_rows = []
                     if ev_rows:
-                        # Cross-reference correspondence — finally call the
-                        # never-before-called light_graph.timeline(...).
+                        # Cross-reference correspondence via light_graph.timeline —
+                        # but light_graph holds ONLY demo notices, so skip it for
+                        # edinburgh users (would leak demo files into the context).
                         notice_ctx = ""
-                        try:
-                            tl = graph.timeline(
-                                start_date=scope.get("date_from"),
-                                end_date=scope.get("date_to"),
-                                party_filter=scope.get("actor"),
-                                topic_filter=scope.get("topic"),
-                            )
-                            notice_ctx = "\n".join(
-                                f"- {n.get('date','')} {n.get('sender','')}"
-                                f"→{n.get('recipient','')}: {n.get('subject','')}"
-                                for n in (tl or [])[:25]
-                            )
-                        except Exception:
-                            pass
+                        if _tl_corpus != "edinburgh":
+                            try:
+                                tl = graph.timeline(
+                                    start_date=scope.get("date_from"),
+                                    end_date=scope.get("date_to"),
+                                    party_filter=scope.get("actor"),
+                                    topic_filter=scope.get("topic"),
+                                )
+                                notice_ctx = "\n".join(
+                                    f"- {n.get('date','')} {n.get('sender','')}"
+                                    f"→{n.get('recipient','')}: {n.get('subject','')}"
+                                    for n in (tl or [])[:25]
+                                )
+                            except Exception:
+                                pass
                         answer = self._synthesize_temporal_answer(query, ev_rows, notice_ctx)
                         return {
                             "query": query,
@@ -3030,6 +3041,17 @@ class QueryRouter:
                         }
             except Exception as e:
                 logger.warning(f"   Event-store timeline failed, falling through: {e}")
+
+            # Edinburgh users get their timeline ONLY from the event store. If we
+            # reach here (no matching events), return cleanly — do NOT fall through
+            # to the light_graph / notice / cluster paths below, which are demo-only.
+            if _tl_corpus == "edinburgh":
+                return {
+                    "query": query,
+                    "query_type": QueryType.TIMELINE.value,
+                    "answer": "No chronological events were found in your documents for this query.",
+                    "sources": [],
+                }
 
             # === 0. Compound queries: semantic intent + document scope ===
             intent = self._parse_compound_intent(query_lower)

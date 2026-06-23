@@ -70,6 +70,34 @@ def _current_user_corpus() -> str:
         return ""
 
 
+_EDIN_NAMES_CACHE = {"set": None, "ts": 0.0}
+
+
+def edinburgh_filenames():
+    """Cached set of file_names in the bulk (edinburgh) corpus — i.e. the distinct
+    file names mirrored in the chunk store. Used as a corpus allow-list to drop any
+    demo source (light_graph notices / SQL tables) that leaks into an edinburgh
+    user's citations or related docs. 5-min TTL; empty set on failure (= no filter)."""
+    import time
+    now = time.time()
+    c = _EDIN_NAMES_CACHE
+    if c["set"] is not None and (now - c["ts"]) < 300:
+        return c["set"]
+    s = set()
+    try:
+        from .chunk_store import get_chunk_store
+        con = get_chunk_store().connection()
+        rows = con.execute(
+            "SELECT DISTINCT file_name FROM chunks WHERE file_name IS NOT NULL "
+            "AND file_name <> ''"
+        ).fetchall()
+        s = {r[0] for r in rows if r[0]}
+    except Exception:
+        pass
+    c["set"], c["ts"] = s, now
+    return s
+
+
 
 class DocumentRAG:
     """

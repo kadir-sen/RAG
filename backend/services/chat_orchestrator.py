@@ -154,6 +154,25 @@ class ChatOrchestrator:
                     },
                 }
 
+        # 4b. Corpus catch-all: for an 'edinburgh' user, drop any source whose file
+        # isn't in their (chunk-store) corpus. Belt-and-suspenders over the handler
+        # gates — kills demo leaks (light_graph notices / SQL tables) into the
+        # citations or "Related Documents" from ANY handler. Demo users untouched.
+        try:
+            if _corpus == "edinburgh":
+                from src.document_rag import edinburgh_filenames
+                allowed = edinburgh_filenames()
+                if allowed:
+                    def _keep(s):
+                        return (not isinstance(s, dict)) or (s.get("file_name") in allowed)
+                    if isinstance(raw_result.get("sources"), list):
+                        raw_result["sources"] = [s for s in raw_result["sources"] if _keep(s)]
+                    for _ans in (raw_result.get("answers") or {}).values():
+                        if isinstance(_ans, dict) and isinstance(_ans.get("sources"), list):
+                            _ans["sources"] = [s for s in _ans["sources"] if _keep(s)]
+        except Exception:
+            pass
+
         # 5. Map to response contract
         response = build_chat_response(raw_result, is_dual=is_dual)
 
