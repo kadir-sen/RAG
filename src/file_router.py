@@ -376,11 +376,20 @@ def _process_document(file_path: str) -> ProcessingResult:
                     doc_full_text[:200].strip() + "..." if len(doc_full_text) > 200 else doc_full_text
                 )
 
-            # LLM enrichment (Phase 2): one-line summary + topic tags for routing,
-            # plus live event-timeline + scoped-payload wiring (uses the notice date).
-            report("enriching", 0.88)
-            _enrich_document_llm(file_path, doc_full_text,
-                                 notice_summary=result.notice_summary)
+            # LLM enrichment (Phase 2): one-line summary + topics + events + jargon
+            # + scoped-payload. All ADDITIVE (nothing here gates searchability or the
+            # result record), and it's a ~1.5s cloud call — so run it off the critical
+            # path in a daemon thread. The document is already queryable; enrichment
+            # lands a moment later. Mirrors the clusterer's fire-and-forget pattern.
+            report("enriching", 0.90)
+            import threading as _t
+            _enrich_text = doc_full_text
+            _enrich_notice = result.notice_summary
+            _t.Thread(
+                target=lambda: _enrich_document_llm(
+                    file_path, _enrich_text, notice_summary=_enrich_notice),
+                daemon=True,
+            ).start()
 
             # Table extraction for PDFs (direct — skips duplicate OCR analysis).
             # Gated: skip on fast bulk embedding runs (INGEST_EXTRACT_TABLES=false).
