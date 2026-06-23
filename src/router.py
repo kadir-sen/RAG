@@ -3284,7 +3284,10 @@ class QueryRouter:
             sources.append({
                 "type": "event",
                 "file_name": fname or doc_id,
-                "doc_id": doc_id,
+                # Click id = file_name so the viewer resolves it (on-disk PDF for the
+                # bulk corpus, or registry remap for older docs). The event's stored
+                # doc_id is a content hash that won't resolve for unregistered docs.
+                "doc_id": fname or doc_id,
                 "file_path": reg.get("file_path", ""),
                 "page_number": 1,
                 "total_pages": reg.get("page_count", 1),
