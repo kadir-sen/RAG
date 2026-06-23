@@ -89,3 +89,13 @@ frontend/test-results/
 
 # Windows artifacts
 NUL
+
+# Local vector DB data (1GB+, never commit)
+qdrant_storage/
+
+# MCP / tooling artifacts
+.playwright-mcp/
+
+# Design asset bundles (large binaries — share out-of-band, not in git)
+designer-pack/
+designer-pack.zip
