@@ -100,3 +100,37 @@ def _startup_sync():
             print(f"[Startup] Hydrated {added} new documents into registry")
     except Exception as e:
         print(f"[Startup] Registry hydration: {e}")
+
+    # ── Step 7: Recover files left mid-index by a crash/deploy/restart ──
+    # FastAPI BackgroundTasks aren't durable; a restart leaves any in-flight upload
+    # stuck at status="processing". Re-queue those (file still on disk) so they don't
+    # hang forever. The ingest semaphore throttles how many index at once.
+    try:
+        from pathlib import Path
+        import threading
+        from src.document_registry import get_document_registry
+        from src.file_router import delete_document
+        from src.document_rag import generate_doc_id
+        from backend.tasks.indexing import index_file_background
+
+        registry = get_document_registry()
+        stuck = [r for r in registry.get_all() if r.status in ("processing", "error")]
+        requeued = 0
+        for rec in stuck:
+            fp = getattr(rec, "file_path", "")
+            if not fp or not Path(fp).exists():
+                continue  # vectors-only / missing file → can't re-index, leave as-is
+            try:
+                delete_document(rec.doc_id)
+            except Exception:
+                pass
+            threading.Thread(
+                target=index_file_background,
+                args=(generate_doc_id(fp), fp),
+                daemon=True,
+            ).start()
+            requeued += 1
+        if requeued:
+            print(f"[Startup] Re-queued {requeued} stuck file(s) for indexing")
+    except Exception as e:
+        print(f"[Startup] Stuck-file recovery: {e}")
