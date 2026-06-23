@@ -120,6 +120,10 @@ MAX_UI_DISPLAY_ROWS = 5000  # Only for UI payload truncation, never for SQL LIMI
 # OCR Settings
 OCR_MODE = os.getenv("OCR_MODE", "auto")  # "auto" | "force" | "off"
 OCR_ENGINE = os.getenv("OCR_ENGINE", "tesseract")  # "tesseract" | "paddleocr"
+# Pages of a scanned PDF are OCR'd in parallel (each tesseract call releases the
+# GIL via its subprocess). Capped by CPU count in code. Combined with the ingest
+# semaphore this bounds total parallel OCR on a small box.
+OCR_MAX_WORKERS = int(os.getenv("OCR_MAX_WORKERS", "4"))
 OCR_LANG = os.getenv("OCR_LANG", "eng")  # English-only (all documents are English)
 OCR_DPI = int(os.getenv("OCR_DPI", "200"))  # Image rendering DPI
 OCR_CACHE_DIR = str(BASE_DIR / ".cache" / "ocr")

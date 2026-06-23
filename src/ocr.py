@@ -540,79 +540,96 @@ class OCRPipeline:
         return '\n'.join(cleaned_lines)
 
     def extract_text_auto(self, pdf_path: str) -> List[PageText]:
-        """Extract text from all pages with automatic OCR fallback."""
-        results = []
-        file_hash = self._get_file_hash(pdf_path)
+        """Extract text from all pages, OCR'ing the scanned pages IN PARALLEL.
 
+        Three phases: (A) decide per page (native text + whether OCR is needed) —
+        fast, sequential; (B) OCR the pages that need it concurrently in a thread
+        pool (each tesseract call runs as a subprocess that releases the GIL); (C)
+        assemble PageText in order. Page rendering/OCR was the dominant per-doc cost,
+        so this is the main ingest speedup for scanned documents."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .config import OCR_MAX_WORKERS
+
+        file_hash = self._get_file_hash(pdf_path)
         doc = fitz.open(pdf_path)
         total_pages = len(doc)
-
         if total_pages > self.max_pages:
             logger.warning(f"   PDF has {total_pages} pages, limiting to {self.max_pages}")
             total_pages = self.max_pages
 
-        ocr_count = 0
-        native_count = 0
-        failed_count = 0
-        total_ocr_time = 0
-
+        # ── Phase A: per-page native text + OCR decision (sequential, fast) ──
+        plan = []  # list of (page_number, native_text, do_ocr)
         for page_num in range(total_pages):
             page = doc[page_num]
             page_number = page_num + 1
+            native_text = page.get_text().strip()
+            if self.mode == "off":
+                do_ocr = False
+            elif self.mode == "force":
+                do_ocr = True
+            else:  # auto
+                needs_ocr, _stats = self.should_ocr_page(page)
+                do_ocr = needs_ocr
+            plan.append((page_number, native_text, do_ocr))
+        doc.close()
 
-            start_time = time.time()
+        # ── Phase B: OCR the flagged pages concurrently ──
+        ocr_results = {}  # page_number -> OCRResult
+        ocr_pages = [pn for (pn, _nt, do) in plan if do]
+        wall_ocr_ms = 0
+        if ocr_pages:
+            workers = max(1, min(OCR_MAX_WORKERS, os.cpu_count() or 2, len(ocr_pages)))
+            t0 = time.time()
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(self.extract_text_with_ocr, pdf_path, pn, file_hash): pn
+                        for pn in ocr_pages}
+                for fut in as_completed(futs):
+                    pn = futs[fut]
+                    try:
+                        ocr_results[pn] = fut.result()
+                    except Exception as e:
+                        logger.error(f"   OCR failed for page {pn}: {e}")
+            wall_ocr_ms = int((time.time() - t0) * 1000)
+            logger.info(f"   OCR: {len(ocr_pages)} page(s) on {workers} worker(s) "
+                        f"in {wall_ocr_ms}ms (wall)")
+
+        # ── Phase C: assemble PageText in page order ──
+        results = []
+        ocr_count = native_count = failed_count = 0
+        for (page_number, native_text, do_ocr) in plan:
+            ocr_result = ocr_results.get(page_number) if do_ocr else None
             warnings = []
 
-            native_text = page.get_text().strip()
-
-            if self.mode == "off":
-                text = native_text
-                method = "native"
-                ocr_result = None
+            if not do_ocr:
+                text, method = native_text, "native"
                 native_count += 1
-
             elif self.mode == "force":
-                ocr_result = self.extract_text_with_ocr(pdf_path, page_number, file_hash)
-                text = ocr_result.text
+                text = ocr_result.text if ocr_result else native_text
                 method = "ocr"
-                warnings.extend(ocr_result.warnings)
+                if ocr_result:
+                    warnings.extend(ocr_result.warnings)
                 ocr_count += 1
-                total_ocr_time += int((time.time() - start_time) * 1000)
-
-            else:  # auto mode
-                needs_ocr, stats = self.should_ocr_page(page)
-
-                if needs_ocr:
-                    ocr_result = self.extract_text_with_ocr(pdf_path, page_number, file_hash)
-                    ocr_time = int((time.time() - start_time) * 1000)
-                    total_ocr_time += ocr_time
-
+            else:  # auto + flagged for OCR
+                if ocr_result:
                     if len(ocr_result.text) > len(native_text) * 1.5:
-                        text = ocr_result.text
-                        method = "ocr"
+                        text, method = ocr_result.text, "ocr"
                     elif len(native_text) > 50 and len(ocr_result.text) > 50:
-                        text = native_text
-                        method = "native+ocr"
+                        text, method = native_text, "native+ocr"
                     elif ocr_result.text:
-                        text = ocr_result.text
-                        method = "ocr"
+                        text, method = ocr_result.text, "ocr"
                     else:
-                        text = native_text
-                        method = "native"
-
+                        text, method = native_text, "native"
                     warnings.extend(ocr_result.warnings)
                     ocr_count += 1
-                else:
-                    text = native_text
-                    method = "native"
-                    ocr_result = None
+                else:  # OCR errored → fall back to native
+                    text, method = native_text, "native"
                     native_count += 1
 
             if not text or len(text) < 10:
                 failed_count += 1
                 warnings.append("Very little text extracted")
 
-            page_text = PageText(
+            results.append(PageText(
                 page_number=page_number,
                 text=text,
                 extraction_method=method,
@@ -621,22 +638,13 @@ class OCRPipeline:
                 ocr_engine=self.engine if method in ("ocr", "native+ocr") else None,
                 ocr_language=self.language if method in ("ocr", "native+ocr") else None,
                 ocr_confidence=ocr_result.confidence if ocr_result else None,
-                ocr_time_ms=total_ocr_time if method == "ocr" else None,
+                ocr_time_ms=None,
                 warnings=warnings,
-            )
-
-            results.append(page_text)
-
-            conf_str = f" conf={ocr_result.confidence}" if ocr_result and ocr_result.confidence else ""
-            logger.info(f"   [PAGE {page_number}/{total_pages}] method={method} chars={len(text)}{conf_str}")
-
-        doc.close()
+            ))
 
         logger.info(f"   ----------------------------------------")
-        logger.info(f"   Extraction summary: native={native_count}, ocr={ocr_count}, failed={failed_count}")
-        if total_ocr_time > 0:
-            logger.info(f"   Total OCR time: {total_ocr_time}ms")
-
+        logger.info(f"   Extraction summary: native={native_count}, ocr={ocr_count}, "
+                    f"failed={failed_count}")
         return results
 
     def detect_table_like_structure(self, text: str) -> bool:
