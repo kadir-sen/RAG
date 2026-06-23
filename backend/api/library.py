@@ -4,8 +4,9 @@ import os
 import threading
 from typing import List, Optional, Set
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
+from backend.core.security import get_current_user, UserContext
 from backend.models.responses import (
     LibraryClusterSummary,
     LibraryDocument,
@@ -14,10 +15,20 @@ from backend.models.responses import (
 
 router = APIRouter()
 
-# Cap how many vectors-only (chunk-store) documents we surface in the library so
-# a very large corpus (e.g. 7k+ Edinburgh Tram PDFs) doesn't render thousands of
-# DOM nodes in the sidebar at once. Raise via env when a real search/filter lands.
-_VECTORS_ONLY_LIMIT = int(os.getenv("LIBRARY_VECTORS_ONLY_LIMIT", "1000"))
+# Cap how many vectors-only (chunk-store) documents we surface in the library.
+# With a per-corpus split + a sidebar search box this can be generous; the
+# frontend render-caps the visible rows.
+_VECTORS_ONLY_LIMIT = int(os.getenv("LIBRARY_VECTORS_ONLY_LIMIT", "8000"))
+
+
+def _corpus_of(user: UserContext) -> str:
+    """Which document corpus this user sees. 'edinburgh' → the bulk vectors-only
+    set; anything else → the registry (demo) documents. Keeps the two accounts'
+    libraries separate without a full tenant model."""
+    try:
+        return str((user.features or {}).get("corpus") or "").lower()
+    except Exception:
+        return ""
 
 _EMAIL_EXTS = {".eml", ".msg"}
 _DATA_EXTS = {".xlsx", ".xls", ".csv"}
@@ -101,19 +112,23 @@ def _build_library_doc(r, include_notice: bool = True) -> LibraryDocument:
 
 
 @router.get("/library", response_model=List[LibraryDocument])
-async def list_library():
-    """List all completed documents in the global library — registry records plus
-    any vectors-only documents (bulk-ingested without a registry entry) so a large
-    corpus is browsable and clickable in the sidebar."""
+async def list_library(user: UserContext = Depends(get_current_user)):
+    """List documents for the current user's corpus.
+
+    'edinburgh' users see ONLY the bulk vectors-only documents; everyone else sees
+    ONLY the registry (demo) documents. This keeps the admin (demo) and admin2
+    (Edinburgh) libraries separate."""
     from src.document_registry import get_document_registry
     registry = get_document_registry()
-    docs = [_build_library_doc(r) for r in registry.get_completed()]
-    try:
-        known = {d.file_name for d in docs}
-        docs += _vectors_only_library_docs(known)
-    except Exception:
-        pass  # never break the core list if the chunk store is unavailable
-    return docs
+
+    if _corpus_of(user) == "edinburgh":
+        try:
+            reg_names = {r.file_name for r in registry.get_completed()}
+            return _vectors_only_library_docs(reg_names)
+        except Exception:
+            return []
+    # demo / default: registry documents only (no bulk-corpus merge)
+    return [_build_library_doc(r) for r in registry.get_completed()]
 
 
 @router.get("/library/summary")

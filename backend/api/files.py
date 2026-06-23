@@ -1,16 +1,46 @@
 """File upload, listing, deletion, stats, and export endpoints."""
 
+import os
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 
+from backend.core.security import get_current_user, UserContext
 from backend.models.responses import FileInfo, UploadResult
 from backend.services.file_service import FileService
 from backend.tasks.indexing import index_file_background
 
 router = APIRouter()
 _file_service = FileService()
+
+
+def _edinburgh_file_infos() -> List[FileInfo]:
+    """FileInfo rows for the bulk vectors-only corpus (chunk-store docs not in the
+    registry), so the 'edinburgh' account's sidebar counts reflect its own PDFs
+    (Documents = the corpus, Spreadsheets/Communications = 0). Read-only."""
+    from src.document_registry import get_document_registry
+    from src.chunk_store import get_chunk_store
+    reg_names = {r.file_name for r in get_document_registry().get_completed()}
+    con = get_chunk_store().connection()
+    rows = con.execute(
+        "SELECT file_name, MAX(page_number) FROM chunks "
+        "WHERE file_name IS NOT NULL AND file_name <> '' GROUP BY file_name"
+    ).fetchall()
+    out: List[FileInfo] = []
+    for file_name, max_page in rows:
+        if file_name in reg_names:
+            continue
+        ext = os.path.splitext(file_name)[1].lower()
+        ftype = ("email" if ext in (".eml", ".msg")
+                 else "data" if ext in (".xlsx", ".xls", ".csv") else "document")
+        try:
+            pages = int(max_page) if max_page else None
+        except (TypeError, ValueError):
+            pages = None
+        out.append(FileInfo(id=file_name, name=file_name, file_type=ftype,
+                            pages=pages, status="completed"))
+    return out
 
 
 @router.post("/upload", response_model=UploadResult)
@@ -34,7 +64,14 @@ async def upload_file(
 
 
 @router.get("/files", response_model=List[FileInfo])
-async def list_files():
+async def list_files(user: UserContext = Depends(get_current_user)):
+    # Per-user corpus split: the 'edinburgh' account's counts/lists come from the
+    # bulk vectors-only set; everyone else from the registry (demo) files.
+    try:
+        if str((user.features or {}).get("corpus") or "").lower() == "edinburgh":
+            return _edinburgh_file_infos()
+    except Exception:
+        pass
     raw = _file_service.list_files()
     return [
         FileInfo(
