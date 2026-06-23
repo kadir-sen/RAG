@@ -2984,10 +2984,14 @@ class QueryRouter:
                 store = get_event_timeline()
                 if store.count() > 0:
                     scope = self.compute_query_scope(query)
+                    # NOTE: project filter intentionally omitted. Ingest stores
+                    # events with an empty project, so passing an LLM-extracted
+                    # project name ("Edinburgh Tram Project") would zero out every
+                    # match. The corpus is single-project, so event_type / actor /
+                    # date range are the meaningful filters.
                     ev_rows = store.timeline_context(
                         event_type=scope.get("event_type"),
                         actor=scope.get("actor"),
-                        project=scope.get("project"),
                         date_from=scope.get("date_from"),
                         date_to=scope.get("date_to"),
                     )
