@@ -1,5 +1,5 @@
 import apiClient from './client';
-import type { ChatResponse } from '../types/api';
+import type { ChatResponse, QueryProgress } from '../types/api';
 
 export async function sendMessage(
   message: string,
@@ -7,6 +7,7 @@ export async function sendMessage(
   docIds?: string[],
   emailIds?: string[],
   mode?: string | null,
+  requestId?: string,
 ): Promise<ChatResponse> {
   const payload: Record<string, unknown> = {
     message,
@@ -21,6 +22,15 @@ export async function sendMessage(
   if (mode) {
     payload.mode = mode;
   }
+  if (requestId) {
+    payload.request_id = requestId;
+  }
   const { data } = await apiClient.post<ChatResponse>('/chat', payload);
+  return data;
+}
+
+// Poll the live activity feed for an in-flight query (same request_id sent above).
+export async function getQueryProgress(requestId: string): Promise<QueryProgress> {
+  const { data } = await apiClient.get<QueryProgress>(`/chat/progress/${requestId}`);
   return data;
 }

@@ -11,6 +11,7 @@ class ChatRequest(BaseModel):
     doc_ids: Optional[List[str]] = None  # Scope query to specific documents
     email_ids: Optional[List[str]] = None  # Selected emails for correspondence mode
     mode: Optional[str] = None  # Frontend mode: 'chat', 'correspondence', 'document_analysis'
+    request_id: Optional[str] = None  # Client-generated id to poll the live activity feed
 
 
 class ConversationCreate(BaseModel):

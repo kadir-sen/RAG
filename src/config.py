@@ -183,6 +183,13 @@ SQL_LAZY_SUMMARY_MAX_CELLS = int(os.getenv("SQL_LAZY_SUMMARY_MAX_CELLS", "30"))
 # ── Planner Guardrails ──────────────────────────────────────
 MAX_PLAN_STEPS = int(os.getenv("MAX_PLAN_STEPS", "5"))
 
+# ── ReAct agent (bounded tool-using loop for complex multi-step queries) ──
+# Off by default; when on, complex/multi-step queries route to the agent instead
+# of the fixed planner. REACT_MAX_ITERATIONS caps the tool/decide loop; the
+# llm_client soft budget (MAX_LLM_CALLS_PER_QUERY) is the secondary backstop.
+ENABLE_REACT_AGENT = os.getenv("ENABLE_REACT_AGENT", "false").lower() in ("1", "true", "yes")
+REACT_MAX_ITERATIONS = int(os.getenv("REACT_MAX_ITERATIONS", "5"))
+
 # ── Feature Flags ───────────────────────────────────────────
 ENABLE_TIMELINE = os.getenv("ENABLE_TIMELINE", "true").lower() == "true"
 ENABLE_AB_TESTING = os.getenv("ENABLE_AB_TESTING", "false").lower() == "true"

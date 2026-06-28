@@ -1301,6 +1301,15 @@ class QueryRouter:
         from .query_planner import is_multi_step_query
         return is_multi_step_query(query)
 
+    def _get_react_agent(self):
+        """Lazily build the bounded ReAct agent (reuses this router's tools)."""
+        agent = getattr(self, "_react_agent", None)
+        if agent is None:
+            from .react_agent import ReActAgent
+            agent = ReActAgent(self)
+            self._react_agent = agent
+        return agent
+
     # ── Retrieval helpers ─────────────────────────────────────
 
     # Tokens that match too broadly to be useful as filename signals.
@@ -1853,7 +1862,11 @@ class QueryRouter:
                 _pf = {k: _scope[k] for k in ("doc_type", "project") if _scope.get(k)} or None
             except Exception:
                 pass
-        doc_result = self.document_rag.query(sub["doc"], doc_ids=doc_ids, payload_filters=_pf)
+        # Retrieve-only: the final synthesis below works from the RAW chunks
+        # (_format_doc_excerpts reads sources, not the answer), so paying for the
+        # document-side synthesis here would be wasted.
+        doc_result = self.document_rag.query(sub["doc"], doc_ids=doc_ids, payload_filters=_pf,
+                                             synthesize=False)
         allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
         data_result = self.data_analyzer.query(sub["data"], allowed_tables=allowed_tables)
 
@@ -1896,7 +1909,10 @@ class QueryRouter:
             # "Empty Response" placeholder so it never reaches the UI verbatim.
             def _clean_part(ans: str) -> str:
                 return "" if (ans or "").strip().lower() in ("empty response", "none") else (ans or "")
-            _doc = _clean_part(doc_result.get("answer", ""))
+            # doc_result is retrieve-only (answer==""), so fall back to the raw
+            # chunk excerpts here so the document side isn't silently dropped.
+            _doc = _clean_part(doc_result.get("answer", "")) or (
+                self._format_doc_excerpts(doc_result) if doc_result.get("sources") else "")
             _data = _clean_part(data_result.get("answer", ""))
             parts = []
             if _doc:
@@ -3657,6 +3673,12 @@ class QueryRouter:
                 trace.route = "GREETING"
                 return self._build_greeting_response()
 
+            try:
+                from backend.tasks.query_progress import report_step
+                report_step("thinking", "thinking…")
+            except Exception:
+                pass
+
             # Expand jargon
             expanded = self.jargon.expand_query(query)
             if expanded != query:
@@ -3681,6 +3703,18 @@ class QueryRouter:
 
             # Check if this is a complex multi-step query
             if self._is_complex_query(query):
+                from .config import ENABLE_REACT_AGENT
+                if ENABLE_REACT_AGENT:
+                    logger.info("   Detected complex query -> ReAct Agent")
+                    trace.route = "AGENT"
+                    try:
+                        result = self._get_react_agent().run(expanded, doc_ids=doc_ids)
+                        logger.info(f"Query complete (agent) - {len(result.get('sources', []))} sources")
+                        return result
+                    except Exception as e:
+                        # Never let the agent break a query — fall back to the planner.
+                        logger.error(f"   ReAct agent failed → planner fallback: {e}")
+                        trace.record_error(f"react_agent: {e}")
                 logger.info("   Detected complex query -> Hybrid Executor")
                 trace.route = "HYBRID_COMPLEX"
                 allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
@@ -3700,6 +3734,12 @@ class QueryRouter:
 
             logger.info(f"   Classified as: {decision.query_type.value.upper()} "
                         f"(conf={decision.confidence:.2f}, llm={decision.used_llm})")
+
+            try:
+                from backend.tasks.query_progress import report_step
+                report_step("routing", f"routing → {decision.query_type.value}")
+            except Exception:
+                pass
 
             # Route to handler
             result = self._dispatch_query(decision.query_type, query, expanded, doc_ids)

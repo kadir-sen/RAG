@@ -118,8 +118,10 @@ class TestPlannerScope:
             "find contract clause", doc_ids=["doc_abc"]
         )
 
+        # synthesize defaults to True for a standalone document step (only
+        # intermediate steps feeding a COMBINE run retrieve-only).
         mock_rag.query.assert_called_once_with(
-            "find contract clause", doc_ids=["doc_abc"]
+            "find contract clause", doc_ids=["doc_abc"], synthesize=True
         )
 
     def test_sql_step_with_context_passes_allowed_tables(self):

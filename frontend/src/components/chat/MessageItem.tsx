@@ -22,6 +22,7 @@ function MessageItem({ message, onDocClick, onRetry }: Props) {
       onDocClick={onDocClick}
       failedText={message.failedText}
       onRetry={onRetry}
+      activities={message.activities}
     />
   );
 }

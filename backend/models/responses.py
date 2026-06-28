@@ -140,6 +140,20 @@ class IndexingStatus(BaseModel):
     details: dict = Field(default_factory=dict)
 
 
+class QueryActivityStep(BaseModel):
+    seq: int
+    ts: float
+    kind: str                     # thinking | searching | reading | related | analysing | tool | answer
+    label: str
+    detail: str = ""
+
+
+class QueryProgressResponse(BaseModel):
+    request_id: str
+    steps: List[QueryActivityStep] = Field(default_factory=list)
+    done: bool = False
+
+
 class LibraryDocument(BaseModel):
     doc_id: str
     file_name: str

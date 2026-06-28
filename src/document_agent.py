@@ -899,6 +899,16 @@ class DocumentAgent:
 
             resp = llm_client.generate_text(prompt, system=system, max_tokens=1024)
 
+            # Record into the per-request trace — this call was previously a
+            # cost blind spot (only the global usage tracker saw it).
+            try:
+                from .telemetry import get_current_trace
+                trace = get_current_trace()
+                if trace:
+                    trace.record_llm_call(resp.usage)
+            except Exception:
+                pass
+
             return {
                 "answer": resp.text,
                 "sources": [],

@@ -64,8 +64,18 @@ class ChatOrchestrator:
         email_ids: list | None = None,
         mode: str | None = None,
         username: str | None = None,
+        request_id: str | None = None,
     ) -> ChatResponse:
         now = datetime.now().isoformat()
+
+        # Live activity feed: stamp the request_id on a contextvar (propagates
+        # into the query worker thread via asyncio.to_thread, same as corpus_var)
+        # so deep router/agent code can publish progress steps the client polls.
+        from backend.tasks.query_progress import query_progress, query_request_var
+        import uuid as _uuid
+        request_id = request_id or _uuid.uuid4().hex[:12]
+        query_request_var.set(request_id)
+        query_progress.start(request_id)
 
         # 1. Save user message
         user_msg = Message(role="user", content=query, timestamp=now)
@@ -246,6 +256,10 @@ class ChatOrchestrator:
                 )
             except Exception:
                 pass
+
+        # Mark the activity feed complete (client also stops polling when this
+        # POST resolves; this flips `done` for the final render).
+        query_progress.finish(request_id)
 
         return response
 

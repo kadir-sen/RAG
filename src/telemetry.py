@@ -2,6 +2,7 @@
 Per-query telemetry: tracks LLM calls, latency, cost, cache hits.
 """
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -32,6 +33,11 @@ class QueryTrace:
 
     _start_time: float = field(default_factory=time.time, repr=False)
 
+    def __post_init__(self):
+        # Not a dataclass field (asdict can't serialize a Lock). Guards the
+        # counter mutations below when parallel worker threads share one trace.
+        self._lock = threading.Lock()
+
     def _ensure_provider(self, provider: str):
         """Ensure provider stats entry exists."""
         if provider and provider not in self.provider_stats:
@@ -41,24 +47,26 @@ class QueryTrace:
             }
 
     def record_llm_call(self, usage: LLMUsage):
-        """Record a single LLM call's usage into the trace."""
-        self.llm_calls += 1
-        self.tokens_in += usage.prompt_tokens
-        self.tokens_out += usage.completion_tokens
-        self.cost_estimate += usage.cost_estimate
-        if usage.cache_hit:
-            self.cache_hits += 1
-
-        # Per-provider tracking
-        if usage.provider:
-            self._ensure_provider(usage.provider)
-            ps = self.provider_stats[usage.provider]
-            ps["calls"] += 1
-            ps["tokens_in"] += usage.prompt_tokens
-            ps["tokens_out"] += usage.completion_tokens
-            ps["cost"] += usage.cost_estimate
+        """Record a single LLM call's usage into the trace (thread-safe so the
+        ReAct agent / parallel workers can record concurrently)."""
+        with self._lock:
+            self.llm_calls += 1
+            self.tokens_in += usage.prompt_tokens
+            self.tokens_out += usage.completion_tokens
+            self.cost_estimate += usage.cost_estimate
             if usage.cache_hit:
-                ps["cache_hits"] += 1
+                self.cache_hits += 1
+
+            # Per-provider tracking
+            if usage.provider:
+                self._ensure_provider(usage.provider)
+                ps = self.provider_stats[usage.provider]
+                ps["calls"] += 1
+                ps["tokens_in"] += usage.prompt_tokens
+                ps["tokens_out"] += usage.completion_tokens
+                ps["cost"] += usage.cost_estimate
+                if usage.cache_hit:
+                    ps["cache_hits"] += 1
 
     def record_error(self, error: str):
         self.errors.append(error)
@@ -114,7 +122,6 @@ class QueryTrace:
 
 # ── Thread-local current trace ───────────────────────────────
 
-import threading
 _local = threading.local()
 
 
@@ -128,6 +135,13 @@ def start_trace(query: str = "") -> QueryTrace:
 def get_current_trace() -> Optional[QueryTrace]:
     """Get the current request's trace (if any)."""
     return getattr(_local, 'current_trace', None)
+
+
+def set_current_trace(trace: Optional[QueryTrace]) -> None:
+    """Bind a trace to THIS thread. Worker threads (ReAct tools, parallel
+    retrieval) call this with the parent request's trace so their LLM calls are
+    recorded into it — the thread-local default is otherwise None off-thread."""
+    _local.current_trace = trace
 
 
 def finish_trace() -> Optional[QueryTrace]:

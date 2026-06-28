@@ -254,3 +254,17 @@ export interface DocContent {
   total_rows: number;
   error: string | null;
 }
+
+export interface ActivityStep {
+  seq: number;
+  ts: number;
+  kind: string; // thinking | searching | reading | related | analysing | tool | answer | routing
+  label: string;
+  detail?: string;
+}
+
+export interface QueryProgress {
+  request_id: string;
+  steps: ActivityStep[];
+  done: boolean;
+}

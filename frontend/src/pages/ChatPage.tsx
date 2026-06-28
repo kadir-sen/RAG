@@ -15,7 +15,7 @@ const RightDocViewer = lazy(
 );
 
 export default function ChatPage() {
-  const { messages, isLoading, isPending, sendMessage } = useChat();
+  const { messages, isLoading, isPending, sendMessage, activeRequestId } = useChat();
   const { createConversation } = useConversations();
   const { rightPanelOpen, openDocument } = useUIStore();
   const { activeConversationId, setConversation } = useChatStore();
@@ -132,6 +132,7 @@ export default function ChatPage() {
               isLoading={isLoading}
               onDocClick={openDocument}
               onRetry={sendMessage}
+              activeRequestId={activeRequestId}
             />
           )}
           {/* Selected-files tiles + composer at the bottom of every surface. */}

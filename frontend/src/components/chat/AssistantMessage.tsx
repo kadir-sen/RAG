@@ -1,7 +1,7 @@
 import { memo, useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
-import type { ChatResponse } from '../../types/api';
+import type { ChatResponse, ActivityStep } from '../../types/api';
 import type { ViewerDoc } from '../../stores/uiStore';
 import Badge from '../shared/Badge';
 import Avatar from './Avatar';
@@ -51,6 +51,28 @@ interface Props {
   onDocClick: (doc: ViewerDoc) => void;
   failedText?: string;
   onRetry?: (text: string) => void;
+  activities?: ActivityStep[];
+}
+
+// Collapsed trail of the activity steps the assistant took to produce the answer.
+function StepTrail({ steps }: { steps: ActivityStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <details className="mb-2 group/steps">
+      <summary className="cursor-pointer list-none text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-secondary)] select-none">
+        steps ({steps.length})
+      </summary>
+      <ul className="mt-1.5 flex flex-col gap-1 border-l border-[var(--border)] pl-3">
+        {steps.map((s) => (
+          <li key={s.seq} className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
+            <span className="font-mono text-[var(--accent)]">✓</span>
+            <span className="truncate">{s.label}</span>
+            {s.detail && <span className="font-mono text-[10px] opacity-70 truncate">{s.detail}</span>}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
 }
 
 function formatTime(ts?: number): string {
@@ -59,7 +81,7 @@ function formatTime(ts?: number): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function AssistantMessage({ response, text, timestamp, onDocClick, failedText, onRetry }: Props) {
+function AssistantMessage({ response, text, timestamp, onDocClick, failedText, onRetry, activities }: Props) {
   const intent = response?.ui_intent ?? 'answer';
   // Mode-less: whenever the router returns a document list (FILE_LIST / TIMELINE
   // → ui_intent "doc_list") with related documents, render them as a single
@@ -98,6 +120,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
 
           {/* Main content card — dark surface, soft border, larger radius */}
           <div className="px-4 py-4 md:px-5 md:py-4 assistant-card text-sm leading-relaxed">
+            {!!activities?.length && <StepTrail steps={activities} />}
             <div className="prose prose-invert prose-sm max-w-none text-[var(--text-primary)]">
               <ReactMarkdown components={markdownComponents}>{text}</ReactMarkdown>
               {showInlineCitations && (
