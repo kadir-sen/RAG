@@ -63,17 +63,15 @@ export function useChat() {
       setLoading(true);
 
       // Read live store values to avoid stale closure
-      const { activeConversationId: currentConvId, activeMode: currentMode,
-        selectedEmailIds: currentEmailIds } = useChatStore.getState();
+      const { activeConversationId: currentConvId, selectedIds } = useChatStore.getState();
 
-      const docIds = currentMode === 'correspondence' && currentEmailIds.length > 0
-        ? currentEmailIds
-        : undefined;
-      const emailIds = currentMode === 'correspondence' && currentEmailIds.length > 0
-        ? currentEmailIds
-        : undefined;
+      // Selection is mode-less now: send the picked files as BOTH doc_ids and
+      // email_ids. The backend sorts them by type — _build_email_context keeps
+      // emails, _build_document_context keeps non-email docs — so each lands in
+      // the right context block regardless of which sidebar folder it came from.
+      const selected = selectedIds.length > 0 ? selectedIds : undefined;
 
-      const response = await sendMessage(text, currentConvId, docIds, emailIds, currentMode);
+      const response = await sendMessage(text, currentConvId, selected, selected);
       return response;
     },
     onSuccess: (response) => {

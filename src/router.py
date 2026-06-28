@@ -1892,10 +1892,18 @@ class QueryRouter:
 
         except Exception as e:
             logger.error(f"   Synthesis error: {e}")
-            combined_answer = (
-                f"**From Documents:**\n{doc_result['answer']}\n\n"
-                f"**From Data Analysis:**\n{data_result['answer']}"
-            )
+            # Fall back to stitching the two sub-answers, but drop LlamaIndex's
+            # "Empty Response" placeholder so it never reaches the UI verbatim.
+            def _clean_part(ans: str) -> str:
+                return "" if (ans or "").strip().lower() in ("empty response", "none") else (ans or "")
+            _doc = _clean_part(doc_result.get("answer", ""))
+            _data = _clean_part(data_result.get("answer", ""))
+            parts = []
+            if _doc:
+                parts.append(f"**From Documents:**\n{_doc}")
+            if _data:
+                parts.append(f"**From Data Analysis:**\n{_data}")
+            combined_answer = "\n\n".join(parts)
 
         # Combine sources
         all_sources = []
@@ -2761,9 +2769,17 @@ class QueryRouter:
                 f"   {subject}{action_str}\n"
             )
 
-        # Append RAG content if available
+        # Append RAG content if available. Skip placeholder/refusal answers
+        # ("Empty Response" from LlamaIndex, "not found", "no documents") so the
+        # listing isn't polluted with a meaningless detail block.
         rag_answer = (rag_result or {}).get("answer", "")
-        if rag_answer and "not found" not in rag_answer.lower() and "no documents" not in rag_answer.lower():
+        _ra_low = rag_answer.strip().lower()
+        if (
+            rag_answer
+            and _ra_low not in ("empty response", "none")
+            and "not found" not in _ra_low
+            and "no documents" not in _ra_low
+        ):
             lines.append(f"\n---\n**Detail from document content:**\n\n{rag_answer}")
 
         return "\n".join(lines)
@@ -3646,19 +3662,21 @@ class QueryRouter:
             if expanded != query:
                 logger.info(f"   Jargon expanded: {expanded[:100]}...")
 
-            # Correspondence mode with user-selected emails: bypass classification.
-            # The orchestrator has already injected full email bodies + drafting
-            # instruction into the augmented query, so route straight to DOCUMENT
-            # and let the LLM answer (draft, summary, or question against the
-            # selected emails).
-            if mode == "correspondence" and email_ids:
+            # Selected context files (documents and/or emails): bypass
+            # classification. The orchestrator has already injected the selected
+            # files' full text (+ for emails, a drafting instruction) into the
+            # augmented query, so route straight to DOCUMENT and answer against
+            # that grounded context instead of re-classifying. (Only the DOCUMENT/
+            # HYBRID synthesis path actually uses the injected context, so routing
+            # elsewhere would waste it.) Mode-less: triggered by any selection.
+            if email_ids:
                 logger.info(
-                    f"   Correspondence mode + {len(email_ids)} selected email(s) "
-                    f"-> forcing DOCUMENT (bypass DRAFT/THREAD/TIMELINE handlers)"
+                    f"   {len(email_ids)} selected context file(s) "
+                    f"-> forcing DOCUMENT (answer from injected context)"
                 )
-                trace.route = "DOCUMENT_CORRESPONDENCE"
+                trace.route = "DOCUMENT_SELECTED_CONTEXT"
                 result = self._dispatch_query(QueryType.DOCUMENT, query, expanded, doc_ids)
-                logger.info(f"Query complete (correspondence) - {len(result.get('sources', []))} sources")
+                logger.info(f"Query complete (selected context) - {len(result.get('sources', []))} sources")
                 return result
 
             # Check if this is a complex multi-step query
@@ -3826,14 +3844,14 @@ class QueryRouter:
             if expanded != query:
                 logger.info(f"   Jargon expanded: {expanded[:100]}...")
 
-            # Correspondence mode with user-selected emails: bypass classification.
-            # See route_and_execute for rationale.
-            if mode == "correspondence" and email_ids:
+            # Selected context files: bypass classification.
+            # See route_and_execute for rationale. Mode-less: any selection.
+            if email_ids:
                 logger.info(
-                    f"   Correspondence mode + {len(email_ids)} selected email(s) "
-                    f"-> forcing DOCUMENT (bypass DRAFT/THREAD/TIMELINE handlers)"
+                    f"   {len(email_ids)} selected context file(s) "
+                    f"-> forcing DOCUMENT (answer from injected context)"
                 )
-                trace.route = "DOCUMENT_CORRESPONDENCE_DUAL"
+                trace.route = "DOCUMENT_SELECTED_CONTEXT_DUAL"
                 answers = self._dispatch_query_dual(QueryType.DOCUMENT, query, expanded, doc_ids)
                 return {
                     "query": query,
@@ -3842,7 +3860,7 @@ class QueryRouter:
                     "routing": {
                         "decision": QueryType.DOCUMENT.value,
                         "confidence": 1.0,
-                        "reasons": [f"Correspondence mode bypass with {len(email_ids)} selected email(s)"],
+                        "reasons": [f"Selected-context bypass with {len(email_ids)} file(s)"],
                         "used_llm": False,
                     },
                 }

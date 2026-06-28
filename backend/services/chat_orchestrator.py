@@ -79,7 +79,11 @@ class ChatOrchestrator:
         )
         augmented = f"{context}\n\nCurrent question: {query}" if context else query
 
-        # 3. Build email context for correspondence mode
+        # Capture the user's EXPLICIT selection (before the conversation-scoped
+        # fallback below) so we can inject the selected docs' full text directly.
+        explicit_doc_ids = list(doc_ids) if doc_ids else []
+
+        # 3. Build email context for correspondence mode (email files only)
         if email_ids:
             email_context = self._build_email_context(email_ids)
             if email_context:
@@ -87,6 +91,16 @@ class ChatOrchestrator:
                 # Also scope doc_ids to selected emails for RAG
                 if not doc_ids:
                     doc_ids = email_ids
+
+        # 3b. Inject the full OCR/extracted text of explicitly selected NON-email
+        # documents (PDF/DOCX/TXT) directly into the prompt. Covers general doc
+        # selection and PDF "conversations" picked in correspondence mode (those
+        # are not .eml/.msg, so the email path skips them and they land here).
+        doc_context = self._build_document_context(
+            list(dict.fromkeys((email_ids or []) + explicit_doc_ids))
+        )
+        if doc_context:
+            augmented = f"{doc_context}\n\n{augmented}"
 
         # 4. Route and execute in thread pool (src/ code is synchronous)
         if not doc_ids:
@@ -279,6 +293,14 @@ class ChatOrchestrator:
                 if not rec:
                     continue
 
+                # Only real email files belong here. Non-email selections (e.g. a
+                # PDF of a conversation chosen in correspondence mode) are handled
+                # by _build_document_context via the chunk store — no RAG fallback.
+                fname_l = (rec.file_name or "").lower()
+                is_email = fname_l.endswith((".eml", ".msg")) or getattr(rec, "file_type", "") == "email"
+                if not is_email:
+                    continue
+
                 # Get notice metadata for date/sender/recipient
                 notice_meta = {}
                 try:
@@ -362,3 +384,85 @@ class ChatOrchestrator:
             import logging
             logging.getLogger("app").warning(f"[Orchestrator] Email context build failed: {e}")
             return ""
+
+    # Per-document and total caps so a large selection never blows up the prompt
+    # (and the LLM cost). Mirrors the spirit of CHAT_MEMORY_MAX_CHARS.
+    _DOC_CONTEXT_PER_DOC_MAX = 8000
+    _DOC_CONTEXT_TOTAL_MAX = 16000
+
+    def _build_document_context(self, doc_ids: List[str]) -> str:
+        """Inject the full OCR/extracted text of explicitly selected NON-email
+        documents (PDF/DOCX/TXT) into the prompt.
+
+        When a user selects specific documents (general selection, chronological
+        view, or a PDF conversation in correspondence mode), ground the answer
+        directly in those files' text rather than relying only on RAG retrieval
+        scope. Full text is read from the chunk store (the persistent mirror of
+        post-OCR chunk text), ordered by page. Emails are skipped here — they are
+        handled by _build_email_context.
+        """
+        if not doc_ids:
+            return ""
+        try:
+            from src.document_registry import get_document_registry
+            from src.chunk_store import get_chunk_store
+
+            registry = get_document_registry()
+            con = get_chunk_store().connection()
+        except Exception as e:
+            import logging
+            logging.getLogger("app").warning(f"[Orchestrator] Document context init failed: {e}")
+            return ""
+
+        blocks: List[str] = []
+        total = 0
+        seen: set[str] = set()
+        for doc_id in doc_ids:
+            if not doc_id or doc_id in seen:
+                continue
+            seen.add(doc_id)
+            rec = registry.get(doc_id)
+            if not rec:
+                continue
+            file_name = rec.file_name or doc_id
+            fl = file_name.lower()
+            if fl.endswith((".eml", ".msg")) or getattr(rec, "file_type", "") == "email":
+                continue  # emails handled by _build_email_context
+
+            # Full extracted text from the chunk store, ordered by page. Fall back
+            # to a file_name lookup when the doc_id doesn't match (the same id
+            # mismatch _resolve_canonical_doc_id guards against on the read side).
+            text = ""
+            try:
+                rows = con.execute(
+                    "SELECT text FROM chunks WHERE doc_id = ? ORDER BY page_number",
+                    [doc_id],
+                ).fetchall()
+                if not rows and file_name:
+                    rows = con.execute(
+                        "SELECT text FROM chunks WHERE file_name = ? ORDER BY page_number",
+                        [file_name],
+                    ).fetchall()
+                text = "\n\n".join((r[0] or "") for r in rows).strip()
+            except Exception:
+                text = ""
+            if not text:
+                continue
+
+            if len(text) > self._DOC_CONTEXT_PER_DOC_MAX:
+                text = text[: self._DOC_CONTEXT_PER_DOC_MAX] + "\n…[truncated]"
+            block = f"--- DOCUMENT: {file_name} ---\n{text}\n--- END {file_name} ---"
+            if total + len(block) > self._DOC_CONTEXT_TOTAL_MAX:
+                break
+            blocks.append(block)
+            total += len(block)
+
+        if not blocks:
+            return ""
+
+        header = (
+            f"SELECTED DOCUMENTS ({len(blocks)}) — treat the text below as the "
+            f"primary source of truth for the user's request. If the answer is "
+            f"not present in it, say so explicitly:"
+        )
+        return header + "\n\n" + "\n\n".join(blocks)

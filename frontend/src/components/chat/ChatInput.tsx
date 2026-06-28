@@ -60,11 +60,11 @@ export default function ChatInput({ onSend, disabled }: Props) {
   };
 
   return (
-    <div className="px-4 pb-4 md:px-6 md:pb-6 pt-2 flex-shrink-0">
+    <div className="px-4 md:px-6 pt-3 pb-6 md:pb-8 flex-shrink-0">
       {(quotaExhausted || quotaLow) && (
         <div
           role={quotaExhausted ? 'alert' : 'status'}
-          className={`max-w-3xl mx-auto mb-2 rounded-lg border px-3.5 py-2 text-xs flex items-center gap-2 ${
+          className={`max-w-5xl mx-auto mb-2 rounded-lg border px-3.5 py-2 text-xs flex items-center gap-2 ${
             quotaExhausted
               ? 'border-[var(--danger)] bg-[var(--danger)]/10 text-[var(--danger)]'
               : 'border-amber-400/40 bg-amber-400/10 text-amber-300'
@@ -87,8 +87,8 @@ export default function ChatInput({ onSend, disabled }: Props) {
           </span>
         </div>
       )}
-      <div className="max-w-3xl mx-auto rounded-[10px] border border-[var(--border)] bg-[var(--bg-surface)] focus-within:border-[var(--border-light)] transition-colors">
-        <div className="flex items-end gap-2 px-4 py-3">
+      <div className="max-w-5xl mx-auto rounded-xl border border-[var(--border)] bg-[var(--bg-surface)] focus-within:border-[var(--border-light)] transition-colors">
+        <div className="flex items-end gap-2 px-4 md:px-5 py-4">
           <label htmlFor="chat-input" className="sr-only">Chat message</label>
           <textarea
             id="chat-input"
@@ -99,7 +99,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
             onInput={handleInput}
             disabled={disabled || quotaExhausted}
             style={{ resize: 'none', overflow: 'hidden' }}
-            className="flex-1 bg-transparent text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none text-sm leading-6 disabled:opacity-60"
+            className="flex-1 bg-transparent text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none text-[15px] leading-7 disabled:opacity-60"
             autoFocus
           />
           <button
@@ -107,9 +107,9 @@ export default function ChatInput({ onSend, disabled }: Props) {
             disabled={disabled || !hasText || quotaExhausted}
             aria-label="Send message"
             tabIndex={hasText ? 0 : -1}
-            className={`shrink-0 w-7 h-7 mb-0.5 flex items-center justify-center rounded-md text-[var(--text-muted)] hover:text-[var(--accent)] transition-opacity duration-150 ${hasText && !disabled && !quotaExhausted ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+            className={`shrink-0 w-9 h-9 mb-0.5 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] transition-opacity duration-150 ${hasText && !disabled && !quotaExhausted ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           >
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="5" y1="12" x2="19" y2="12" />
               <polyline points="12 5 19 12 12 19" />
             </svg>

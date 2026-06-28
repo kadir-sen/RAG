@@ -13,6 +13,13 @@ import FileTypeBadge from '../ui/FileTypeBadge';
 import SidebarSection from './SidebarSection';
 import UsageRing from '../shared/UsageRing';
 
+// Communications folder = emails only (.eml / .msg / file_type "email").
+const isEmailDoc = (d: LibraryDocument) => {
+  const t = (d.file_type || '').toLowerCase();
+  const ext = (d.extension || '').toLowerCase();
+  return t === 'email' || ext === '.eml' || ext === '.msg';
+};
+
 const ACCEPTED = '.pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.eml,.msg';
 
 const QUICK_PROMPTS = [
@@ -134,7 +141,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
     archiveConversation,
   } = useConversations({ archived: viewingArchived });
   const { files, uploadMultiple, uploading, isUploading } = useFiles();
-  const { activeConversationId, setConversation, activeMode, setMode, selectedEmailIds, toggleEmailSelection } = useChatStore();
+  const { activeConversationId, setConversation, selectedIds, toggleSelection } = useChatStore();
   const { openDocument } = useUIStore();
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
 
@@ -158,13 +165,6 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
 
   const libraryQuery = useQuery({ queryKey: ['library'], queryFn: getLibrary, staleTime: 60_000 });
-
-  // Auto-open the Correspondence folder when the user enters correspondence mode.
-  useEffect(() => {
-    if (activeMode === 'correspondence') {
-      setOpenSections((prev) => (prev.correspondence ? prev : { ...prev, correspondence: true }));
-    }
-  }, [activeMode]);
 
   // Focus the search input when the search row is toggled open.
   useEffect(() => {
@@ -250,11 +250,15 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const emailDocs: LibraryDocument[] = (libraryQuery.data ?? [])
-    .filter((d) => d.file_type === 'email' || d.extension === '.eml' || d.extension === '.msg');
+  const emailDocs: LibraryDocument[] = (libraryQuery.data ?? []).filter(isEmailDoc);
   const emailDocsSorted = [...emailDocs].sort((a, b) =>
     (b.notice_metadata?.date || '').localeCompare(a.notice_metadata?.date || ''),
   );
+  // Selected EMAILS only (the quick-prompt actions are email-specific even though
+  // the unified selection can also hold documents).
+  const selectedEmailIds = emailDocs
+    .filter((d) => selectedIds.includes(d.doc_id))
+    .map((d) => d.doc_id);
 
   const handleEmailAction = async (prompt: string) => {
     if (selectedEmailIds.length === 0 || !onSend || emailActionLoading) return;
@@ -340,39 +344,9 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           <SidebarItem
             icon={IconAIAssistant}
             label="AI Assistant"
-            active={activeMode !== null}
             onClick={handleNewChat}
             trailing={<UsageRing size={18} showLabel />}
           />
-          {/* AI Assistant sub-modes — always visible, indented like folder
-              children so the mode picker reads as a property of AI Assistant
-              rather than a stand-alone strip below the folders. */}
-          <div className="ml-9 mr-2 border-l border-[var(--border)] pl-2 py-1 space-y-0.5">
-            {(['document_analysis', 'correspondence'] as const).map((mode) => {
-              const isActive = activeMode === mode;
-              const label = mode === 'document_analysis' ? 'Document Analysis' : 'Correspondence';
-              return (
-                <button
-                  key={mode}
-                  type="button"
-                  data-testid={`sidebar-mode-${mode}`}
-                  aria-pressed={isActive}
-                  onClick={() => setMode(mode)}
-                  className={`w-full flex items-center gap-2 px-2 py-1 rounded text-left text-[12px] transition-colors ${
-                    isActive
-                      ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
-                  }`}
-                >
-                  <span
-                    aria-hidden="true"
-                    className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-[var(--accent)]' : 'bg-[var(--text-muted)]'}`}
-                  />
-                  <span className="flex-1 truncate">{label}</span>
-                </button>
-              );
-            })}
-          </div>
           <SidebarItem
             icon={IconDocuments}
             label="Documents"
@@ -401,19 +375,36 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                     {libraryQuery.isLoading ? 'Loading…' : _docQuery ? 'No matches' : 'Empty'}
                   </p>
                 ) : (
-                  filteredDocumentDocs.map((d) => (
-                    <button
-                      key={d.doc_id}
-                      type="button"
-                      onClick={() => openDocument({ docId: d.doc_id, fileName: d.file_name })}
-                      className="w-full flex items-center gap-2 px-1.5 py-1 rounded text-left hover:bg-[var(--bg-hover)] transition-colors group"
-                    >
-                      <FileTypeBadge fileType={d.file_type} />
-                      <span className="text-[11px] truncate text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] flex-1">
-                        {d.file_name}
-                      </span>
-                    </button>
-                  ))
+                  filteredDocumentDocs.map((d) => {
+                    const isSelected = selectedIds.includes(d.doc_id);
+                    return (
+                      <div
+                        key={d.doc_id}
+                        className={`flex items-center gap-2 p-1.5 rounded transition-colors ${
+                          isSelected ? 'bg-[var(--accent-glow)]' : 'hover:bg-[var(--bg-hover)]'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelection(d.doc_id)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="shrink-0"
+                          aria-label={`Select ${d.file_name}`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => openDocument({ docId: d.doc_id, fileName: d.file_name })}
+                          className="min-w-0 flex-1 flex items-center gap-2 text-left group"
+                        >
+                          <FileTypeBadge fileType={d.file_type} />
+                          <span className="text-[11px] truncate text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] flex-1">
+                            {d.file_name}
+                          </span>
+                        </button>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -434,7 +425,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                 </p>
               ) : (
                 emailDocsSorted.map((doc) => {
-                  const isSelected = selectedEmailIds.includes(doc.doc_id);
+                  const isSelected = selectedIds.includes(doc.doc_id);
                   const meta = doc.notice_metadata;
                   return (
                     <div
@@ -446,7 +437,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                       <input
                         type="checkbox"
                         checked={isSelected}
-                        onChange={() => toggleEmailSelection(doc.doc_id)}
+                        onChange={() => toggleSelection(doc.doc_id)}
                         onClick={(e) => e.stopPropagation()}
                         className="mt-0.5 shrink-0"
                         aria-label="Select email for actions"
@@ -502,8 +493,8 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             beneath the AI Assistant entry above, so the bottom toggle bar
             is no longer needed. */}
 
-        {/* ── Email quick prompts (only in correspondence mode w/ selection) ── */}
-        {activeMode === 'correspondence' && selectedEmailIds.length > 0 && (
+        {/* ── Email quick prompts (shown whenever emails are selected) ── */}
+        {selectedEmailIds.length > 0 && (
           <div className="mx-3 mt-1 mb-2 space-y-1 pt-2 border-t border-[var(--border)] shrink-0">
             {QUICK_PROMPTS.map((qp) => (
               <button
@@ -717,13 +708,13 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
           </div>
         )}
 
-        {/* ── Bottom actions: minimal Add + Export ─────────────────── */}
-        <div className="px-3 py-2 border-t border-[var(--border)] shrink-0 flex items-center justify-between gap-2">
+        {/* ── Bottom actions: prominent Add + small Export ─────────────── */}
+        <div className="px-3 pt-2.5 pb-3.5 border-t border-[var(--border)] shrink-0 flex items-center gap-2">
           <button
             onClick={handleFileUpload}
             disabled={isUploading}
             aria-label="Add document"
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors text-[12px] font-mono disabled:opacity-50"
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-[var(--border)] text-[var(--text-primary)] hover:border-[var(--accent)] hover:bg-[var(--bg-hover)] transition-colors text-[13px] font-medium disabled:opacity-50"
           >
             {IconUpload}
             <span>{isUploading ? 'Uploading…' : 'Add document'}</span>
@@ -733,7 +724,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
               href={getExportUrl()}
               download
               aria-label="Export file list as CSV"
-              className="font-mono text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors px-2 py-1"
+              className="shrink-0 font-mono text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors px-2 py-2.5"
             >
               ↓ CSV
             </a>

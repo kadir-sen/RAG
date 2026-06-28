@@ -3,7 +3,6 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import type { ChatResponse } from '../../types/api';
 import type { ViewerDoc } from '../../stores/uiStore';
-import { useChatStore } from '../../stores/chatStore';
 import Badge from '../shared/Badge';
 import Avatar from './Avatar';
 import InlineCitations from './InlineCitations';
@@ -62,14 +61,13 @@ function formatTime(ts?: number): string {
 
 function AssistantMessage({ response, text, timestamp, onDocClick, failedText, onRetry }: Props) {
   const intent = response?.ui_intent ?? 'answer';
-  const activeMode = useChatStore((s) => s.activeMode);
-  // In Document Analysis, any response that surfaced related documents is shown
-  // as a single clickable, chronological table — regardless of whether the
-  // backend tagged it doc_list or answered with a narrative. The table replaces
-  // the doc-list table, the timeline, and the related-docs chip strip so we
-  // never stack two views of the same documents.
+  // Mode-less: whenever the router returns a document list (FILE_LIST / TIMELINE
+  // → ui_intent "doc_list") with related documents, render them as a single
+  // clickable, chronological table on the home page — the rich "document
+  // analysis" output without needing a dedicated mode. Replaces the flat
+  // doc-list table / timeline / chip strip so we never stack two views.
   const showDocAnalysisTable =
-    activeMode === 'document_analysis' && !!response?.related_docs?.length;
+    intent === 'doc_list' && !!response?.related_docs?.length;
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
 
@@ -88,7 +86,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
 
   return (
     <div className="mb-6 px-4 animate-fade-in-up group">
-      <div className="max-w-4xl min-w-0 flex items-start gap-3">
+      <div className="max-w-5xl min-w-0 flex items-start gap-3">
         <Avatar variant="assistant" />
         <div className="min-w-0 flex-1">
           {/* Hover-only metadata strip */}
