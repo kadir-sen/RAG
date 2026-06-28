@@ -321,12 +321,25 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
     else:
         from llama_index.llms.gemini import Gemini
         model = model or GEMINI_MODEL
-        llm = Gemini(
-            api_key=GOOGLE_API_KEY,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+
+        def _mk(m: str):
+            return Gemini(api_key=GOOGLE_API_KEY, model=m,
+                          temperature=temperature, max_tokens=max_tokens)
+
+        # Some llama-index/google-generativeai versions require a "models/" prefix
+        # and reject the bare name ("Model names should start with `models/`").
+        # Try as-is, then with the prefix — robust across versions. A bare-name
+        # rejection here otherwise fails the call, burns a retry, and (via an unset
+        # Settings.llm) lets LlamaIndex silently fall back to OpenAI. Keep the
+        # ORIGINAL name for cost/cache; only the wrapper sees the prefixed form.
+        try:
+            llm = _mk(model)
+        except Exception as e:
+            if "models/" in str(e) and not model.startswith(("models/", "tunedModels/")):
+                logger.info(f"[LLMClient] gemini wrapper wants prefixed name → models/{model}")
+                llm = _mk(f"models/{model}")
+            else:
+                raise
         return llm, model
 
 

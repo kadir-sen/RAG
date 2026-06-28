@@ -13,7 +13,8 @@ from typing import Tuple, Dict, Any, List, Optional
 
 from .config import (
     GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE, ENABLE_TIMELINE,
-    ENABLE_THINKING, THINKING_BUDGET_SYNTHESIS,
+    ENABLE_THINKING, THINKING_BUDGET_SYNTHESIS, ENABLE_LITE_TIER,
+    ENABLE_PARALLEL_RETRIEVAL,
 )
 from .types import QueryType, RouterDecision, LLMUsage
 from .logger import logger, log_separator
@@ -1799,6 +1800,7 @@ class QueryRouter:
             key = "hybdec:" + hashlib.sha256(query.lower().encode()).hexdigest()[:32]
             resp = llm_client.generate_json(
                 prompt, system="You split queries. Output JSON only.", cache_key=key,
+                model=GEMINI_MODEL_LITE if ENABLE_LITE_TIER else "",
             )
             data = resp.raw if isinstance(resp.raw, dict) else {}
             doc_q = (data.get("doc") or "").strip() or query
@@ -1862,13 +1864,40 @@ class QueryRouter:
                 _pf = {k: _scope[k] for k in ("doc_type", "project") if _scope.get(k)} or None
             except Exception:
                 pass
+        allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+
         # Retrieve-only: the final synthesis below works from the RAW chunks
         # (_format_doc_excerpts reads sources, not the answer), so paying for the
         # document-side synthesis here would be wasted.
-        doc_result = self.document_rag.query(sub["doc"], doc_ids=doc_ids, payload_filters=_pf,
-                                             synthesize=False)
-        allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
-        data_result = self.data_analyzer.query(sub["data"], allowed_tables=allowed_tables)
+        def _run_doc():
+            return self.document_rag.query(sub["doc"], doc_ids=doc_ids,
+                                           payload_filters=_pf, synthesize=False)
+
+        def _run_data():
+            return self.data_analyzer.query(sub["data"], allowed_tables=allowed_tables)
+
+        # The doc (vector + lexical) and data (SQL) legs are independent and hit
+        # different subsystems/DuckDB connections → run them concurrently. Each
+        # worker re-binds the thread-local telemetry trace and inherits the
+        # request's ContextVars (corpus/user/activity-feed) via copy_context().
+        if ENABLE_PARALLEL_RETRIEVAL:
+            import contextvars
+            from concurrent.futures import ThreadPoolExecutor
+            from .telemetry import get_current_trace, set_current_trace
+            _parent_trace = get_current_trace()
+
+            def _with_ctx(fn):
+                set_current_trace(_parent_trace)
+                return fn()
+
+            with ThreadPoolExecutor(max_workers=2) as _ex:
+                _fd = _ex.submit(contextvars.copy_context().run, _with_ctx, _run_doc)
+                _fa = _ex.submit(contextvars.copy_context().run, _with_ctx, _run_data)
+                doc_result = _fd.result()
+                data_result = _fa.result()
+        else:
+            doc_result = _run_doc()
+            data_result = _run_data()
 
         # Synthesize from RAW context (chunks + rows), not pre-synthesized answers.
         logger.info("   Synthesizing results from raw context...")

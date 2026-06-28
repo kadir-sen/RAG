@@ -25,6 +25,8 @@ from .config import (
     GOOGLE_API_KEY,
     PINECONE_API_KEY,
     GEMINI_MODEL,
+    GEMINI_MODEL_LITE,
+    ENABLE_LITE_TIER,
     EMBEDDING_MODEL,
     EMBEDDING_DIMENSION,
     EMBEDDING_PROVIDER,
@@ -212,11 +214,23 @@ class DocumentRAG:
         # (and now local by default), and provider answers go through llm_client.
         try:
             from llama_index.llms.gemini import Gemini
-            Settings.llm = Gemini(
-                api_key=GOOGLE_API_KEY,
-                model=GEMINI_MODEL,
-                system_prompt=self.DOCUMENT_SYSTEM_PROMPT,
-            )
+
+            def _mk_gemini(m: str):
+                return Gemini(api_key=GOOGLE_API_KEY, model=m,
+                              system_prompt=self.DOCUMENT_SYSTEM_PROMPT)
+
+            # Robust to the "Model names should start with `models/`" wrapper
+            # check (see llm_client.create_llm). Getting a WORKING Settings.llm
+            # here matters: when it's unset, LlamaIndex's dense query_engine
+            # silently falls back to its OpenAI default — which, on a dead OpenAI
+            # quota, just burns retries/timeouts.
+            try:
+                Settings.llm = _mk_gemini(GEMINI_MODEL)
+            except Exception as e:
+                if "models/" in str(e) and not GEMINI_MODEL.startswith(("models/", "tunedModels/")):
+                    Settings.llm = _mk_gemini(f"models/{GEMINI_MODEL}")
+                else:
+                    raise
         except Exception as e:
             logger.warning(f"   Gemini LLM unavailable ({e}); Settings.llm unset "
                            f"(provider llm_client synthesis still works)")
@@ -1272,6 +1286,7 @@ class DocumentRAG:
                 prompt,
                 system="You are a precise passage reranker. Output JSON only.",
                 cache_key=key,
+                model=GEMINI_MODEL_LITE if ENABLE_LITE_TIER else "",
             )
             order = resp.raw.get("order", []) if isinstance(resp.raw, dict) else []
             picked, used = [], set()
