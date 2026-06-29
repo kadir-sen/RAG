@@ -100,6 +100,56 @@ def test_react_agent_finish_uses_retrieve_only(monkeypatch):
     assert len(res["sources"]) == 1
 
 
+def test_agent_read_memory_filter_new():
+    from src.react_agent import ReActAgent
+    seen = set()
+    srcs = [{"file_name": "a.pdf", "page_number": 1},
+            {"file_name": "a.pdf", "page_number": 1},  # dup
+            {"file_name": "b.pdf", "page_number": 2}]
+    fresh1 = ReActAgent._filter_new(srcs, seen)
+    assert [(s["file_name"], s["page_number"]) for s in fresh1] == [("a.pdf", 1), ("b.pdf", 2)]
+    # second pass over the same docs -> nothing new (read-memory)
+    assert ReActAgent._filter_new(srcs, seen) == []
+
+
+class _FakeRAG2:
+    def query(self, q, top_k=10, doc_ids=None, file_names=None, payload_filters=None, synthesize=True):
+        return {"answer": "", "sources": [
+            {"doc_id": "d1", "file_name": "contract.pdf", "page_number": 1,
+             "highlight_text": "agreement between council and contractor", "text_snippet": "x"},
+            {"doc_id": "d2", "file_name": "audit.pdf", "page_number": 3,
+             "highlight_text": "cost estimates need scrutiny", "text_snippet": "y"},
+            {"doc_id": "d1", "file_name": "contract.pdf", "page_number": 2,
+             "highlight_text": "clause 80", "text_snippet": "z"},
+        ]}
+
+
+class _RouterSurvey:
+    def __init__(self):
+        self.document_rag = _FakeRAG2()
+
+
+def test_metadata_survey_returns_metadata_no_fulltext():
+    from src.react_agent import ReActAgent
+    rows, chunks = ReActAgent(_RouterSurvey())._metadata_survey("cost", None)
+    assert [r["file_name"] for r in rows] == ["contract.pdf", "audit.pdf"]  # deduped by file
+    assert "agreement" in rows[0]["gist"]  # graceful fallback to highlight (no enrichment)
+    assert set(chunks) == {"contract.pdf", "audit.pdf"} and len(chunks["contract.pdf"]) == 2
+
+
+def test_survey_caches_then_read_serves_from_cache_with_memory():
+    from src.react_agent import ReActAgent
+    ag = ReActAgent(_RouterSurvey())
+    seen, cache = set(), {}
+    obs, srcs, _ = ag._run_tool("survey_documents", "cost", None, seen, cache)
+    assert srcs == [] and "contract.pdf" in obs and seen == set()  # survey = metadata only
+    assert cache and "contract.pdf" in cache                        # chunks stashed
+    obs2, srcs2, _ = ag._run_tool("read_documents", "contract.pdf, audit.pdf", None, seen, cache)
+    assert len(srcs2) == 3 and len(seen) == 3   # served from cache, fills read-memory
+    obs3, srcs3, _ = ag._run_tool("read_documents", "contract.pdf", None, seen, cache)
+    assert srcs3 == []                          # re-read blocked by read-memory
+
+
 def test_react_agent_failsoft_never_drops_answer(monkeypatch):
     import src.react_agent as ra
 

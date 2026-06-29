@@ -48,15 +48,21 @@ def _record(resp) -> None:
 
 
 _DECIDE_SYSTEM = (
-    "You are a methodical construction-domain research agent. You answer a user's "
-    "question by choosing ONE tool at a time, observing the result, then deciding "
-    "the next step. Use the fewest steps needed. When you have enough to answer "
-    "fully, use the `finish` action. Output STRICT JSON only."
+    "You are a methodical construction/legal-inquiry research agent. You answer a "
+    "user's question by choosing ONE tool at a time, observing the result, then "
+    "deciding the next step. Work METADATA-FIRST: use `survey_documents` to see "
+    "WHICH documents exist on a topic (cheap, no full text), judge relevance from "
+    "each document's one-line gist, then `read_documents` ONLY the few whose gist "
+    "matches. NEVER read a document already listed under 'Already read'. Prefer a "
+    "survey + a couple of targeted reads over many broad searches. Use the fewest "
+    "steps needed; when you can answer fully, use `finish`. Output STRICT JSON only."
 )
 
-_TOOLS_DOC = """Available tools:
-- document_search: semantic search over document text (contracts, letters, reports, notices). action_input = a focused search query string.
-- sql_query: query structured project data tables (quantities, hours, workers, progress, cost). action_input = a natural-language data question.
+_TOOLS_DOC = """Available tools (prefer survey → read):
+- survey_documents: METADATA-ONLY scan — returns a numbered list of documents about a topic with a one-line gist each (no full text). Use this FIRST to find which documents are relevant. action_input = a topic/keywords string.
+- read_documents: deep-read the full text of specific documents you picked from a survey. action_input = comma-separated file names from the survey list.
+- document_search: broad semantic search that returns text excerpts directly (use only when a survey is not enough). action_input = a focused search query.
+- sql_query: query structured project data tables (quantities, hours, costs). action_input = a natural-language data question.
 - timeline_query: chronological sequence of notices / correspondence. action_input = a timeline question.
 - file_list: list or count documents by topic. action_input = a topic or filter.
 - finish: give the final answer. action_input = the complete answer text for the user.
@@ -78,9 +84,16 @@ class ReActAgent:
         sql = result_data = result_columns = None
         final_answer: Optional[str] = None
         steps_taken = 0
+        # Per-run read-memory (request-local, NOT instance state — the agent is a
+        # singleton). (file_name, page) keys we've already surfaced, so the same
+        # document is never read twice across iterations.
+        seen: set = set()
+        seen_files: List[str] = []
+        survey_cache: Dict[str, List[Dict[str, Any]]] = {}  # file_name → already-retrieved chunks
+        corpus_map = self._corpus_map()
 
         for i in range(max(1, REACT_MAX_ITERATIONS)):
-            action = self._decide(query, scratchpad)
+            action = self._decide(query, scratchpad, corpus_map, seen_files)
             thought = (action.get("thought") or "").strip()
             act = (action.get("action") or "").strip().lower()
             ainput = action.get("action_input") or ""
@@ -94,10 +107,14 @@ class ReActAgent:
                 final_answer = ainput.strip()
                 break
 
-            obs, srcs, extra = self._run_tool(act, ainput, doc_ids)
+            obs, srcs, extra = self._run_tool(act, ainput, doc_ids, seen, survey_cache)
             steps_taken += 1
             if srcs:
                 sources.extend(srcs)
+                for s in srcs:
+                    fn = s.get("file_name")
+                    if fn and fn not in seen_files:
+                        seen_files.append(fn)
             if extra.get("sql"):
                 sql = extra.get("sql")
                 result_data = extra.get("result_data")
@@ -128,15 +145,21 @@ class ReActAgent:
         }
 
     # ── decide (one ReAct step) ─────────────────────────────────
-    def _decide(self, query: str, scratchpad: List[Dict[str, str]]) -> Dict[str, Any]:
+    def _decide(self, query: str, scratchpad: List[Dict[str, str]],
+                corpus_map: str = "", seen_files: Optional[List[str]] = None) -> Dict[str, Any]:
         history = ""
         for s in scratchpad:
             history += (f"\nAction: {s['action']}({s['input']})\n"
                         f"Observation: {s['observation']}\n")
+        already = ""
+        if seen_files:
+            already = "\nAlready read (do NOT read these again): " + ", ".join(seen_files[:30]) + "\n"
         prompt = (
             f"{_TOOLS_DOC}\n\n"
+            f"{corpus_map}"
             f"User question:\n{query}\n\n"
-            f"History so far:{history or ' (none yet)'}\n\n"
+            f"History so far:{history or ' (none yet)'}\n"
+            f"{already}\n"
             "Decide the next single action as strict JSON."
         )
         try:
@@ -151,15 +174,51 @@ class ReActAgent:
             return {"action": "finish", "action_input": ""}
 
     # ── tool dispatch (reuse router handlers) ───────────────────
-    def _run_tool(self, action: str, tool_input: str, doc_ids: Optional[List[str]]
+    def _run_tool(self, action: str, tool_input: str, doc_ids: Optional[List[str]],
+                  seen: set, survey_cache: Dict[str, List[Dict[str, Any]]]
                   ) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
         q = tool_input.strip() or ""
         try:
+            if action in ("survey_documents", "survey"):
+                _emit("searching", "surveying documents…", q[:80])
+                rows, chunks_by_file = self._metadata_survey(q, doc_ids)
+                survey_cache.update(chunks_by_file)  # stash chunks for read_documents
+                if not rows:
+                    return "(no documents found on this topic)", [], {}
+                lines = ["Documents found (metadata only — read_documents the relevant file names):"]
+                for i, m in enumerate(rows, 1):
+                    tag = f" [{m['doc_type']}]" if m.get("doc_type") else ""
+                    dt = f" ({m['date']})" if m.get("date") else ""
+                    lines.append(f"{i}. {m['file_name']}{tag}{dt} — {m['gist']}")
+                return "\n".join(lines), [], {}  # survey adds NO sources (no full read yet)
+
+            if action in ("read_documents", "read_document", "read"):
+                names = [n.strip() for n in q.replace("\n", ",").split(",") if n.strip()]
+                _emit("reading", f"reading {len(names)} document(s)…", ", ".join(names[:3])[:80])
+                # Serve from the survey cache (already-retrieved chunks) — avoids a
+                # scoped re-query that returns nothing on the edinburgh/Qdrant path.
+                picked: List[Dict[str, Any]] = []
+                for n in names:
+                    for fn, chunks in survey_cache.items():
+                        if n == fn or n in fn or fn in n:
+                            picked.extend(chunks)
+                if not picked and names:  # not surveyed → best-effort scoped fetch
+                    try:
+                        r = self.router.document_rag.query(
+                            names[0], file_names=names, doc_ids=doc_ids, synthesize=False)
+                        picked = r.get("sources", [])
+                    except Exception:
+                        picked = []
+                fresh = self._filter_new(picked, seen)
+                srcs = [{**s, "source_type": "document"} for s in fresh]
+                return self._excerpts(fresh) or "(no new text in those documents)", srcs, {}
+
             if action == "document_search":
                 _emit("searching", "searching documents…", q[:80])
                 r = self.router.document_rag.query(q, doc_ids=doc_ids, synthesize=False)
-                srcs = [{**s, "source_type": "document"} for s in r.get("sources", [])]
-                return self._excerpts(r.get("sources", [])) or "(no matching passages)", srcs, {}
+                fresh = self._filter_new(r.get("sources", []), seen)
+                srcs = [{**s, "source_type": "document"} for s in fresh]
+                return self._excerpts(fresh) or "(no new matching passages)", srcs, {}
 
             if action == "sql_query":
                 _emit("tool", "querying project data…", q[:80])
@@ -213,6 +272,89 @@ class ReActAgent:
             logger.error(f"[ReActAgent] final synthesis failed: {e}")
             # Last-resort: stitch the raw observations so the answer never drops.
             return "\n\n".join(s["observation"] for s in scratchpad if s.get("observation"))
+
+    # ── metadata-first helpers ──────────────────────────────────
+    @staticmethod
+    def _corpus_map() -> str:
+        """Compact corpus topic map (cluster labels + counts) so the agent knows
+        what topic-clusters exist before searching. Reuses the document clusterer
+        (wires the otherwise-dormant cluster layer). Empty when unavailable."""
+        try:
+            from .document_clusterer import get_clusterer
+            clusters = get_clusterer().list_clusters() or []
+            parts = []
+            for c in clusters[:12]:
+                label = getattr(c, "label", None) if not isinstance(c, dict) else c.get("label")
+                cnt = getattr(c, "doc_count", None) if not isinstance(c, dict) else c.get("doc_count")
+                if label:
+                    parts.append(f"{label} ({cnt})" if cnt else str(label))
+            if parts:
+                return "Corpus topic clusters: " + "; ".join(parts) + "\n\n"
+        except Exception:
+            pass
+        return ""
+
+    def _metadata_survey(self, topic: str, doc_ids: Optional[List[str]],
+                         limit: int = 12) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+        """Doc-level metadata list for a topic WITHOUT returning full chunk text.
+        Cheap retrieve-only (no LLM) finds candidate docs; registry enrichment
+        (llm_summary/topics/cluster) gives the gist. Falls back to the retrieval
+        highlight when a doc has no enrichment (e.g. the bulk edinburgh corpus).
+
+        Returns (metadata_rows, chunks_by_file): the chunks already retrieved are
+        stashed by file_name so read_documents can serve them directly instead of
+        re-retrieving (a scoped re-query returns nothing on the edinburgh/Qdrant
+        path where dense=0 and a file_name filter matches no payload)."""
+        try:
+            r = self.router.document_rag.query(
+                topic, top_k=max(limit * 2, 20), doc_ids=doc_ids, synthesize=False)
+        except Exception as e:
+            logger.warning(f"[ReActAgent] survey retrieval failed: {e}")
+            return [], {}
+        reg = None
+        try:
+            from .document_registry import get_document_registry
+            reg = get_document_registry()
+        except Exception:
+            reg = None
+        out: List[Dict[str, Any]] = []
+        chunks_by_file: Dict[str, List[Dict[str, Any]]] = {}
+        for s in r.get("sources", []):
+            fn = s.get("file_name")
+            if not fn:
+                continue
+            chunks_by_file.setdefault(fn, []).append(s)
+            if fn in chunks_by_file and len(chunks_by_file[fn]) > 1:
+                continue  # already added this file to the metadata list
+            rec = None
+            if reg and s.get("doc_id"):
+                try:
+                    rec = reg.get(s.get("doc_id"))
+                except Exception:
+                    rec = None
+            summary = getattr(rec, "llm_summary", "") if rec else ""
+            topics = getattr(rec, "llm_topics", None) if rec else None
+            cluster = getattr(rec, "cluster_label", "") if rec else ""
+            doc_type = (getattr(rec, "file_type", "") if rec else "") or s.get("doc_type", "")
+            gist = (summary or s.get("highlight_text") or (s.get("text_snippet") or "")[:160]).strip()
+            if topics:
+                gist = f"{gist} · topics: {', '.join(topics[:4])}"
+            out.append({"file_name": fn, "doc_type": doc_type, "date": s.get("date", ""),
+                        "cluster": cluster, "gist": gist[:220] or "(no preview)"})
+        return out[:limit], chunks_by_file
+
+    @staticmethod
+    def _filter_new(sources: List[Dict[str, Any]], seen: set) -> List[Dict[str, Any]]:
+        """Read-memory: drop (file_name, page) pairs already surfaced this run so
+        the agent never re-reads the same document across iterations."""
+        fresh = []
+        for s in sources or []:
+            key = (s.get("file_name"), s.get("page_number"))
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(s)
+        return fresh
 
     # ── helpers ─────────────────────────────────────────────────
     @staticmethod
