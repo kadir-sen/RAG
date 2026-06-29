@@ -117,17 +117,29 @@ class ChatOrchestrator:
         if not doc_ids:
             doc_ids = store.get_document_ids(conversation_id) or None
 
-        # Per-user corpus isolation: stamp the user's corpus on a contextvar in
-        # THIS async task so it propagates into the query worker thread (the auth
-        # dependency's contextvar runs in a separate threadpool and doesn't reach
-        # here). Retrieval/timeline read it to scope to the user's documents.
+        # Per-user contextvars: stamp the user's corpus AND identity on contextvars
+        # in THIS async task so they propagate into the query worker thread via
+        # asyncio.to_thread. The auth dependency (sync → FastAPI threadpool) sets
+        # these in a DIFFERENT context that never reaches here, so without this:
+        #  - corpus_var would be unset → retrieval/timeline lose corpus scope;
+        #  - current_user_var would be None → llm_client can't attribute tokens to
+        #    the user, so used_tokens stays 0 and the quota bar is stuck at 100%.
         try:
             from src.document_rag import corpus_var
+            from backend.core.security import current_user_var, UserContext
             _corpus = ""
             if username:
                 from src.user_store import get_user_store
                 _u = get_user_store().get_user(username)
-                _corpus = str(((_u or {}).get("features") or {}).get("corpus") or "").lower()
+                if _u:
+                    _corpus = str((_u.get("features") or {}).get("corpus") or "").lower()
+                    current_user_var.set(UserContext(
+                        username=_u["username"],
+                        role=_u.get("role", "user"),
+                        display_name=_u.get("display_name", _u["username"]),
+                        features=_u.get("features", {}) or {},
+                        token_limit=_u.get("token_limit", 0),
+                    ))
             corpus_var.set(_corpus)
         except Exception:
             pass

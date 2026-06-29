@@ -10,9 +10,10 @@ function formatTokens(n: number): string {
 interface UsageRingProps {
   size?: number;
   showLabel?: boolean;
+  showTokens?: boolean;   // render the actual "used / limit" token counts inline
 }
 
-export default function UsageRing({ size = 18, showLabel = false }: UsageRingProps) {
+export default function UsageRing({ size = 18, showLabel = false, showTokens = false }: UsageRingProps) {
   const user = useAuthStore((s) => s.user);
   const refreshMe = useAuthStore((s) => s.refreshMe);
 
@@ -101,6 +102,11 @@ export default function UsageRing({ size = 18, showLabel = false }: UsageRingPro
       {showLabel && (
         <span className={`font-mono text-[10px] tracking-wider tabular-nums ${textClass}`}>
           {remaining.toFixed(0)}%
+        </span>
+      )}
+      {showTokens && (
+        <span className="font-mono text-[10px] tabular-nums text-[var(--text-muted)]">
+          {formatTokens(user.used_tokens)}/{formatTokens(user.token_limit)}
         </span>
       )}
     </span>

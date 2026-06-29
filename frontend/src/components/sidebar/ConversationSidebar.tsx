@@ -345,7 +345,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             icon={IconAIAssistant}
             label="AI Assistant"
             onClick={handleNewChat}
-            trailing={<UsageRing size={18} showLabel />}
+            trailing={<UsageRing size={18} showLabel showTokens />}
           />
           <SidebarItem
             icon={IconDocuments}
