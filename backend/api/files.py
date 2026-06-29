@@ -15,10 +15,42 @@ router = APIRouter()
 _file_service = FileService()
 
 
+def _edinburgh_data_table_infos() -> List[FileInfo]:
+    """FileInfo rows for the edinburgh corpus's SQL data tables (Excel/CSV), read
+    from the catalog by corpus tag. These live as DuckDB/parquet tables (not in the
+    chunk store), so without this they never reach the 'edinburgh' Spreadsheets list.
+    doc_id == generate_doc_id(source_file) so the viewer resolves them via the
+    registry → direct file render. Read-only."""
+    from src.catalog import get_catalog
+    from src.document_rag import generate_doc_id
+    out: List[FileInfo] = []
+    for entry in get_catalog().entries.values():
+        if (getattr(entry, "corpus", "demo") or "demo").lower() != "edinburgh":
+            continue
+        if entry.source_type not in ("excel", "csv"):
+            continue
+        fname = os.path.basename(entry.source_file)
+        cols = list(entry.tables[0].columns or [])[:8] if entry.tables else []
+        out.append(FileInfo(
+            id=generate_doc_id(entry.source_file),
+            name=fname,
+            file_type="data",
+            tables=len(entry.tables),
+            rows=sum(t.row_count for t in entry.tables),
+            status="completed",
+            data_table_status="registered",
+            data_tables_count=len(entry.tables),
+            columns=cols,
+            sheets=len(entry.tables),
+        ))
+    return out
+
+
 def _edinburgh_file_infos() -> List[FileInfo]:
-    """FileInfo rows for the bulk vectors-only corpus (chunk-store docs not in the
-    registry), so the 'edinburgh' account's sidebar counts reflect its own PDFs
-    (Documents = the corpus, Spreadsheets/Communications = 0). Read-only."""
+    """FileInfo rows for the 'edinburgh' account: bulk vectors-only PDFs/emails
+    (chunk-store docs not in the registry) PLUS its SQL data tables (Excel/CSV)
+    from the catalog, so Documents AND Spreadsheets both reflect its own corpus.
+    Read-only."""
     from src.document_registry import get_document_registry
     from src.chunk_store import get_chunk_store
     reg_names = {r.file_name for r in get_document_registry().get_completed()}
@@ -40,6 +72,11 @@ def _edinburgh_file_infos() -> List[FileInfo]:
             pages = None
         out.append(FileInfo(id=file_name, name=file_name, file_type=ftype,
                             pages=pages, status="completed"))
+    # Merge the edinburgh SQL data tables (Excel/CSV) — these are not in the chunk store.
+    try:
+        out.extend(_edinburgh_data_table_infos())
+    except Exception:
+        pass
     return out
 
 
@@ -47,6 +84,7 @@ def _edinburgh_file_infos() -> List[FileInfo]:
 async def upload_file(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = BackgroundTasks(),
+    user: UserContext = Depends(get_current_user),
 ):
     saved_path, file_id, is_duplicate = await _file_service.save(file)
     if is_duplicate:
@@ -55,7 +93,14 @@ async def upload_file(
             filename=file.filename,
             status="completed",
         )
-    background_tasks.add_task(index_file_background, file_id, saved_path)
+    # Propagate the uploader's corpus so the background indexer tags new data
+    # tables correctly (otherwise the unset ContextVar defaults them to 'demo'
+    # and an edinburgh user's upload would silently land in the demo corpus).
+    try:
+        corpus = str((user.features or {}).get("corpus") or "").lower()
+    except Exception:
+        corpus = ""
+    background_tasks.add_task(index_file_background, file_id, saved_path, corpus)
     return UploadResult(
         file_id=file_id,
         filename=file.filename,
@@ -72,7 +117,7 @@ async def list_files(user: UserContext = Depends(get_current_user)):
             return _edinburgh_file_infos()
     except Exception:
         pass
-    raw = _file_service.list_files()
+    raw = _file_service.list_files(corpus="demo")
     return [
         FileInfo(
             id=f.get("id", ""),
@@ -85,6 +130,8 @@ async def list_files(user: UserContext = Depends(get_current_user)):
             status=f.get("status", "completed"),
             data_table_status=f.get("data_table_status"),
             data_tables_count=f.get("data_tables_count", 0),
+            columns=f.get("columns", []),
+            sheets=f.get("sheets", 0),
         )
         for f in raw
     ]

@@ -63,6 +63,10 @@ class TableMetadata:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     file_hash: str = ""  # For deduplication
 
+    # Corpus/tenant tag for isolation ('demo' | 'edinburgh' | ...). Inherited
+    # from the owning CatalogEntry at add_table time.
+    corpus: str = "demo"
+
 
 @dataclass
 class CatalogEntry:
@@ -73,11 +77,26 @@ class CatalogEntry:
     tables: List[TableMetadata] = field(default_factory=list)
     ingested_at: str = field(default_factory=lambda: datetime.now().isoformat())
     ocr_decision: str = "native"  # "native" | "ocr" | "hybrid"
+    corpus: str = "demo"  # Corpus/tenant tag for isolation ('demo' | 'edinburgh' | ...)
 
     # Notice extraction (Phase 2)
     notice_path: Optional[str] = None  # Path to notice JSON
     notice_extracted: bool = False
     notice_summary: Optional[Dict[str, Any]] = None  # Quick summary: date, sender, recipient
+
+
+def _active_corpus() -> str:
+    """The corpus to tag a new ingest with — the active request/script corpus.
+
+    Reads the same ContextVar the RAG path uses ('edinburgh' | 'demo' | '').
+    Unset (plain scripts / legacy demo ingest) → 'demo', preserving prior
+    behaviour where all tables were effectively the demo corpus.
+    """
+    try:
+        from .document_rag import _current_user_corpus
+        return _current_user_corpus() or "demo"
+    except Exception:
+        return "demo"
 
 
 class TableCatalog:
@@ -131,6 +150,7 @@ class TableCatalog:
                     tables=tables,
                     ingested_at=entry_data.get("ingested_at", ""),
                     ocr_decision=entry_data.get("ocr_decision", "native"),
+                    corpus=entry_data.get("corpus", "demo"),
                     notice_path=entry_data.get("notice_path"),
                     notice_extracted=entry_data.get("notice_extracted", False),
                     notice_summary=entry_data.get("notice_summary"),
@@ -150,6 +170,7 @@ class TableCatalog:
                     "tables": [asdict(t) for t in entry.tables],
                     "ingested_at": entry.ingested_at,
                     "ocr_decision": entry.ocr_decision,
+                    "corpus": entry.corpus,
                     "notice_path": entry.notice_path,
                     "notice_extracted": entry.notice_extracted,
                     "notice_summary": entry.notice_summary,
@@ -224,10 +245,17 @@ class TableCatalog:
         return self.parquet_dir / f"{table_id}.parquet"
 
     def add_entry(self, source_file: str, source_type: str,
-                  ocr_decision: str = "native") -> CatalogEntry:
-        """Add or update a catalog entry for a source file."""
+                  ocr_decision: str = "native",
+                  corpus: Optional[str] = None) -> CatalogEntry:
+        """Add or update a catalog entry for a source file.
+
+        ``corpus`` tags the entry for tenant isolation; when omitted it is read
+        from the active ingest ContextVar (defaults to 'demo'), so neither the
+        schema-converter path nor the fallback extractor needs to thread it.
+        """
         file_hash = self.compute_file_hash(source_file)
         key = f"{source_type}:{Path(source_file).name}:{file_hash[:8]}"
+        corpus = (corpus or _active_corpus()).lower()
 
         # Check if already exists with same hash
         if key in self.entries:
@@ -240,6 +268,7 @@ class TableCatalog:
             source_type=source_type,
             file_hash=file_hash,
             ocr_decision=ocr_decision,
+            corpus=corpus,
         )
         self.entries[key] = entry
         self._save_catalog()
@@ -253,6 +282,8 @@ class TableCatalog:
         if table_meta.table_id in existing_ids:
             logger.info(f"[Catalog] Skipping duplicate table: {table_meta.table_id}")
             return
+        # Tables inherit their owning entry's corpus tag (single source of truth).
+        table_meta.corpus = entry.corpus
         entry.tables.append(table_meta)
         self._save_catalog()
 
