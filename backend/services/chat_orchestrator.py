@@ -1,6 +1,7 @@
 """Replaces app.py handle_input() — conversation memory + routing + response contract."""
 
 import asyncio
+import re
 from datetime import datetime
 from typing import List, Optional
 
@@ -130,6 +131,16 @@ class ChatOrchestrator:
             corpus_var.set(_corpus)
         except Exception:
             pass
+
+        # 3c. Draft enrichment: when composing a REPLY to selected emails, gather
+        # supporting facts from the user's OWN project documents (corpus-scoped RAG
+        # — corpus_var is set above, so no cross-corpus leak) so the draft can cite
+        # contract terms / costs / prior decisions, not just the emails. Conversation
+        # state is already in `augmented` (step 2).
+        if email_ids and self._is_draft_intent(query):
+            support = self._build_draft_support_context(query)
+            if support:
+                augmented = f"{augmented}\n\n{support}"
 
         is_dual = ENABLE_DUAL_PROVIDER and len(LLM_PROVIDERS) >= 2
         try:
@@ -291,6 +302,47 @@ class ChatOrchestrator:
             return parsed.body_text if parsed else ""
         return ""
 
+    # Reply-draft intent: "draft/write/prepare/compose a reply/response/letter",
+    # or "reply/respond to …". Mirrors the router's _DRAFT_PATTERNS.
+    _DRAFT_INTENT_RE = re.compile(
+        r"(?:draft|write|prepare|compose)\s+(?:a\s+)?(?:reply|response|answer|letter)"
+        r"|(?:reply|respond)\s+to\b",
+        re.IGNORECASE,
+    )
+
+    def _is_draft_intent(self, query: str) -> bool:
+        return bool(self._DRAFT_INTENT_RE.search(query or ""))
+
+    def _build_draft_support_context(self, query: str, max_facts: int = 6) -> str:
+        """Corpus-scoped supporting facts for a reply draft. Retrieve-only (no
+        synthesis LLM) over the WHOLE corpus (NOT the selected emails) so the draft
+        can ground itself in contract terms / costs / prior decisions. corpus_var is
+        already set by the caller, so this stays within the user's corpus."""
+        try:
+            from src.document_rag import get_document_rag
+            r = get_document_rag().query(query, top_k=max_facts * 2, synthesize=False)
+        except Exception:
+            return ""
+        srcs = (r or {}).get("sources", []) if isinstance(r, dict) else []
+        lines, seen = [], set()
+        for s in srcs:
+            fn = s.get("file_name")
+            txt = (s.get("highlight_text") or s.get("text_snippet") or "").strip()
+            if not fn or not txt:
+                continue
+            key = (fn, s.get("page_number"))
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"- [{fn} p.{s.get('page_number', '?')}] {txt[:280]}")
+            if len(lines) >= max_facts:
+                break
+        if not lines:
+            return ""
+        return ("SUPPORTING FACTS FROM PROJECT DOCUMENTS (use these to ground the "
+                "reply — cite the file where relevant; never contradict the selected "
+                "emails):\n" + "\n".join(lines))
+
     def _build_email_context(self, email_ids: List[str]) -> str:
         """Build full email body context from selected email IDs for correspondence mode."""
         try:
@@ -383,11 +435,14 @@ class ChatOrchestrator:
             last = emails[-1]
             parts.append(
                 f"\nINSTRUCTIONS:\n"
-                f"- The user has selected the {len(emails)} email(s) above. Treat them as the sole source of truth.\n"
+                f"- The user has selected the {len(emails)} email(s) above — they are the correspondence being acted on.\n"
                 f"- If the user asks to draft / write / prepare / compose a reply or response, generate a formal "
                 f"reply on behalf of {last['recipient']} addressed to {last['sender']}, "
                 f"referencing the latest message dated {last['date']} (subject: \"{last['subject']}\"). "
-                f"Use construction-correspondence tone with reference / subject / salutation / body / closing.\n"
+                f"Use construction-correspondence tone with reference / subject / salutation / body / closing. "
+                f"Address every point and action raised in the emails; reflect the conversation so far. "
+                f"If a 'SUPPORTING FACTS FROM PROJECT DOCUMENTS' block is provided below, use it to ground the "
+                f"reply (cite the file) but never contradict the selected emails.\n"
                 f"- Otherwise, answer the user's question using only the content of these emails. "
                 f"If the answer is not present, say so explicitly."
             )
