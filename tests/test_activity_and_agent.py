@@ -162,3 +162,104 @@ def test_react_agent_failsoft_never_drops_answer(monkeypatch):
     res = ra.ReActAgent(_FakeRouter()).run("complex q")
     # decide failed → finish('') → final synthesis path → still a non-empty answer
     assert isinstance(res["answer"], str) and res["answer"].strip()
+
+
+# ── agent observability + stuck-loop (Faz 1a/1f) ────────────────────
+def test_react_agent_routing_marks_route_and_tools(monkeypatch):
+    """run() must expose route='AGENT' + tools_used so the agent is distinguishable
+    from the hybrid executor in the response/telemetry (both share query_type)."""
+    import src.react_agent as ra
+    seq = iter([
+        {"action": "document_search", "action_input": "x"},
+        {"action": "finish", "action_input": "done"},
+    ])
+    monkeypatch.setattr(ra.llm_client, "generate_json", lambda p, **k: _resp(next(seq)))
+    res = ra.ReActAgent(_FakeRouter()).run("q")
+    assert res["routing"]["route"] == "AGENT"
+    assert res["routing"]["tools_used"] == ["document_search"]
+
+
+def test_react_agent_stuck_loop_breaks_early(monkeypatch):
+    """The LLM repeating the identical action must not burn all iterations — the
+    agent breaks and synthesizes instead of looping."""
+    import src.react_agent as ra
+    calls = {"n": 0}
+
+    def same_action(p, **k):
+        calls["n"] += 1
+        return _resp({"action": "document_search", "action_input": "same"})
+
+    monkeypatch.setattr(ra.llm_client, "generate_json", same_action)
+    monkeypatch.setattr(ra.llm_client, "generate_text",
+                        lambda p, **k: LLMResponse(text="SYNTH", usage=LLMUsage(provider="gemini")))
+    res = ra.ReActAgent(_FakeRouter()).run("q")
+    # 1st decide runs the tool; 2nd decide repeats → break before REACT_MAX_ITERATIONS(5)
+    assert calls["n"] <= 2
+    assert res["answer"].strip()
+
+
+# ── router agent gate + visible fallback (Faz 1b/1d) ────────────────
+class _Trace:
+    def __init__(self):
+        self.route = None
+        self.errors = []
+
+    def record_error(self, e):
+        self.errors.append(e)
+
+
+def test_should_use_agent_gates():
+    from src.router import QueryRouter
+    from src.types import QueryType, RouterDecision
+    r = QueryRouter.__new__(QueryRouter)
+    hybrid = RouterDecision(query_type=QueryType.HYBRID, confidence=0.9, reasons=[])
+    assert r._should_use_agent(hybrid, "anything") is True
+    strong_doc = RouterDecision(query_type=QueryType.DOCUMENT, confidence=0.9, reasons=[])
+    assert r._should_use_agent(strong_doc, "what is clause 5?") is False
+    low_multi = RouterDecision(query_type=QueryType.DOCUMENT, confidence=0.4, reasons=[])
+    assert r._should_use_agent(low_multi, "what is x? and what is y?") is True
+
+
+def test_try_react_agent_disabled_returns_none(monkeypatch):
+    from src.router import QueryRouter
+    import src.config as cfg
+    monkeypatch.setattr(cfg, "ENABLE_REACT_AGENT", False)
+    r = QueryRouter.__new__(QueryRouter)
+    tr = _Trace()
+    assert r._try_react_agent("q", None, tr, "x") is None
+
+
+def test_try_react_agent_failure_is_visible(monkeypatch):
+    """Agent raising must NOT silently look like a normal hybrid — the trace route
+    records AGENT_FAILED_FALLBACK and the error is recorded; caller gets None."""
+    from src.router import QueryRouter
+    import src.config as cfg
+    monkeypatch.setattr(cfg, "ENABLE_REACT_AGENT", True)
+    r = QueryRouter.__new__(QueryRouter)
+
+    class _Boom:
+        def run(self, q, doc_ids=None):
+            raise RuntimeError("agent broke")
+
+    r._react_agent = _Boom()
+    tr = _Trace()
+    out = r._try_react_agent("q", None, tr, "x")
+    assert out is None
+    assert tr.route == "AGENT_FAILED_FALLBACK"
+    assert tr.errors and "agent broke" in tr.errors[0]
+
+
+def test_try_react_agent_success_marks_route(monkeypatch):
+    from src.router import QueryRouter
+    import src.config as cfg
+    monkeypatch.setattr(cfg, "ENABLE_REACT_AGENT", True)
+    r = QueryRouter.__new__(QueryRouter)
+
+    class _Ok:
+        def run(self, q, doc_ids=None):
+            return {"answer": "A", "sources": [], "routing": {"route": "AGENT"}}
+
+    r._react_agent = _Ok()
+    tr = _Trace()
+    out = r._try_react_agent("q", None, tr, "x")
+    assert out and out["answer"] == "A" and tr.route == "AGENT"

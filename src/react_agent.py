@@ -20,11 +20,13 @@ the agent thinking / reading / analysing in real time.
 """
 
 import json
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .logger import logger
 from . import llm_client
-from .config import GEMINI_MODEL, REACT_MAX_ITERATIONS, MAX_LLM_CALLS_PER_QUERY
+from .config import (GEMINI_MODEL, REACT_MAX_ITERATIONS, MAX_LLM_CALLS_PER_QUERY,
+                     REACT_TIME_BUDGET_SEC)
 from .prompt_security import build_system_prompt
 
 
@@ -91,8 +93,17 @@ class ReActAgent:
         seen_files: List[str] = []
         survey_cache: Dict[str, List[Dict[str, Any]]] = {}  # file_name → already-retrieved chunks
         corpus_map = self._corpus_map()
+        tools_used: List[str] = []
+        last_step: Optional[Tuple[str, str]] = None  # (action, input) for stuck-loop detection
+        empty_obs_streak = 0
+        t_start = time.monotonic()
 
         for i in range(max(1, REACT_MAX_ITERATIONS)):
+            # Wall-clock guard: don't start another step once over budget — bounds
+            # rare provider-contention spikes. We still synthesize what we have.
+            if i > 0 and (time.monotonic() - t_start) > REACT_TIME_BUDGET_SEC:
+                logger.info("[ReActAgent] time budget exceeded — synthesizing from current observations")
+                break
             action = self._decide(query, scratchpad, corpus_map, seen_files)
             thought = (action.get("thought") or "").strip()
             act = (action.get("action") or "").strip().lower()
@@ -107,8 +118,24 @@ class ReActAgent:
                 final_answer = ainput.strip()
                 break
 
+            # Stuck-loop guard: the LLM repeating the exact same (action,input) makes
+            # no new progress — stop and synthesize from what we have.
+            if last_step == (act, ainput):
+                logger.info("[ReActAgent] repeated identical action — synthesizing early")
+                break
+            last_step = (act, ainput)
+
             obs, srcs, extra = self._run_tool(act, ainput, doc_ids, seen, survey_cache)
+            tools_used.append(act)
             steps_taken += 1
+            # Two consecutive empty/no-result observations → no traction, stop.
+            if obs.startswith("(no ") or obs.startswith("(tool "):
+                empty_obs_streak += 1
+                if empty_obs_streak >= 2:
+                    logger.info("[ReActAgent] two empty observations — synthesizing early")
+                    break
+            else:
+                empty_obs_streak = 0
             if srcs:
                 sources.extend(srcs)
                 for s in srcs:
@@ -138,8 +165,10 @@ class ReActAgent:
             "result_columns": result_columns,
             "routing": {
                 "decision": "agent",
+                "route": "AGENT",
+                "tools_used": tools_used,
                 "confidence": 1.0,
-                "reasons": [f"ReAct agent ({steps_taken} tool step(s))"],
+                "reasons": [f"ReAct agent ({steps_taken} tool step(s): {', '.join(tools_used) or 'none'})"],
                 "used_llm": True,
             },
         }

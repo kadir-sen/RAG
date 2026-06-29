@@ -192,11 +192,19 @@ SQL_LAZY_SUMMARY_MAX_CELLS = int(os.getenv("SQL_LAZY_SUMMARY_MAX_CELLS", "30"))
 MAX_PLAN_STEPS = int(os.getenv("MAX_PLAN_STEPS", "5"))
 
 # ── ReAct agent (bounded tool-using loop for complex multi-step queries) ──
-# Off by default; when on, complex/multi-step queries route to the agent instead
-# of the fixed planner. REACT_MAX_ITERATIONS caps the tool/decide loop; the
-# llm_client soft budget (MAX_LLM_CALLS_PER_QUERY) is the secondary backstop.
-ENABLE_REACT_AGENT = os.getenv("ENABLE_REACT_AGENT", "false").lower() in ("1", "true", "yes")
+# ON by default: complex/multi-step queries (and HYBRID / low-confidence ones)
+# route to the agent instead of the fixed planner. REACT_MAX_ITERATIONS caps the
+# tool/decide loop; the llm_client soft budget (MAX_LLM_CALLS_PER_QUERY) is the
+# secondary backstop. ROUTE_AGENT_CONF: below this classifier confidence a
+# multi-part query is sent to the agent (it self-corrects better than a guess).
+ENABLE_REACT_AGENT = os.getenv("ENABLE_REACT_AGENT", "true").lower() in ("1", "true", "yes")
 REACT_MAX_ITERATIONS = int(os.getenv("REACT_MAX_ITERATIONS", "5"))
+ROUTE_AGENT_CONF = float(os.getenv("ROUTE_AGENT_CONF", "0.55"))
+# Wall-clock safety cap (seconds): between iterations the agent stops taking new
+# steps once exceeded and synthesizes from what it has. Bounds rare provider-
+# contention spikes (a multi-tool run stacking slow LLM calls) so a single query
+# can't run for minutes. The per-call LLM timeout still applies within a step.
+REACT_TIME_BUDGET_SEC = float(os.getenv("REACT_TIME_BUDGET_SEC", "90"))
 
 # ── Feature Flags ───────────────────────────────────────────
 ENABLE_TIMELINE = os.getenv("ENABLE_TIMELINE", "true").lower() == "true"

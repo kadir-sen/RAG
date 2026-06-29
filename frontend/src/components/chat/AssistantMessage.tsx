@@ -12,7 +12,7 @@ import SqlArtifact from './SqlArtifact';
 import EmailTraceResponse from './EmailTraceResponse';
 import CtaButton from './CtaButton';
 import DocumentAnalysisTable from './DocumentAnalysisTable';
-import { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
+import DocumentAnalysisTimeline, { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -88,8 +88,16 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
   // clickable, chronological table on the home page — the rich "document
   // analysis" output without needing a dedicated mode. Replaces the flat
   // doc-list table / timeline / chip strip so we never stack two views.
-  const showDocAnalysisTable =
-    intent === 'doc_list' && !!response?.related_docs?.length;
+  const relatedCount = response?.related_docs?.length ?? 0;
+  // Chronological LIST query (TIMELINE) → vertical timeline. FILE_LIST → table.
+  const showTimeline = intent === 'timeline' && relatedCount > 0;
+  const showDocAnalysisTable = intent === 'doc_list' && relatedCount > 0;
+  // Related documents attached to a normal answer (document/hybrid/…): render as
+  // the rich chronological table (≥2 docs) instead of the flat bubble strip, so
+  // every "related documents" surface is the structured table the user expects.
+  const showRelatedAsTable =
+    intent !== 'doc_list' && intent !== 'timeline' &&
+    intent !== 'email_trace' && intent !== 'sql_result' && relatedCount >= 2;
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
 
@@ -112,9 +120,13 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
         <Avatar variant="assistant" />
         <div className="min-w-0 flex-1">
           {/* Hover-only metadata strip */}
-          {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
+          {(response?.route === 'AGENT' ||
+            (response?.routing_confidence != null && response.routing_confidence < 0.6)) && (
             <div className="mb-1.5 flex items-center gap-2">
-              <Badge label="low confidence" />
+              {response?.route === 'AGENT' && <Badge label="agent" />}
+              {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
+                <Badge label="low confidence" />
+              )}
             </div>
           )}
 
@@ -136,7 +148,17 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
             {/* Intent-specific rendering */}
             {response && (
               <>
-                {showDocAnalysisTable ? (
+                {showTimeline ? (
+                  <div className="mt-3">
+                    <DocumentAnalysisTimeline
+                      events={mapRelatedDocsToTimeline(response.related_docs)}
+                      onEventClick={(e) => {
+                        if (!e.id) return;
+                        onDocClick({ docId: e.id, fileName: e.title });
+                      }}
+                    />
+                  </div>
+                ) : showDocAnalysisTable || showRelatedAsTable ? (
                   <div className="mt-3">
                     <DocumentAnalysisTable
                       events={mapRelatedDocsToTimeline(response.related_docs)}
@@ -167,7 +189,9 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
                       <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
                     )}
 
-                    {intent !== 'doc_list' && intent !== 'email_trace' && (
+                    {/* A single related doc → compact bubble strip (table is overkill). */}
+                    {intent !== 'doc_list' && intent !== 'timeline' &&
+                     intent !== 'email_trace' && (
                       <RelatedDocsList
                         docs={response.related_docs}
                         onDocClick={onDocClick}

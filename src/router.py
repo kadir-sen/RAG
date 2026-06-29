@@ -1311,6 +1311,47 @@ class QueryRouter:
             self._react_agent = agent
         return agent
 
+    def _should_use_agent(self, decision, query: str) -> bool:
+        """Post-classification agent gate (broadens beyond keyword-complex). The
+        agent gets HYBRID queries (it owns both document AND data tools, so it
+        beats the fixed hybrid executor) and low-confidence multi-part queries
+        (it self-corrects better than a shaky single-route guess). No extra LLM
+        call — reuses the classifier result we already have."""
+        from .config import ROUTE_AGENT_CONF
+        try:
+            if decision.query_type == QueryType.HYBRID:
+                return True
+            if decision.confidence < ROUTE_AGENT_CONF and query.count("?") >= 2:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _try_react_agent(self, expanded: str, doc_ids, trace, reason: str):
+        """Run the ReAct agent when enabled. Returns its result, or None when the
+        agent is disabled or raised (the caller then uses its own fallback). Never
+        raises and never silently hides a failure — the trace route records exactly
+        what happened (AGENT / AGENT_FAILED_FALLBACK) and a live step is emitted."""
+        from .config import ENABLE_REACT_AGENT
+        if not ENABLE_REACT_AGENT:
+            return None
+        logger.info(f"   {reason} -> ReAct Agent")
+        trace.route = "AGENT"
+        try:
+            result = self._get_react_agent().run(expanded, doc_ids=doc_ids)
+            logger.info(f"Query complete (agent) - {len(result.get('sources', []))} sources")
+            return result
+        except Exception as e:
+            logger.error(f"   ReAct agent failed → fallback: {e}")
+            trace.record_error(f"react_agent: {e}")
+            trace.route = "AGENT_FAILED_FALLBACK"
+            try:
+                from backend.tasks.query_progress import report_step
+                report_step("analysing", "agent unavailable → standard route")
+            except Exception:
+                pass
+            return None
+
     # ── Retrieval helpers ─────────────────────────────────────
 
     # Tokens that match too broadly to be useful as filename signals.
@@ -1645,13 +1686,17 @@ class QueryRouter:
                 final_sources, filename_hints, metadata_doc_ids
             )
 
-        # 3b. Find related Excel/data tables for this topic (scoped). Tables belong
-        # to the demo corpus only → skip for edinburgh users (no demo-table leak).
+        # 3b. Find related Excel/data tables for this topic (scoped to the user's
+        # corpus, so an edinburgh user sees edinburgh tables and never demo ones).
         try:
-            _allowed = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+            if doc_ids:
+                _allowed = self.data_analyzer.get_tables_for_doc_ids(doc_ids)
+            else:
+                _allowed = self.data_analyzer.get_tables_for_corpus(_corpus)
+            # None → unrestricted; [] → corpus has no tables, so skip enrichment.
             related_tables = (self.data_analyzer.select_tables(
                 search_topic, max_tables=3, allowed_tables=_allowed)
-                if _demo_only_sources else [])
+                if _allowed != [] else [])
             for tname in related_tables:
                 tinfo = self.data_analyzer.tables.get(tname, {})
                 fname = tinfo.get("file_name", tname)
@@ -1690,7 +1735,27 @@ class QueryRouter:
         If the query references concepts from multiple tables, uses multi-table execution.
         """
         logger.info("Routing to SQL Data Analyzer...")
-        allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+        if doc_ids:
+            allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids)
+        else:
+            # Per-user corpus isolation for SQL, mirroring the RAG path: an
+            # 'edinburgh' user only sees edinburgh tables, 'demo' only demo.
+            # None → unrestricted (scripts / unauthenticated).
+            from .document_rag import _current_user_corpus
+            allowed_tables = self.data_analyzer.get_tables_for_corpus(_current_user_corpus())
+            # Empty list = this corpus has tables registered for it = none. Short
+            # out cleanly; the SQL path treats an empty allow-list as falsy and
+            # would otherwise leak the *other* corpus's tables.
+            if allowed_tables == []:
+                logger.info("   No data tables registered for this corpus → clean no-data.")
+                return {
+                    "query": query,
+                    "query_type": QueryType.DATA.value,
+                    "answer": "No data tables are available for your document set yet.",
+                    "sources": [],
+                    "sql": None,
+                    "confidence": 0.5,
+                }
 
         # Check if query needs multiple tables
         relevant = self.data_analyzer.select_tables(query, max_tables=3, allowed_tables=allowed_tables)
@@ -3014,6 +3079,37 @@ class QueryRouter:
             pass
         return resp.text.strip()
 
+    def _timeline_document_fallback(self, query: str, expanded_query: str) -> Dict[str, Any]:
+        """Chronology from the user's OWN documents when the event store is empty.
+        Corpus-safe: document_rag.query honours _current_user_corpus, so an
+        edinburgh user only ever sees edinburgh docs (no demo leak). Keeps the
+        TIMELINE type so the UI still renders a timeline; sources are tagged so the
+        response builder routes them to related_docs (what the timeline renders from)."""
+        try:
+            rag = self.document_rag.query(
+                "Build a CHRONOLOGICAL timeline for the question below: list each key "
+                "event with its DATE (oldest first) and what happened, citing the source "
+                f"document. Question: {expanded_query}")
+        except Exception as e:
+            logger.warning(f"   timeline document fallback failed: {e}")
+            rag = {"answer": "", "sources": []}
+        related, seen = [], set()
+        for s in (rag.get("sources") or []):
+            fn = s.get("file_name")
+            if not fn or fn in seen:
+                continue
+            seen.add(fn)
+            related.append({**s, "type": "search_result"})  # → related_docs (timeline UI)
+        answer = (rag.get("answer") or "").strip()
+        if not answer and not related:
+            answer = "No chronological events were found in your documents for this query."
+        return {
+            "query": query,
+            "query_type": QueryType.TIMELINE.value,
+            "answer": answer,
+            "sources": related,
+        }
+
     def _handle_timeline_query(self, query: str) -> Dict[str, Any]:
         """Handle timeline/notice-based query using light graph with enhanced capabilities."""
         logger.info("Routing to Timeline/Graph handler...")
@@ -3103,16 +3199,14 @@ class QueryRouter:
             except Exception as e:
                 logger.warning(f"   Event-store timeline failed, falling through: {e}")
 
-            # Edinburgh users get their timeline ONLY from the event store. If we
-            # reach here (no matching events), return cleanly — do NOT fall through
-            # to the light_graph / notice / cluster paths below, which are demo-only.
+            # Edinburgh users have NO populated event store (bulk corpus was ingested
+            # vectors-only, so LLM event-enrichment never ran). Instead of a dead
+            # "no events" reply, build the chronology from their OWN documents via
+            # corpus-scoped RAG (document_rag respects _current_user_corpus, so no
+            # demo leak). Do NOT fall through to the light_graph / notice / cluster
+            # paths below — those are demo-only.
             if _tl_corpus == "edinburgh":
-                return {
-                    "query": query,
-                    "query_type": QueryType.TIMELINE.value,
-                    "answer": "No chronological events were found in your documents for this query.",
-                    "sources": [],
-                }
+                return self._timeline_document_fallback(query, expanded_query)
 
             # === 0. Compound queries: semantic intent + document scope ===
             intent = self._parse_compound_intent(query_lower)
@@ -3730,22 +3824,15 @@ class QueryRouter:
                 logger.info(f"Query complete (selected context) - {len(result.get('sources', []))} sources")
                 return result
 
-            # Check if this is a complex multi-step query
+            # Check if this is a complex multi-step query → ReAct agent (if on),
+            # else the fixed hybrid executor. The agent failing falls through here.
             if self._is_complex_query(query):
-                from .config import ENABLE_REACT_AGENT
-                if ENABLE_REACT_AGENT:
-                    logger.info("   Detected complex query -> ReAct Agent")
-                    trace.route = "AGENT"
-                    try:
-                        result = self._get_react_agent().run(expanded, doc_ids=doc_ids)
-                        logger.info(f"Query complete (agent) - {len(result.get('sources', []))} sources")
-                        return result
-                    except Exception as e:
-                        # Never let the agent break a query — fall back to the planner.
-                        logger.error(f"   ReAct agent failed → planner fallback: {e}")
-                        trace.record_error(f"react_agent: {e}")
-                logger.info("   Detected complex query -> Hybrid Executor")
-                trace.route = "HYBRID_COMPLEX"
+                agent_result = self._try_react_agent(expanded, doc_ids, trace, "Detected complex query")
+                if agent_result is not None:
+                    return agent_result
+                logger.info("   Complex query -> Hybrid Executor")
+                if trace.route != "AGENT_FAILED_FALLBACK":
+                    trace.route = "HYBRID_COMPLEX"
                 allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
                 result = self.hybrid_executor.execute(expanded, doc_ids=doc_ids, allowed_tables=allowed_tables)
                 logger.info(f"Query complete (hybrid) - {len(result.get('sources', []))} sources")
@@ -3769,6 +3856,15 @@ class QueryRouter:
                 report_step("routing", f"routing → {decision.query_type.value}")
             except Exception:
                 pass
+
+            # Broadened agent gate: HYBRID (agent owns doc+data tools) or a
+            # low-confidence multi-part query → ReAct agent. Disabled/failed agent
+            # falls through to the normal handler below (no extra LLM call here).
+            if self._should_use_agent(decision, query):
+                agent_result = self._try_react_agent(
+                    expanded, doc_ids, trace, f"{decision.query_type.value} → agent")
+                if agent_result is not None:
+                    return agent_result
 
             # Route to handler
             result = self._dispatch_query(decision.query_type, query, expanded, doc_ids)

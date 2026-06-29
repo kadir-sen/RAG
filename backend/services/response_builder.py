@@ -108,10 +108,10 @@ INTENT_MAP = {
     "document": "answer",
     "data": "sql_result",
     "hybrid": "answer",
-    "timeline": "doc_list",
+    "timeline": "timeline",   # chronological list → vertical timeline (was doc_list table)
     "thread": "email_trace",
     "draft": "answer",
-    "file_list": "doc_list",
+    "file_list": "doc_list",  # "what files exist" → flat doc table
 }
 
 
@@ -223,9 +223,10 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
     cta = _extract_cta(result_data)
 
-    # Extract routing confidence for frontend display
+    # Extract routing confidence + route for frontend display / observability.
     routing = raw.get("routing", {})
     routing_confidence = routing.get("confidence") if routing else None
+    route = (routing.get("route") or routing.get("decision")) if routing else None
 
     return ChatResponse(
         ui_intent=ui_intent,
@@ -233,6 +234,7 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
         citations=citations,
         related_docs=related_docs,
         routing_confidence=routing_confidence,
+        route=route,
         sql_artifact=sql_artifact,
         cta=cta,
     )
