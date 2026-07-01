@@ -297,6 +297,8 @@ class QueryRouter:
         "Q: \"What does clause 12.3 say about liquidated damages?\" -> DOCUMENT\n"
         "Q: \"List all delay notices sent by the contractor\" -> TIMELINE\n"
         "Q: \"How many files have been uploaded?\" -> FILE_LIST\n"
+        "Q: \"Fasta related documents\" -> FILE_LIST\n"
+        "Q: \"Show me the documents related to the fire alarm system\" -> FILE_LIST\n"
         "Q: \"Compare BOQ quantities with actual IPC progress\" -> HYBRID\n"
         "Q: \"Show the daily manpower trend for February\" -> DATA\n"
         "Q: \"What are the payment conditions in the contract?\" -> DOCUMENT\n"
@@ -675,6 +677,17 @@ class QueryRouter:
                         f"(conf={thread_decision.confidence:.2f})")
             return thread_decision
 
+        # ── Cheap deterministic shortcut: explicit document-LISTING intent ──
+        # "X related documents" / "documents related to Y" / "list files about Z".
+        # The LLM classifier is biased against FILE_LIST for topic queries, so a
+        # narrow regex here guarantees these browse-intents render as the
+        # chronological document table instead of a prose synthesis.
+        listing_decision = self._classify_document_listing(query_lower)
+        if listing_decision is not None:
+            logger.info(f"   -> Pattern: FILE_LIST (listing intent, "
+                        f"conf={listing_decision.confidence:.2f})")
+            return listing_decision
+
         # ── Primary: the LLM decides, armed with schema + document-topic context ──
         decision = self._classify_llm_rich(query, mode=mode)
         if decision is not None:
@@ -814,6 +827,22 @@ class QueryRouter:
         r'(?:letters?|emails?)\s+(?:from|to|by)\s+',
     ]
 
+    # Explicit document-LISTING intents — the user wants to browse/enumerate the
+    # files on a topic (→ chronological doc table), NOT a synthesized prose answer.
+    # Matched deterministically BEFORE the LLM classifier, which is biased against
+    # FILE_LIST for topic queries. Kept narrow so genuine content questions
+    # ("what do the documents say about X") still reach the DOCUMENT/AGENT path.
+    _DOCUMENT_LISTING_PATTERNS = [
+        r'\brelated\s+(?:documents?|docs?|files?)\b',              # "X related documents"
+        r'\b(?:documents?|docs?|files?)\s+related\s+to\b',          # "documents related to X"
+        r'\b(?:list|show|find|display|give\s+me)\b[\w\s]{0,20}\b(?:documents?|files?|docs?)\b',
+        r'\b(?:which|what)\s+(?:documents?|files?|docs?)\s+(?:are\s+)?'
+        r'(?:about|mention|related\s+to|regarding|on|for)\b',
+        r'\bile\s+ilgili\s+(?:doküman|belge|dosya)',                # TR "X ile ilgili dokümanlar"
+        r'\S+\s+(?:doküman|belge|dosya|döküman)(?:lar|ler)(?:ı|i|ını|ini)?\b',  # TR "X dokümanları"
+        r"['’]?e?\s+dair\s+(?:belge|doküman)",                      # TR "X'e dair belgeler"
+    ]
+
     def _classify_thread_draft(self, query_lower: str) -> Optional[RouterDecision]:
         """Detect thread view or draft response requests via regex patterns.
         FILE_LIST detection removed — now handled by LLM classifier.
@@ -831,6 +860,25 @@ class QueryRouter:
                     query_type=QueryType.DRAFT,
                     confidence=0.95,
                     reasons=[f"Draft pattern matched: {pattern}"],
+                )
+        return None
+
+    def _classify_document_listing(self, query_lower: str) -> Optional[RouterDecision]:
+        """Detect explicit document-LISTING requests ("X related documents",
+        "documents related to Y", "list files about Z", "X ile ilgili dokümanlar").
+
+        These are browse/enumerate intents: the user wants the chronological
+        document table (FILE_LIST → ui_intent "doc_list"), not a synthesized prose
+        answer. Runs BEFORE the LLM classifier — which is biased AGAINST FILE_LIST
+        for topic queries — so the route is deterministic and reliable. Narrow by
+        design; content questions still fall through to the LLM/DOCUMENT path.
+        """
+        for pattern in self._DOCUMENT_LISTING_PATTERNS:
+            if re.search(pattern, query_lower):
+                return RouterDecision(
+                    query_type=QueryType.FILE_LIST,
+                    confidence=0.9,
+                    reasons=[f"Document-listing pattern matched: {pattern}"],
                 )
         return None
 
@@ -2062,14 +2110,26 @@ class QueryRouter:
             r"([\w][\w\s]*?)'s\s+(?:emails?|letters?|documents?|files?|mails?|correspondence)",
             q, re.IGNORECASE,
         )
-        # Turkish: "X dokümanları", "X dosyaları", "X excelleri"
-        tr_topic_match = not topic_match and not sender_match and not possessive_match and re.search(
-            r'(.+?)\s+(?:doküman|dosya|belge|excel|döküman)(?:lar|ler)?(?:ı|i|ını|ini)?\s*(?:\?|$)',
+        # "X related documents", "fire alarm related docs" → topic PRECEDES the noun
+        # (the "documents related to X" form is already covered by topic_match above).
+        related_before_match = not topic_match and not sender_match and re.search(
+            r'(.+?)\s+related\s+(?:documents?|docs?|files?)\b',
             q, re.IGNORECASE,
         )
+        # Turkish: "X dokümanları", "X dosyaları", "X excelleri"
+        tr_topic_match = (
+            not topic_match and not sender_match and not possessive_match
+            and not related_before_match and re.search(
+                r'(.+?)\s+(?:doküman|dosya|belge|excel|döküman)(?:lar|ler)?(?:ı|i|ını|ini)?\s*(?:\?|$)',
+                q, re.IGNORECASE,
+            )
+        )
 
-        if topic_match or sender_match or possessive_match or tr_topic_match:
-            if topic_match:
+        if topic_match or sender_match or possessive_match or tr_topic_match or related_before_match:
+            if related_before_match:
+                topic = related_before_match.group(1).strip()
+                label = f"related to '{topic}'"
+            elif topic_match:
                 topic = topic_match.group(1).strip()
                 label = f"about '{topic}'"
             elif sender_match:
@@ -2085,26 +2145,11 @@ class QueryRouter:
             results = self._unified_document_search(topic)
 
             if results:
-                ext_icons = {
-                    ".pdf": "PDF", ".xlsx": "Excel", ".xls": "Excel",
-                    ".csv": "CSV", ".docx": "Word", ".doc": "Word",
-                    ".txt": "Text", ".eml": "Email", ".msg": "Email",
-                }
-                type_icons = {"document": "PDF", "data": "Excel", "email": "Email"}
-
-                lines = [f"**Found {len(results)} file(s) {label}:**\n"]
-                for i, r in enumerate(results, 1):
-                    ext = r.get("extension", "")
-                    icon = ext_icons.get(ext, type_icons.get(r.get("file_type", ""), "File"))
-                    date_str = f" ({r['date']})" if r.get("date") else ""
-                    sender_str = f" — From: {r['sender']}" if r.get("sender") else ""
-                    lines.append(f"{i}. **[{icon}]** {r['file_name']}{date_str}{sender_str}")
-                    if r.get("subject"):
-                        lines.append(f"   {r['subject']}")
-                    elif r.get("description"):
-                        lines.append(f"   {r['description']}")
-                    if r.get("semantic_tags"):
-                        lines.append(f"   Tags: {', '.join(r['semantic_tags'][:5])}")
+                # The rich chronological table (DocumentAnalysisTable, rendered by
+                # the frontend from `sources` → related_docs) now carries the
+                # per-document detail, so keep the answer text to a one-line summary
+                # instead of stacking a redundant numbered list above the table.
+                lines = [f"**Found {len(results)} document(s) {label}.**"]
 
                 sources = [
                     {
