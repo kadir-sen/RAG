@@ -1,0 +1,162 @@
+name: CI/CD — test, build, deploy to Lightsail
+
+# Merge to main  → run fast tests → build image → push to GHCR → deploy over SSH.
+# Pull requests  → run fast tests only (no build/deploy).
+# Manual run     → same as a merge (Actions tab → "Run workflow").
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Never let two deploys of the same branch run at once (a running deploy is not
+# cancelled — we let it finish, then the newer commit deploys after).
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ── 1. Fast offline unit tests (the deploy gate) ─────────────────────────
+  test:
+    name: Fast tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run fast test suite
+        # Offline unit tests that gate the deploy — routing + response building.
+        # Add more files here as coverage grows; keep them network/key-free so the
+        # gate stays fast and deterministic.
+        run: |
+          pytest -q \
+            tests/test_router_document_listing.py \
+            tests/test_router_intent_doc_list.py \
+            tests/test_router_rebalance.py \
+            tests/test_response_builder.py \
+            tests/test_response_builder_dedupe.py
+
+  # ── 2. Build the Docker image and push it to GHCR ────────────────────────
+  build-and-push:
+    name: Build & push image
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.imgref.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute lowercase image name
+        run: echo "IMAGE_LOWER=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_LOWER }}:latest
+            ghcr.io/${{ env.IMAGE_LOWER }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export image ref for deploy job
+        id: imgref
+        run: echo "image=ghcr.io/${IMAGE_LOWER}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+  # ── 3. Deploy to the AWS Lightsail host over SSH ─────────────────────────
+  deploy:
+    name: Deploy to Lightsail
+    needs: build-and-push
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ship the (parametrized) compose file to the server's home, then move it
+      # into APP_DIR inside the SSH script (handles root-owned dirs via sudo).
+      - name: Copy compose file to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
+          source: docker-compose.prod.yml
+          target: coair-deploy
+
+      - name: Pull new image and restart
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          APP_DIR: ${{ secrets.LIGHTSAIL_APP_DIR || '/opt/mvp-api' }}
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
+          envs: IMAGE,GHCR_TOKEN,GHCR_USER,APP_DIR
+          script: |
+            set -euo pipefail
+
+            # Use sudo for docker only if the login user can't reach the daemon.
+            SUDO=""
+            docker info >/dev/null 2>&1 || SUDO="sudo"
+
+            cd "$APP_DIR"
+
+            # Refresh the compose file with the version shipped this run.
+            $SUDO cp "$HOME/coair-deploy/docker-compose.prod.yml" "$APP_DIR/docker-compose.prod.yml"
+
+            # Compose reads API_IMAGE from a .env file in the project dir for the
+            # ${API_IMAGE} substitution. This does NOT affect container env, which
+            # still comes from env_file: .env.production.
+            printf 'API_IMAGE=%s\n' "$IMAGE" | $SUDO tee "$APP_DIR/.env" >/dev/null
+
+            # Authenticate to GHCR to pull the private image (token is ephemeral).
+            printf '%s' "$GHCR_TOKEN" | $SUDO docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            $SUDO docker compose -f docker-compose.prod.yml pull api
+            $SUDO docker compose -f docker-compose.prod.yml up -d
+            $SUDO docker image prune -f
+
+            # Health gate: fail the deploy (and surface logs) if the API is unhealthy.
+            echo "Waiting for API health..."
+            for i in $(seq 1 20); do
+              if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
+                echo "Health OK"
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "Health check FAILED after ~100s — last logs:"
+            $SUDO docker compose -f docker-compose.prod.yml logs --tail=100 api
+            exit 1
