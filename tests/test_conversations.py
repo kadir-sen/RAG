@@ -252,6 +252,26 @@ class TestPersistence:
         store.drop_ghost_entry(ghost.conversation_id)
         assert all(m.conversation_id != ghost.conversation_id for m in store.list_conversations())
 
+    def test_messages_with_unknown_keys_still_load(self, tmp_conv_dir):
+        # Files written by older/newer app versions can carry extra message
+        # keys; loading must ignore them instead of 404ing the conversation.
+        store = ConversationStore("testuser")
+        meta = store.create_conversation("Legacy")
+        path = tmp_conv_dir / "testuser" / f"{meta.conversation_id}.json"
+        data = json.loads(path.read_text())
+        data["messages"] = [
+            {"role": "user", "content": "hi", "timestamp": "t",
+             "legacy_field": {"x": 1}, "activities": ["step"]},
+            {"role": "assistant", "content": "hello", "timestamp": "t2",
+             "route": "document"},
+            "not-a-dict",
+        ]
+        path.write_text(json.dumps(data))
+
+        conv = store.get_conversation(meta.conversation_id)
+        assert conv is not None
+        assert [m.content for m in conv.messages] == ["hi", "hello"]
+
     def test_corrupted_index_recovers(self, tmp_conv_dir):
         user_dir = tmp_conv_dir / "testuser"
         user_dir.mkdir(parents=True, exist_ok=True)

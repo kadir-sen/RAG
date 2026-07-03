@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 
 from .config import CONVERSATIONS_DIR
 from .logger import logger
@@ -162,7 +162,20 @@ class ConversationStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             raw_msgs = data.get("messages", [])
-            messages = [Message(**m) for m in raw_msgs]
+            # Backward-compatible message loader: files written by older app
+            # versions can carry extra keys the current dataclass doesn't
+            # accept — Message(**m) would raise and the whole conversation
+            # would 404 even though the file is fine. Ignore unknown keys,
+            # like _meta_from_dict does for the index.
+            msg_fields = {f.name for f in fields(Message)}
+            messages = []
+            for m in raw_msgs:
+                if not isinstance(m, dict) or m.get("role") is None:
+                    continue
+                kwargs = {k: v for k, v in m.items() if k in msg_fields}
+                kwargs.setdefault("content", "")
+                kwargs.setdefault("timestamp", "")
+                messages.append(Message(**kwargs))
             # Loud warning when a conversation file claims to belong to a
             # non-empty history but actually persists no messages. This is the
             # signature of the "clicking an old chat opens WelcomeScreen" bug;
