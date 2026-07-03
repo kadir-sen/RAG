@@ -2592,6 +2592,66 @@ class QueryRouter:
         except Exception as e:
             logger.warning(f"[Search] Registry search failed: {e}")
 
+        # 3b. Bulk-corpus chunk mirror (e.g. 'edinburgh'). The sources above
+        # index the demo corpus only, and the orchestrator's per-corpus
+        # catch-all drops any file that isn't mirrored in the chunk store —
+        # so for a bulk-corpus user, search the mirror directly. Its
+        # file_names are corpus-canonical by construction, so these results
+        # survive the downstream filter. Never runs for demo users (no
+        # corpus set), so bulk documents can't leak into the demo.
+        chunk_results: List[Dict[str, Any]] = []
+        try:
+            from .document_rag import corpus_var
+            if (corpus_var.get() or "").strip():
+                from .chunk_store import get_chunk_store
+                try:
+                    from .notice_extractor import get_notice_extractor
+                    _extractor = get_notice_extractor()
+                except Exception:
+                    _extractor = None
+                con = get_chunk_store().connection()
+                kw = f"%{topic.lower()}%"
+                rows = con.execute(
+                    "SELECT doc_id, file_name, "
+                    "MAX(CASE WHEN lower(file_name) LIKE ? THEN 1 ELSE 0 END) AS name_hit, "
+                    "COUNT(*) AS hits "
+                    "FROM chunks "
+                    "WHERE lower(file_name) LIKE ? OR lower(text) LIKE ? "
+                    "GROUP BY doc_id, file_name "
+                    "ORDER BY name_hit DESC, hits DESC LIMIT ?",
+                    [kw, kw, kw, limit],
+                ).fetchall()
+                for doc_id, file_name, _name_hit, _hits in rows:
+                    if not doc_id or doc_id in seen_doc_ids:
+                        continue
+                    seen_doc_ids.add(doc_id)
+                    rec = registry.get(doc_id)
+                    notice = None
+                    if _extractor is not None:
+                        try:
+                            notice = _extractor.load_notice(doc_id)
+                        except Exception:
+                            notice = None
+                    chunk_results.append({
+                        "doc_id": doc_id,
+                        "file_name": file_name,
+                        "file_path": rec.file_path if rec else "",
+                        "file_type": "document",
+                        "extension": Path(file_name).suffix.lower() if file_name else "",
+                        "date": (notice.date if notice and notice.date
+                                 else (rec.completed_at[:10] if rec and rec.completed_at else "")),
+                        "sender": (notice.sender if notice and notice.sender else ""),
+                        "recipient": (notice.recipient if notice and notice.recipient else ""),
+                        "subject": (notice.subject if notice and notice.subject else ""),
+                        "doc_type": (notice.doc_type if notice and notice.doc_type else ""),
+                        "description": "",
+                        "semantic_tags": [],
+                        "source": "chunk_store",
+                    })
+                results.extend(chunk_results)
+        except Exception as e:
+            logger.warning(f"[Search] Chunk-store search failed: {e}")
+
         # 4. RAG semantic fallback for non-notice documents.
         #    Always run so notice-less PDFs surface even when many notices already
         #    matched. seen_doc_ids prevents duplicates with steps 1-3.
@@ -2645,6 +2705,15 @@ class QueryRouter:
 
         # Sort by date DESC (notice date first, then catalog date, then created_at)
         results.sort(key=lambda x: x.get("date", ""), reverse=True)
+        if chunk_results:
+            # Bulk-corpus mode: dated demo hits must not crowd the corpus'
+            # own documents out of the cap — everything except chunk_results
+            # gets dropped by the orchestrator's per-corpus filter anyway.
+            others = [r for r in results if r.get("source") != "chunk_store"]
+            merged = chunk_results[:limit]
+            merged.extend(others[: max(0, limit - len(merged))])
+            merged.sort(key=lambda x: x.get("date", ""), reverse=True)
+            return merged
         return results[:limit]
 
     def _hydrate_registry(self, registry) -> None:

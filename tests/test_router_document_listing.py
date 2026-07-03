@@ -193,3 +193,68 @@ class TestAugmentedQueryRouting:
             _augmented("what do the documents say about liquidated damages")
         )
         assert r._classify_document_listing(current.lower()) is None
+
+
+class TestBulkCorpusChunkSearch:
+    """For a bulk-corpus user (corpus_var set, e.g. 'edinburgh'), the unified
+    document search must query the chunk mirror — the demo-oriented sources
+    don't index that corpus, and only mirror file_names survive the
+    orchestrator's per-corpus filter. Demo users (no corpus) must never see
+    chunk-store results."""
+
+    def _router_with_chunk_store(self, monkeypatch):
+        import duckdb
+        from src import chunk_store as cs
+
+        con = duckdb.connect(":memory:")
+        con.execute(
+            "CREATE TABLE chunks (chunk_id VARCHAR, doc_id VARCHAR, "
+            "file_name VARCHAR, page_number INTEGER, text VARCHAR)"
+        )
+        con.execute(
+            "INSERT INTO chunks VALUES "
+            "('c1','doc_fasta','FASTA_SPEC.pdf',1,'fasta installation notes'),"
+            "('c2','doc_fasta','FASTA_SPEC.pdf',2,'more fasta details'),"
+            "('c3','doc_tram','TRAM_REPORT.pdf',1,'tram budget overview')"
+        )
+
+        class _StubStore:
+            def connection(self):
+                return con
+
+        monkeypatch.setattr(cs, "get_chunk_store", lambda: _StubStore())
+
+        router = _make_router()
+        # No demo sources in this test: registry lookup returns None.
+        class _EmptyRegistry:
+            def get(self, _):
+                return None
+            def search_by_name(self, _):
+                return []
+        import src.document_registry as dr
+        monkeypatch.setattr(dr, "get_document_registry", lambda: _EmptyRegistry())
+        return router
+
+    def test_chunk_hits_for_bulk_corpus_user(self, monkeypatch):
+        from src.document_rag import corpus_var
+        router = self._router_with_chunk_store(monkeypatch)
+        token = corpus_var.set("edinburgh")
+        try:
+            results = router._unified_document_search("fasta")
+        finally:
+            corpus_var.reset(token)
+        names = [r["file_name"] for r in results]
+        assert "FASTA_SPEC.pdf" in names
+        hit = next(r for r in results if r["file_name"] == "FASTA_SPEC.pdf")
+        assert hit["source"] == "chunk_store"
+        assert hit["doc_id"] == "doc_fasta"
+
+    def test_no_chunk_hits_for_demo_user(self, monkeypatch):
+        from src.document_rag import corpus_var
+        router = self._router_with_chunk_store(monkeypatch)
+        token = corpus_var.set("")
+        try:
+            results = router._unified_document_search("fasta")
+        finally:
+            corpus_var.reset(token)
+        assert all(r.get("source") != "chunk_store" for r in results)
