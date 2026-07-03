@@ -186,11 +186,13 @@ class ConversationStore:
                     f"message_count={data.get('message_count')} — file may be "
                     f"corrupt or partially synced"
                 )
+            # Top-level fields are tolerant too: legacy files may miss any of
+            # them, and a KeyError here 404s a conversation whose file exists.
             return Conversation(
-                conversation_id=data["conversation_id"],
-                title=data["title"],
-                created_at=data["created_at"],
-                updated_at=data["updated_at"],
+                conversation_id=data.get("conversation_id", conv_id),
+                title=data.get("title", ""),
+                created_at=data.get("created_at", ""),
+                updated_at=data.get("updated_at", ""),
                 messages=messages,
                 document_ids=data.get("document_ids", []),
             )
@@ -228,12 +230,14 @@ class ConversationStore:
         return self._load_conversation(conv_id)
 
     def drop_ghost_entry(self, conv_id: str) -> None:
-        """Remove an index entry whose conversation file is missing.
+        """Remove an index entry whose conversation can't be served.
 
-        Called from the API layer when a detail fetch 404s so the ghost does
-        not keep reappearing in the sidebar list.
+        Called from the API layer when a detail fetch 404s so the dead entry
+        does not keep reappearing in the sidebar. Covers both a missing file
+        and a file that exists but fails to load (corrupt/incompatible JSON).
+        The file itself — if present — is never deleted, so nothing is lost.
         """
-        if self._conv_path(conv_id).exists():
+        if self._conv_path(conv_id).exists() and self._load_conversation(conv_id) is not None:
             return
         before = len(self._index)
         self._index = [m for m in self._index if m.conversation_id != conv_id]

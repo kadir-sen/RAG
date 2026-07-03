@@ -252,6 +252,30 @@ class TestPersistence:
         store.drop_ghost_entry(ghost.conversation_id)
         assert all(m.conversation_id != ghost.conversation_id for m in store.list_conversations())
 
+    def test_drop_ghost_entry_covers_unloadable_file(self, tmp_conv_dir):
+        # A file that exists but can't be parsed is as dead as a missing one:
+        # the entry must leave the index, the file must stay on disk.
+        store = ConversationStore("testuser")
+        broken = store.create_conversation("Broken")
+        path = tmp_conv_dir / "testuser" / f"{broken.conversation_id}.json"
+        path.write_text("{ NOT VALID JSON")
+
+        store.drop_ghost_entry(broken.conversation_id)
+        assert all(m.conversation_id != broken.conversation_id for m in store.list_conversations())
+        assert path.exists()
+
+    def test_legacy_file_missing_toplevel_fields_loads(self, tmp_conv_dir):
+        store = ConversationStore("testuser")
+        meta = store.create_conversation("Old")
+        path = tmp_conv_dir / "testuser" / f"{meta.conversation_id}.json"
+        path.write_text(json.dumps({
+            "messages": [{"role": "user", "content": "hi", "timestamp": "t"}],
+        }))
+        conv = store.get_conversation(meta.conversation_id)
+        assert conv is not None
+        assert conv.conversation_id == meta.conversation_id
+        assert conv.messages[0].content == "hi"
+
     def test_messages_with_unknown_keys_still_load(self, tmp_conv_dir):
         # Files written by older/newer app versions can carry extra message
         # keys; loading must ignore them instead of 404ing the conversation.
