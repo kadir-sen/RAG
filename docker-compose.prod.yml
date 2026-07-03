@@ -2,12 +2,15 @@
 # Usage on server (in /opt/mvp-api):
 #   sudo docker compose -f docker-compose.prod.yml up -d
 #
-# Image is loaded via `docker save | docker load` from local Mac, NOT built here.
+# Deploys are automated: the GitHub Actions pipeline (.github/workflows/deploy.yml)
+# builds the image, pushes it to GHCR, then sets API_IMAGE=ghcr.io/kadir-sen/rag:<sha>
+# and runs `docker compose pull api && up -d` over SSH. For a manual/local build,
+# API_IMAGE is unset so it falls back to the locally-built mvp-api:latest.
 # The dev-side docker-compose.yml is independent (Streamlit legacy) and not used in production.
 
 services:
   api:
-    image: mvp-api:latest
+    image: ${API_IMAGE:-mvp-api:latest}
     build:
       context: .
       dockerfile: Dockerfile

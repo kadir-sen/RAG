@@ -13,7 +13,8 @@ from typing import Tuple, Dict, Any, List, Optional
 
 from .config import (
     GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE, ENABLE_TIMELINE,
-    ENABLE_THINKING, THINKING_BUDGET_SYNTHESIS,
+    ENABLE_THINKING, THINKING_BUDGET_SYNTHESIS, ENABLE_LITE_TIER,
+    ENABLE_PARALLEL_RETRIEVAL,
 )
 from .types import QueryType, RouterDecision, LLMUsage
 from .logger import logger, log_separator
@@ -296,6 +297,8 @@ class QueryRouter:
         "Q: \"What does clause 12.3 say about liquidated damages?\" -> DOCUMENT\n"
         "Q: \"List all delay notices sent by the contractor\" -> TIMELINE\n"
         "Q: \"How many files have been uploaded?\" -> FILE_LIST\n"
+        "Q: \"Fasta related documents\" -> FILE_LIST\n"
+        "Q: \"Show me the documents related to the fire alarm system\" -> FILE_LIST\n"
         "Q: \"Compare BOQ quantities with actual IPC progress\" -> HYBRID\n"
         "Q: \"Show the daily manpower trend for February\" -> DATA\n"
         "Q: \"What are the payment conditions in the contract?\" -> DOCUMENT\n"
@@ -661,11 +664,17 @@ class QueryRouter:
         # Keyword/regex/intent matching runs on the ORIGINAL query so a wrong
         # acronym expansion can't skew the route. The expanded form is still
         # used by the safety-net schema-semantic and embedding tiers.
-        expanded_query = self.jargon.expand_query(query)
-        if expanded_query != query:
+        # Deterministic classification must see only the CURRENT question:
+        # the orchestrator prepends conversation history ("... Current
+        # question: X"), and phrases in prior turns otherwise hijack the
+        # thread/draft and listing shortcuts below.
+        current_q = self._current_question(query)
+
+        expanded_query = self.jargon.expand_query(current_q)
+        if expanded_query != current_q:
             logger.info(f"   Jargon expanded (retrieval only): {expanded_query[:100]}...")
 
-        query_lower = query.lower()
+        query_lower = current_q.lower()
 
         # ── Cheap deterministic shortcut: Thread/Draft UI-action intents ──
         thread_decision = self._classify_thread_draft(query_lower)
@@ -673,6 +682,17 @@ class QueryRouter:
             logger.info(f"   -> Pattern: {thread_decision.query_type.value.upper()} "
                         f"(conf={thread_decision.confidence:.2f})")
             return thread_decision
+
+        # ── Cheap deterministic shortcut: explicit document-LISTING intent ──
+        # "X related documents" / "documents related to Y" / "list files about Z".
+        # The LLM classifier is biased against FILE_LIST for topic queries, so a
+        # narrow regex here guarantees these browse-intents render as the
+        # chronological document table instead of a prose synthesis.
+        listing_decision = self._classify_document_listing(query_lower)
+        if listing_decision is not None:
+            logger.info(f"   -> Pattern: FILE_LIST (listing intent, "
+                        f"conf={listing_decision.confidence:.2f})")
+            return listing_decision
 
         # ── Primary: the LLM decides, armed with schema + document-topic context ──
         decision = self._classify_llm_rich(query, mode=mode)
@@ -813,6 +833,22 @@ class QueryRouter:
         r'(?:letters?|emails?)\s+(?:from|to|by)\s+',
     ]
 
+    # Explicit document-LISTING intents — the user wants to browse/enumerate the
+    # files on a topic (→ chronological doc table), NOT a synthesized prose answer.
+    # Matched deterministically BEFORE the LLM classifier, which is biased against
+    # FILE_LIST for topic queries. Kept narrow so genuine content questions
+    # ("what do the documents say about X") still reach the DOCUMENT/AGENT path.
+    _DOCUMENT_LISTING_PATTERNS = [
+        r'\brelated\s+(?:documents?|docs?|files?)\b',              # "X related documents"
+        r'\b(?:documents?|docs?|files?)\s+related\s+to\b',          # "documents related to X"
+        r'\b(?:list|show|find|display|give\s+me)\b[\w\s]{0,20}\b(?:documents?|files?|docs?)\b',
+        r'\b(?:which|what)\s+(?:documents?|files?|docs?)\s+(?:are\s+)?'
+        r'(?:about|mention|related\s+to|regarding|on|for)\b',
+        r'\bile\s+ilgili\s+(?:doküman|belge|dosya)',                # TR "X ile ilgili dokümanlar"
+        r'\S+\s+(?:doküman|belge|dosya|döküman)(?:lar|ler)(?:ı|i|ını|ini)?\b',  # TR "X dokümanları"
+        r"['’]?e?\s+dair\s+(?:belge|doküman)",                      # TR "X'e dair belgeler"
+    ]
+
     def _classify_thread_draft(self, query_lower: str) -> Optional[RouterDecision]:
         """Detect thread view or draft response requests via regex patterns.
         FILE_LIST detection removed — now handled by LLM classifier.
@@ -830,6 +866,25 @@ class QueryRouter:
                     query_type=QueryType.DRAFT,
                     confidence=0.95,
                     reasons=[f"Draft pattern matched: {pattern}"],
+                )
+        return None
+
+    def _classify_document_listing(self, query_lower: str) -> Optional[RouterDecision]:
+        """Detect explicit document-LISTING requests ("X related documents",
+        "documents related to Y", "list files about Z", "X ile ilgili dokümanlar").
+
+        These are browse/enumerate intents: the user wants the chronological
+        document table (FILE_LIST → ui_intent "doc_list"), not a synthesized prose
+        answer. Runs BEFORE the LLM classifier — which is biased AGAINST FILE_LIST
+        for topic queries — so the route is deterministic and reliable. Narrow by
+        design; content questions still fall through to the LLM/DOCUMENT path.
+        """
+        for pattern in self._DOCUMENT_LISTING_PATTERNS:
+            if re.search(pattern, query_lower):
+                return RouterDecision(
+                    query_type=QueryType.FILE_LIST,
+                    confidence=0.9,
+                    reasons=[f"Document-listing pattern matched: {pattern}"],
                 )
         return None
 
@@ -1225,6 +1280,22 @@ class QueryRouter:
         'test', 'testing', 'ping',
     }
 
+    _CURRENT_QUESTION_RE = re.compile(r'current\s+question\s*:', re.IGNORECASE)
+
+    @staticmethod
+    def _current_question(text: str) -> str:
+        """Return only the CURRENT user question from a context-augmented query.
+
+        The orchestrator (and legacy app.py) pass the router
+        "{<CONVERSATION_HISTORY>...}\\n\\nCurrent question: {query}". Deterministic
+        classifiers and topic extraction must run on the tail only — otherwise
+        phrases in prior turns hijack the route and pollute extracted topics.
+        No marker → the text is returned unchanged (bare queries, tests).
+        """
+        q = QueryRouter._CURRENT_QUESTION_RE.split(text or "")[-1]
+        q = re.sub(r"</?CONVERSATION_HISTORY>", " ", q, flags=re.IGNORECASE)
+        return q.strip()
+
     def _is_greeting(self, query: str) -> bool:
         """Detect simple greetings that don't need routing.
 
@@ -1234,10 +1305,7 @@ class QueryRouter:
         ("yes"/"no"/"ok"), wrongly returning the canned welcome and skipping
         routing entirely.
         """
-        q = query.strip().lower().rstrip('!?., ')
-        # Remove chat context prefix if present
-        if 'current question:' in q:
-            q = q.split('current question:')[-1].strip().rstrip('!?., ')
+        q = QueryRouter._current_question(query).lower().rstrip('!?., ')
         return q in self.GREETING_PATTERNS
 
     def _build_greeting_response(self) -> Dict[str, Any]:
@@ -1300,6 +1368,56 @@ class QueryRouter:
         detection is still left to the LLM classifier (HYBRID)."""
         from .query_planner import is_multi_step_query
         return is_multi_step_query(query)
+
+    def _get_react_agent(self):
+        """Lazily build the bounded ReAct agent (reuses this router's tools)."""
+        agent = getattr(self, "_react_agent", None)
+        if agent is None:
+            from .react_agent import ReActAgent
+            agent = ReActAgent(self)
+            self._react_agent = agent
+        return agent
+
+    def _should_use_agent(self, decision, query: str) -> bool:
+        """Post-classification agent gate (broadens beyond keyword-complex). The
+        agent gets HYBRID queries (it owns both document AND data tools, so it
+        beats the fixed hybrid executor) and low-confidence multi-part queries
+        (it self-corrects better than a shaky single-route guess). No extra LLM
+        call — reuses the classifier result we already have."""
+        from .config import ROUTE_AGENT_CONF
+        try:
+            if decision.query_type == QueryType.HYBRID:
+                return True
+            if decision.confidence < ROUTE_AGENT_CONF and query.count("?") >= 2:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _try_react_agent(self, expanded: str, doc_ids, trace, reason: str):
+        """Run the ReAct agent when enabled. Returns its result, or None when the
+        agent is disabled or raised (the caller then uses its own fallback). Never
+        raises and never silently hides a failure — the trace route records exactly
+        what happened (AGENT / AGENT_FAILED_FALLBACK) and a live step is emitted."""
+        from .config import ENABLE_REACT_AGENT
+        if not ENABLE_REACT_AGENT:
+            return None
+        logger.info(f"   {reason} -> ReAct Agent")
+        trace.route = "AGENT"
+        try:
+            result = self._get_react_agent().run(expanded, doc_ids=doc_ids)
+            logger.info(f"Query complete (agent) - {len(result.get('sources', []))} sources")
+            return result
+        except Exception as e:
+            logger.error(f"   ReAct agent failed → fallback: {e}")
+            trace.record_error(f"react_agent: {e}")
+            trace.route = "AGENT_FAILED_FALLBACK"
+            try:
+                from backend.tasks.query_progress import report_step
+                report_step("analysing", "agent unavailable → standard route")
+            except Exception:
+                pass
+            return None
 
     # ── Retrieval helpers ─────────────────────────────────────
 
@@ -1490,10 +1608,7 @@ class QueryRouter:
         metadata search match generic words like "documents" and "related".
         This keeps search focused on X, and also strips chat-history wrappers.
         """
-        q = (query or "").strip()
-        if "Current question:" in q:
-            q = q.rsplit("Current question:", 1)[-1].strip()
-        q = re.sub(r"</?CONVERSATION_HISTORY>", " ", q, flags=re.IGNORECASE)
+        q = QueryRouter._current_question(query)
         q = re.sub(r"\s+", " ", q).strip()
 
         patterns = [
@@ -1635,13 +1750,17 @@ class QueryRouter:
                 final_sources, filename_hints, metadata_doc_ids
             )
 
-        # 3b. Find related Excel/data tables for this topic (scoped). Tables belong
-        # to the demo corpus only → skip for edinburgh users (no demo-table leak).
+        # 3b. Find related Excel/data tables for this topic (scoped to the user's
+        # corpus, so an edinburgh user sees edinburgh tables and never demo ones).
         try:
-            _allowed = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+            if doc_ids:
+                _allowed = self.data_analyzer.get_tables_for_doc_ids(doc_ids)
+            else:
+                _allowed = self.data_analyzer.get_tables_for_corpus(_corpus)
+            # None → unrestricted; [] → corpus has no tables, so skip enrichment.
             related_tables = (self.data_analyzer.select_tables(
                 search_topic, max_tables=3, allowed_tables=_allowed)
-                if _demo_only_sources else [])
+                if _allowed != [] else [])
             for tname in related_tables:
                 tinfo = self.data_analyzer.tables.get(tname, {})
                 fname = tinfo.get("file_name", tname)
@@ -1680,7 +1799,27 @@ class QueryRouter:
         If the query references concepts from multiple tables, uses multi-table execution.
         """
         logger.info("Routing to SQL Data Analyzer...")
-        allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
+        if doc_ids:
+            allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids)
+        else:
+            # Per-user corpus isolation for SQL, mirroring the RAG path: an
+            # 'edinburgh' user only sees edinburgh tables, 'demo' only demo.
+            # None → unrestricted (scripts / unauthenticated).
+            from .document_rag import _current_user_corpus
+            allowed_tables = self.data_analyzer.get_tables_for_corpus(_current_user_corpus())
+            # Empty list = this corpus has tables registered for it = none. Short
+            # out cleanly; the SQL path treats an empty allow-list as falsy and
+            # would otherwise leak the *other* corpus's tables.
+            if allowed_tables == []:
+                logger.info("   No data tables registered for this corpus → clean no-data.")
+                return {
+                    "query": query,
+                    "query_type": QueryType.DATA.value,
+                    "answer": "No data tables are available for your document set yet.",
+                    "sources": [],
+                    "sql": None,
+                    "confidence": 0.5,
+                }
 
         # Check if query needs multiple tables
         relevant = self.data_analyzer.select_tables(query, max_tables=3, allowed_tables=allowed_tables)
@@ -1790,6 +1929,7 @@ class QueryRouter:
             key = "hybdec:" + hashlib.sha256(query.lower().encode()).hexdigest()[:32]
             resp = llm_client.generate_json(
                 prompt, system="You split queries. Output JSON only.", cache_key=key,
+                model=GEMINI_MODEL_LITE if ENABLE_LITE_TIER else "",
             )
             data = resp.raw if isinstance(resp.raw, dict) else {}
             doc_q = (data.get("doc") or "").strip() or query
@@ -1853,9 +1993,40 @@ class QueryRouter:
                 _pf = {k: _scope[k] for k in ("doc_type", "project") if _scope.get(k)} or None
             except Exception:
                 pass
-        doc_result = self.document_rag.query(sub["doc"], doc_ids=doc_ids, payload_filters=_pf)
         allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
-        data_result = self.data_analyzer.query(sub["data"], allowed_tables=allowed_tables)
+
+        # Retrieve-only: the final synthesis below works from the RAW chunks
+        # (_format_doc_excerpts reads sources, not the answer), so paying for the
+        # document-side synthesis here would be wasted.
+        def _run_doc():
+            return self.document_rag.query(sub["doc"], doc_ids=doc_ids,
+                                           payload_filters=_pf, synthesize=False)
+
+        def _run_data():
+            return self.data_analyzer.query(sub["data"], allowed_tables=allowed_tables)
+
+        # The doc (vector + lexical) and data (SQL) legs are independent and hit
+        # different subsystems/DuckDB connections → run them concurrently. Each
+        # worker re-binds the thread-local telemetry trace and inherits the
+        # request's ContextVars (corpus/user/activity-feed) via copy_context().
+        if ENABLE_PARALLEL_RETRIEVAL:
+            import contextvars
+            from concurrent.futures import ThreadPoolExecutor
+            from .telemetry import get_current_trace, set_current_trace
+            _parent_trace = get_current_trace()
+
+            def _with_ctx(fn):
+                set_current_trace(_parent_trace)
+                return fn()
+
+            with ThreadPoolExecutor(max_workers=2) as _ex:
+                _fd = _ex.submit(contextvars.copy_context().run, _with_ctx, _run_doc)
+                _fa = _ex.submit(contextvars.copy_context().run, _with_ctx, _run_data)
+                doc_result = _fd.result()
+                data_result = _fa.result()
+        else:
+            doc_result = _run_doc()
+            data_result = _run_data()
 
         # Synthesize from RAW context (chunks + rows), not pre-synthesized answers.
         logger.info("   Synthesizing results from raw context...")
@@ -1892,10 +2063,21 @@ class QueryRouter:
 
         except Exception as e:
             logger.error(f"   Synthesis error: {e}")
-            combined_answer = (
-                f"**From Documents:**\n{doc_result['answer']}\n\n"
-                f"**From Data Analysis:**\n{data_result['answer']}"
-            )
+            # Fall back to stitching the two sub-answers, but drop LlamaIndex's
+            # "Empty Response" placeholder so it never reaches the UI verbatim.
+            def _clean_part(ans: str) -> str:
+                return "" if (ans or "").strip().lower() in ("empty response", "none") else (ans or "")
+            # doc_result is retrieve-only (answer==""), so fall back to the raw
+            # chunk excerpts here so the document side isn't silently dropped.
+            _doc = _clean_part(doc_result.get("answer", "")) or (
+                self._format_doc_excerpts(doc_result) if doc_result.get("sources") else "")
+            _data = _clean_part(data_result.get("answer", ""))
+            parts = []
+            if _doc:
+                parts.append(f"**From Documents:**\n{_doc}")
+            if _data:
+                parts.append(f"**From Data Analysis:**\n{_data}")
+            combined_answer = "\n\n".join(parts)
 
         # Combine sources
         all_sources = []
@@ -1919,7 +2101,9 @@ class QueryRouter:
     def _handle_file_list_query(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         """Handle file list, topic search, document stats, and delete queries."""
         logger.info("Routing to File List handler...")
-        q = query.lower()
+        # Topic extraction must not scan conversation history — the augmented
+        # query would yield topics like "current question: fasta".
+        q = self._current_question(query).lower()
 
         # 0. Delete intent detection
         delete_match = re.search(
@@ -1944,14 +2128,26 @@ class QueryRouter:
             r"([\w][\w\s]*?)'s\s+(?:emails?|letters?|documents?|files?|mails?|correspondence)",
             q, re.IGNORECASE,
         )
-        # Turkish: "X dokümanları", "X dosyaları", "X excelleri"
-        tr_topic_match = not topic_match and not sender_match and not possessive_match and re.search(
-            r'(.+?)\s+(?:doküman|dosya|belge|excel|döküman)(?:lar|ler)?(?:ı|i|ını|ini)?\s*(?:\?|$)',
+        # "X related documents", "fire alarm related docs" → topic PRECEDES the noun
+        # (the "documents related to X" form is already covered by topic_match above).
+        related_before_match = not topic_match and not sender_match and re.search(
+            r'(.+?)\s+related\s+(?:documents?|docs?|files?)\b',
             q, re.IGNORECASE,
         )
+        # Turkish: "X dokümanları", "X dosyaları", "X excelleri"
+        tr_topic_match = (
+            not topic_match and not sender_match and not possessive_match
+            and not related_before_match and re.search(
+                r'(.+?)\s+(?:doküman|dosya|belge|excel|döküman)(?:lar|ler)?(?:ı|i|ını|ini)?\s*(?:\?|$)',
+                q, re.IGNORECASE,
+            )
+        )
 
-        if topic_match or sender_match or possessive_match or tr_topic_match:
-            if topic_match:
+        if topic_match or sender_match or possessive_match or tr_topic_match or related_before_match:
+            if related_before_match:
+                topic = related_before_match.group(1).strip()
+                label = f"related to '{topic}'"
+            elif topic_match:
                 topic = topic_match.group(1).strip()
                 label = f"about '{topic}'"
             elif sender_match:
@@ -1967,26 +2163,11 @@ class QueryRouter:
             results = self._unified_document_search(topic)
 
             if results:
-                ext_icons = {
-                    ".pdf": "PDF", ".xlsx": "Excel", ".xls": "Excel",
-                    ".csv": "CSV", ".docx": "Word", ".doc": "Word",
-                    ".txt": "Text", ".eml": "Email", ".msg": "Email",
-                }
-                type_icons = {"document": "PDF", "data": "Excel", "email": "Email"}
-
-                lines = [f"**Found {len(results)} file(s) {label}:**\n"]
-                for i, r in enumerate(results, 1):
-                    ext = r.get("extension", "")
-                    icon = ext_icons.get(ext, type_icons.get(r.get("file_type", ""), "File"))
-                    date_str = f" ({r['date']})" if r.get("date") else ""
-                    sender_str = f" — From: {r['sender']}" if r.get("sender") else ""
-                    lines.append(f"{i}. **[{icon}]** {r['file_name']}{date_str}{sender_str}")
-                    if r.get("subject"):
-                        lines.append(f"   {r['subject']}")
-                    elif r.get("description"):
-                        lines.append(f"   {r['description']}")
-                    if r.get("semantic_tags"):
-                        lines.append(f"   Tags: {', '.join(r['semantic_tags'][:5])}")
+                # The rich chronological table (DocumentAnalysisTable, rendered by
+                # the frontend from `sources` → related_docs) now carries the
+                # per-document detail, so keep the answer text to a one-line summary
+                # instead of stacking a redundant numbered list above the table.
+                lines = [f"**Found {len(results)} document(s) {label}.**"]
 
                 sources = [
                     {
@@ -2761,9 +2942,17 @@ class QueryRouter:
                 f"   {subject}{action_str}\n"
             )
 
-        # Append RAG content if available
+        # Append RAG content if available. Skip placeholder/refusal answers
+        # ("Empty Response" from LlamaIndex, "not found", "no documents") so the
+        # listing isn't polluted with a meaningless detail block.
         rag_answer = (rag_result or {}).get("answer", "")
-        if rag_answer and "not found" not in rag_answer.lower() and "no documents" not in rag_answer.lower():
+        _ra_low = rag_answer.strip().lower()
+        if (
+            rag_answer
+            and _ra_low not in ("empty response", "none")
+            and "not found" not in _ra_low
+            and "no documents" not in _ra_low
+        ):
             lines.append(f"\n---\n**Detail from document content:**\n\n{rag_answer}")
 
         return "\n".join(lines)
@@ -2953,6 +3142,37 @@ class QueryRouter:
             pass
         return resp.text.strip()
 
+    def _timeline_document_fallback(self, query: str, expanded_query: str) -> Dict[str, Any]:
+        """Chronology from the user's OWN documents when the event store is empty.
+        Corpus-safe: document_rag.query honours _current_user_corpus, so an
+        edinburgh user only ever sees edinburgh docs (no demo leak). Keeps the
+        TIMELINE type so the UI still renders a timeline; sources are tagged so the
+        response builder routes them to related_docs (what the timeline renders from)."""
+        try:
+            rag = self.document_rag.query(
+                "Build a CHRONOLOGICAL timeline for the question below: list each key "
+                "event with its DATE (oldest first) and what happened, citing the source "
+                f"document. Question: {expanded_query}")
+        except Exception as e:
+            logger.warning(f"   timeline document fallback failed: {e}")
+            rag = {"answer": "", "sources": []}
+        related, seen = [], set()
+        for s in (rag.get("sources") or []):
+            fn = s.get("file_name")
+            if not fn or fn in seen:
+                continue
+            seen.add(fn)
+            related.append({**s, "type": "search_result"})  # → related_docs (timeline UI)
+        answer = (rag.get("answer") or "").strip()
+        if not answer and not related:
+            answer = "No chronological events were found in your documents for this query."
+        return {
+            "query": query,
+            "query_type": QueryType.TIMELINE.value,
+            "answer": answer,
+            "sources": related,
+        }
+
     def _handle_timeline_query(self, query: str) -> Dict[str, Any]:
         """Handle timeline/notice-based query using light graph with enhanced capabilities."""
         logger.info("Routing to Timeline/Graph handler...")
@@ -3042,16 +3262,14 @@ class QueryRouter:
             except Exception as e:
                 logger.warning(f"   Event-store timeline failed, falling through: {e}")
 
-            # Edinburgh users get their timeline ONLY from the event store. If we
-            # reach here (no matching events), return cleanly — do NOT fall through
-            # to the light_graph / notice / cluster paths below, which are demo-only.
+            # Edinburgh users have NO populated event store (bulk corpus was ingested
+            # vectors-only, so LLM event-enrichment never ran). Instead of a dead
+            # "no events" reply, build the chronology from their OWN documents via
+            # corpus-scoped RAG (document_rag respects _current_user_corpus, so no
+            # demo leak). Do NOT fall through to the light_graph / notice / cluster
+            # paths below — those are demo-only.
             if _tl_corpus == "edinburgh":
-                return {
-                    "query": query,
-                    "query_type": QueryType.TIMELINE.value,
-                    "answer": "No chronological events were found in your documents for this query.",
-                    "sources": [],
-                }
+                return self._timeline_document_fallback(query, expanded_query)
 
             # === 0. Compound queries: semantic intent + document scope ===
             intent = self._parse_compound_intent(query_lower)
@@ -3641,30 +3859,43 @@ class QueryRouter:
                 trace.route = "GREETING"
                 return self._build_greeting_response()
 
+            try:
+                from backend.tasks.query_progress import report_step
+                report_step("thinking", "thinking…")
+            except Exception:
+                pass
+
             # Expand jargon
             expanded = self.jargon.expand_query(query)
             if expanded != query:
                 logger.info(f"   Jargon expanded: {expanded[:100]}...")
 
-            # Correspondence mode with user-selected emails: bypass classification.
-            # The orchestrator has already injected full email bodies + drafting
-            # instruction into the augmented query, so route straight to DOCUMENT
-            # and let the LLM answer (draft, summary, or question against the
-            # selected emails).
-            if mode == "correspondence" and email_ids:
+            # Selected context files (documents and/or emails): bypass
+            # classification. The orchestrator has already injected the selected
+            # files' full text (+ for emails, a drafting instruction) into the
+            # augmented query, so route straight to DOCUMENT and answer against
+            # that grounded context instead of re-classifying. (Only the DOCUMENT/
+            # HYBRID synthesis path actually uses the injected context, so routing
+            # elsewhere would waste it.) Mode-less: triggered by any selection.
+            if email_ids:
                 logger.info(
-                    f"   Correspondence mode + {len(email_ids)} selected email(s) "
-                    f"-> forcing DOCUMENT (bypass DRAFT/THREAD/TIMELINE handlers)"
+                    f"   {len(email_ids)} selected context file(s) "
+                    f"-> forcing DOCUMENT (answer from injected context)"
                 )
-                trace.route = "DOCUMENT_CORRESPONDENCE"
+                trace.route = "DOCUMENT_SELECTED_CONTEXT"
                 result = self._dispatch_query(QueryType.DOCUMENT, query, expanded, doc_ids)
-                logger.info(f"Query complete (correspondence) - {len(result.get('sources', []))} sources")
+                logger.info(f"Query complete (selected context) - {len(result.get('sources', []))} sources")
                 return result
 
-            # Check if this is a complex multi-step query
+            # Check if this is a complex multi-step query → ReAct agent (if on),
+            # else the fixed hybrid executor. The agent failing falls through here.
             if self._is_complex_query(query):
-                logger.info("   Detected complex query -> Hybrid Executor")
-                trace.route = "HYBRID_COMPLEX"
+                agent_result = self._try_react_agent(expanded, doc_ids, trace, "Detected complex query")
+                if agent_result is not None:
+                    return agent_result
+                logger.info("   Complex query -> Hybrid Executor")
+                if trace.route != "AGENT_FAILED_FALLBACK":
+                    trace.route = "HYBRID_COMPLEX"
                 allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
                 result = self.hybrid_executor.execute(expanded, doc_ids=doc_ids, allowed_tables=allowed_tables)
                 logger.info(f"Query complete (hybrid) - {len(result.get('sources', []))} sources")
@@ -3682,6 +3913,21 @@ class QueryRouter:
 
             logger.info(f"   Classified as: {decision.query_type.value.upper()} "
                         f"(conf={decision.confidence:.2f}, llm={decision.used_llm})")
+
+            try:
+                from backend.tasks.query_progress import report_step
+                report_step("routing", f"routing → {decision.query_type.value}")
+            except Exception:
+                pass
+
+            # Broadened agent gate: HYBRID (agent owns doc+data tools) or a
+            # low-confidence multi-part query → ReAct agent. Disabled/failed agent
+            # falls through to the normal handler below (no extra LLM call here).
+            if self._should_use_agent(decision, query):
+                agent_result = self._try_react_agent(
+                    expanded, doc_ids, trace, f"{decision.query_type.value} → agent")
+                if agent_result is not None:
+                    return agent_result
 
             # Route to handler
             result = self._dispatch_query(decision.query_type, query, expanded, doc_ids)
@@ -3826,14 +4072,14 @@ class QueryRouter:
             if expanded != query:
                 logger.info(f"   Jargon expanded: {expanded[:100]}...")
 
-            # Correspondence mode with user-selected emails: bypass classification.
-            # See route_and_execute for rationale.
-            if mode == "correspondence" and email_ids:
+            # Selected context files: bypass classification.
+            # See route_and_execute for rationale. Mode-less: any selection.
+            if email_ids:
                 logger.info(
-                    f"   Correspondence mode + {len(email_ids)} selected email(s) "
-                    f"-> forcing DOCUMENT (bypass DRAFT/THREAD/TIMELINE handlers)"
+                    f"   {len(email_ids)} selected context file(s) "
+                    f"-> forcing DOCUMENT (answer from injected context)"
                 )
-                trace.route = "DOCUMENT_CORRESPONDENCE_DUAL"
+                trace.route = "DOCUMENT_SELECTED_CONTEXT_DUAL"
                 answers = self._dispatch_query_dual(QueryType.DOCUMENT, query, expanded, doc_ids)
                 return {
                     "query": query,
@@ -3842,7 +4088,7 @@ class QueryRouter:
                     "routing": {
                         "decision": QueryType.DOCUMENT.value,
                         "confidence": 1.0,
-                        "reasons": [f"Correspondence mode bypass with {len(email_ids)} selected email(s)"],
+                        "reasons": [f"Selected-context bypass with {len(email_ids)} file(s)"],
                         "used_llm": False,
                     },
                 }

@@ -223,6 +223,35 @@ class TestPersistence:
         assert (user_dir / "conversations.json").exists()
         assert (user_dir / f"{meta.conversation_id}.json").exists()
 
+    def test_ghost_index_entries_pruned_on_load(self, tmp_conv_dir):
+        # An index entry whose conversation file is missing (partial sync,
+        # storage reset) must not survive a reload — it 404s in the UI.
+        store1 = ConversationStore("testuser")
+        keep = store1.create_conversation("Keep")
+        ghost = store1.create_conversation("Ghost")
+        (tmp_conv_dir / "testuser" / f"{ghost.conversation_id}.json").unlink()
+
+        store2 = ConversationStore("testuser")
+        ids = [c.conversation_id for c in store2.list_conversations()]
+        assert keep.conversation_id in ids
+        assert ghost.conversation_id not in ids
+        # Prune is persisted, not just in-memory
+        data = json.loads((tmp_conv_dir / "testuser" / "conversations.json").read_text())
+        assert all(item["conversation_id"] != ghost.conversation_id for item in data)
+
+    def test_drop_ghost_entry_removes_only_fileless(self, tmp_conv_dir):
+        store = ConversationStore("testuser")
+        keep = store.create_conversation("Keep")
+        ghost = store.create_conversation("Ghost")
+        (tmp_conv_dir / "testuser" / f"{ghost.conversation_id}.json").unlink()
+
+        # Dropping an entry that still has its file is a no-op
+        store.drop_ghost_entry(keep.conversation_id)
+        assert any(m.conversation_id == keep.conversation_id for m in store.list_conversations())
+
+        store.drop_ghost_entry(ghost.conversation_id)
+        assert all(m.conversation_id != ghost.conversation_id for m in store.list_conversations())
+
     def test_corrupted_index_recovers(self, tmp_conv_dir):
         user_dir = tmp_conv_dir / "testuser"
         user_dir.mkdir(parents=True, exist_ok=True)

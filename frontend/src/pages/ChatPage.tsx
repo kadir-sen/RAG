@@ -2,33 +2,23 @@ import { lazy, Suspense, useEffect, useCallback, useRef, useState } from 'react'
 import { useChat } from '../hooks/useChat';
 import { useConversations } from '../hooks/useConversations';
 import { useUIStore } from '../stores/uiStore';
-import { useChatStore, type AppMode } from '../stores/chatStore';
+import { useChatStore } from '../stores/chatStore';
 import { getConversation } from '../api/conversationApi';
 import ConversationSidebar from '../components/sidebar/ConversationSidebar';
 import ChatStream from '../components/chat/ChatStream';
 import ChatInput from '../components/chat/ChatInput';
 import WelcomeScreen from '../components/chat/WelcomeScreen';
-import MonoTag from '../components/ui/MonoTag';
+import SelectedContextBar from '../components/chat/SelectedContextBar';
 
-// Mode-specific intros are heavy (CorrespondenceCenter pulls in the email
-// trace UI; DocumentAnalysisIntro carries timeline sample data) — both are
-// only needed once the user explicitly chooses that mode, so lazy-loading
-// keeps them out of the first-paint bundle.
-const DocumentAnalysisIntro = lazy(
-  () => import('../components/chat/DocumentAnalysisIntro'),
-);
-const CorrespondenceCenter = lazy(
-  () => import('../components/chat/CorrespondenceCenter'),
-);
 const RightDocViewer = lazy(
   () => import('../components/viewer/RightDocViewer'),
 );
 
 export default function ChatPage() {
-  const { messages, isLoading, isPending, sendMessage } = useChat();
+  const { messages, isLoading, isPending, sendMessage, activeRequestId } = useChat();
   const { createConversation } = useConversations();
   const { rightPanelOpen, openDocument } = useUIStore();
-  const { activeConversationId, setConversation, activeMode, setMode, selectedEmailIds } = useChatStore();
+  const { activeConversationId, setConversation } = useChatStore();
   const pendingMessageRef = useRef<string | null>(null);
   const restoredRef = useRef(false);
   // True between page load and the first restore-from-storage finishing.
@@ -111,28 +101,12 @@ export default function ChatPage() {
     [activeConversationId, createConversation, sendMessage],
   );
 
-  const handleModeSelect = useCallback((mode: AppMode) => setMode(mode), [setMode]);
-  const handleBack = useCallback(() => setMode(null), [setMode]);
-
-  // Only show the WelcomeScreen when the app is on a truly clean slate:
-  // no active conversation AND no mode picked. If a conversation ID is set
-  // (the user clicked a row in the sidebar), keep the chat surface visible
-  // even if the backend hasn't returned messages yet — otherwise an empty
-  // load looks identical to "new chat".
+  // Single home surface. Show the home empty-state whenever there's no open
+  // conversation and no messages yet. There are no modes anymore — the user
+  // types anything, the backend router decides the skill, and the rich
+  // chronological table renders inline. File selection lives in the sidebar.
   const showWelcome =
-    activeMode === null &&
-    !activeConversationId &&
-    messages.length === 0 &&
-    !isLoading;
-  const showDocAnalysisIntro =
-    activeMode === 'document_analysis' && messages.length === 0 && !isLoading;
-  const showCorrespondenceCenter =
-    activeMode === 'correspondence' && messages.length === 0 && !isLoading;
-  const modeMeta = activeMode === 'correspondence'
-    ? { label: 'CORRESPONDENCE MODE', sublabel: 'thread digest · email trace' }
-    : activeMode === 'document_analysis'
-      ? { label: 'DOCUMENT ANALYSIS', sublabel: 'topic → chronological roadmap' }
-      : null;
+    !activeConversationId && messages.length === 0 && !isLoading;
 
   return (
     <div className="flex h-full w-full overflow-clip">
@@ -141,30 +115,6 @@ export default function ChatPage() {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 h-full">
-        {/* Mode header — only for correspondence/document_analysis */}
-        {activeMode && activeMode !== 'chat' && modeMeta && (
-          <div className="flex items-center gap-3 px-6 py-2.5 border-b border-[var(--border)] shrink-0 bg-[var(--bg-secondary)]/40">
-            <button
-              onClick={handleBack}
-              aria-label="Back to mode selection"
-              className="font-mono text-[11px] text-[var(--text-secondary)] hover:text-white transition-colors flex items-center gap-1"
-            >
-              <svg aria-hidden="true" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                <path d="M8 2L4 6l4 4" />
-              </svg>
-              Back
-            </button>
-            <MonoTag tone="accent">{modeMeta.label}</MonoTag>
-            <span className="font-mono text-[11px] text-[var(--text-secondary)] tracking-wide">
-              {modeMeta.sublabel}
-            </span>
-            <span className="flex-1" />
-            {activeMode === 'correspondence' && selectedEmailIds.length > 0 && (
-              <MonoTag tone="accent">{selectedEmailIds.length} emails scoped</MonoTag>
-            )}
-          </div>
-        )}
-
         {/* Content area */}
         <div className="flex-1 flex flex-col min-h-0 relative">
           {isRestoring ? (
@@ -175,29 +125,26 @@ export default function ChatPage() {
               loading conversation…
             </div>
           ) : showWelcome ? (
-            <WelcomeScreen onModeSelect={handleModeSelect} />
-          ) : showCorrespondenceCenter ? (
-            <Suspense fallback={<div className="flex-1" />}>
-              <CorrespondenceCenter onSend={handleSend} />
-            </Suspense>
-          ) : showDocAnalysisIntro ? (
-            <Suspense fallback={<div className="flex-1" />}>
-              <DocumentAnalysisIntro onSend={handleSend} />
-            </Suspense>
+            <WelcomeScreen onSend={handleSend} />
           ) : (
             <ChatStream
               messages={messages}
               isLoading={isLoading}
               onDocClick={openDocument}
               onRetry={sendMessage}
+              activeRequestId={activeRequestId}
             />
           )}
-          {/* Composer lives at the bottom of every chat surface — Welcome
-              included — so a user can start a conversation without first
-              picking a mode. The two mode intros own their own composers,
-              so we suppress this one there to avoid stacking. */}
-          {!isRestoring && !showCorrespondenceCenter && !showDocAnalysisIntro && (
-            <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
+          {/* Selected-files tiles + composer at the bottom of every surface. */}
+          {!isRestoring && (
+            <>
+              <div className="px-4 md:px-6">
+                <div className="max-w-5xl mx-auto">
+                  <SelectedContextBar />
+                </div>
+              </div>
+              <ChatInput onSend={handleSend} disabled={isLoading || isPending} />
+            </>
           )}
         </div>
       </div>

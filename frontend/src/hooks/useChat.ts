@@ -1,9 +1,10 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { sendMessage } from '../api/chatApi';
 import { useChatStore } from '../stores/chatStore';
 import { useAuthStore } from '../stores/authStore';
 import type { Message } from '../types/chat';
+import type { QueryProgress } from '../types/api';
 
 const genId = () => `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
@@ -46,6 +47,9 @@ export function useChat() {
   const queryClient = useQueryClient();
   const inFlightRef = useRef(false);
   const lastFailedTextRef = useRef<string | null>(null);
+  // request_id of the in-flight query, so the activity feed can poll its progress.
+  const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+  const requestIdRef = useRef<string | null>(null);
 
   const send = useMutation({
     mutationFn: async (text: string) => {
@@ -62,32 +66,45 @@ export function useChat() {
       addMessage(userMsg);
       setLoading(true);
 
+      // Correlate the live activity feed: generate a request_id, expose it so
+      // useActivityFeed can poll /chat/progress/{id} while this POST is in flight.
+      const requestId = `req_${genId()}`;
+      requestIdRef.current = requestId;
+      setActiveRequestId(requestId);
+
       // Read live store values to avoid stale closure
-      const { activeConversationId: currentConvId, activeMode: currentMode,
-        selectedEmailIds: currentEmailIds } = useChatStore.getState();
+      const { activeConversationId: currentConvId, selectedIds } = useChatStore.getState();
 
-      const docIds = currentMode === 'correspondence' && currentEmailIds.length > 0
-        ? currentEmailIds
-        : undefined;
-      const emailIds = currentMode === 'correspondence' && currentEmailIds.length > 0
-        ? currentEmailIds
-        : undefined;
+      // Selection is mode-less now: send the picked files as BOTH doc_ids and
+      // email_ids. The backend sorts them by type — _build_email_context keeps
+      // emails, _build_document_context keeps non-email docs — so each lands in
+      // the right context block regardless of which sidebar folder it came from.
+      const selected = selectedIds.length > 0 ? selectedIds : undefined;
 
-      const response = await sendMessage(text, currentConvId, docIds, emailIds, currentMode);
+      const response = await sendMessage(text, currentConvId, selected, selected, null, requestId);
       return response;
     },
     onSuccess: (response) => {
       inFlightRef.current = false;
       lastFailedTextRef.current = null;
+      // Capture the final activity steps (last polled snapshot) so the finished
+      // message keeps a collapsible "Steps" trail.
+      const rid = requestIdRef.current;
+      const progress = rid
+        ? queryClient.getQueryData<QueryProgress>(['chatProgress', rid])
+        : undefined;
       const assistantMsg: Message = {
         id: `a_${genId()}`,
         role: 'assistant',
         content: response.assistant_text,
         timestamp: Date.now(),
         response,
+        activities: progress?.steps,
       };
       addMessage(assistantMsg);
       setLoading(false);
+      setActiveRequestId(null);
+      requestIdRef.current = null;
       if (response.quota) {
         useAuthStore.getState().updateQuota(response.quota);
       }
@@ -95,6 +112,8 @@ export function useChat() {
     },
     onError: (error: Error) => {
       inFlightRef.current = false;
+      setActiveRequestId(null);
+      requestIdRef.current = null;
       if (error.message === 'DUPLICATE') return;
       const e = error as ErrorWithResponse;
       // 402 / quota exhausted — zero out the user's bar so the UI matches the
@@ -118,5 +137,5 @@ export function useChat() {
     },
   });
 
-  return { messages, isLoading, isPending: send.isPending, sendMessage: send.mutate };
+  return { messages, isLoading, isPending: send.isPending, sendMessage: send.mutate, activeRequestId };
 }

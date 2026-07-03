@@ -216,7 +216,16 @@ class QueryPlanner:
             )
             system = build_system_prompt("You are a query planner. Return only valid JSON.")
 
-            resp = llm_client.generate_text(prompt, system=system, max_tokens=1024)
+            # Cache the plan by normalized query + an inventory signature so repeat
+            # compound queries skip the ~3-4k-token planning call, while a change to
+            # the documents/tables (which alters table_context/doc_context) busts it.
+            import hashlib as _hl
+            _norm = " ".join(expanded.lower().split())
+            _inv = _hl.sha256((table_context + "||" + doc_context).encode()).hexdigest()[:16]
+            _plan_key = "plan:" + _hl.sha256(f"{_norm}|{_inv}".encode()).hexdigest()[:32]
+
+            resp = llm_client.generate_text(prompt, system=system, max_tokens=1024,
+                                            cache_key=_plan_key)
 
             # Record telemetry
             from .telemetry import get_current_trace
@@ -431,6 +440,11 @@ class PlanExecutor:
         step_results = {}
         completed_ids = []
 
+        # When a COMBINE step does the single final synthesis, intermediate
+        # DOCUMENT steps run retrieve-only (no per-step synthesis LLM call) and
+        # hand their raw excerpts to COMBINE.
+        has_combine = any(s.step_type == StepType.COMBINE.value for s in plan.steps)
+
         for step in plan.steps:
             step.status = "running"
             logger.info(f"[Executor] Step {step.step_id}: [{step.step_type}] {step.description}")
@@ -453,7 +467,11 @@ class PlanExecutor:
                 if step.step_type == StepType.SQL.value:
                     result = self._execute_sql_step(instruction, step_results, allowed_tables=allowed_tables)
                 elif step.step_type == StepType.DOCUMENT.value:
-                    result = self._execute_document_step(instruction, doc_ids=doc_ids)
+                    is_last = step.step_id == len(plan.steps) - 1
+                    result = self._execute_document_step(
+                        instruction, doc_ids=doc_ids,
+                        synthesize=not (has_combine and not is_last),
+                    )
                 elif step.step_type == StepType.TIMELINE.value:
                     result = self._execute_timeline_step(instruction, doc_ids=doc_ids)
                 elif step.step_type == StepType.COMBINE.value:
@@ -644,17 +662,42 @@ class PlanExecutor:
         }
 
     def _execute_document_step(self, instruction: str, provider: str = "gemini",
-                               doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
-        """Execute a document search step."""
+                               doc_ids: Optional[List[str]] = None,
+                               synthesize: bool = True) -> Dict[str, Any]:
+        """Execute a document search step.
+
+        synthesize=False (retrieve-only) skips the per-step synthesis LLM call for
+        intermediate steps that feed a COMBINE step; the raw chunk excerpts are
+        joined deterministically so COMBINE (and dependency templating) still have
+        document text without paying for a synthesis that COMBINE would re-do.
+        """
         if provider != "gemini":
+            # Provider/dual path keeps its own synthesis (dual is off by default).
             result = self.document_rag.query_with_provider(instruction, provider, doc_ids=doc_ids)
         else:
-            result = self.document_rag.query(instruction, doc_ids=doc_ids)
+            result = self.document_rag.query(instruction, doc_ids=doc_ids, synthesize=synthesize)
+        answer = result.get("answer", "")
+        sources = result.get("sources", [])
+        if not answer and sources:
+            answer = self._excerpts_from_sources(sources)
         return {
-            "answer": result.get("answer", ""),
-            "summary": result.get("answer", "")[:300],
-            "sources": result.get("sources", []),
+            "answer": answer,
+            "summary": answer[:300],
+            "sources": sources,
         }
+
+    @staticmethod
+    def _excerpts_from_sources(sources: List[Dict[str, Any]], max_chunks: int = 6) -> str:
+        """Deterministic raw-excerpt join (no LLM) for retrieve-only document
+        steps, so COMBINE has the chunk text to synthesize from."""
+        parts = []
+        for i, s in enumerate((sources or [])[:max_chunks], 1):
+            text = (s.get("text_snippet") or s.get("highlight_text") or "").strip()
+            if not text:
+                continue
+            parts.append(f"[{i}] {s.get('file_name', 'Unknown')} "
+                         f"p.{s.get('page_number', '?')}: {text}")
+        return "\n\n".join(parts)
 
     # Doc-type / correspondence keywords used to detect that a timeline question
     # targets a *specific* document the light_graph may not contain.

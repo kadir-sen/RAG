@@ -23,10 +23,12 @@ class TestIntentMapping:
         resp = build_chat_response(raw)
         assert resp.ui_intent == "answer"
 
-    def test_timeline_maps_to_doc_list(self):
+    def test_timeline_maps_to_timeline(self):
+        # timeline now renders as a vertical timeline (was doc_list table);
+        # INTENT_MAP["timeline"] == "timeline". See response_builder INTENT_MAP.
         raw = {"query_type": "timeline", "answer": "test", "sources": []}
         resp = build_chat_response(raw)
-        assert resp.ui_intent == "doc_list"
+        assert resp.ui_intent == "timeline"
 
     def test_thread_maps_to_email_trace(self):
         raw = {"query_type": "thread", "answer": "test", "sources": []}

@@ -69,6 +69,40 @@ def _vectors_only_library_docs(known_names: Set[str],
     return out
 
 
+def _catalog_corpus_by_name() -> dict:
+    """file_name → catalog corpus tag, so listings can isolate per corpus."""
+    try:
+        from src.catalog import get_catalog
+        return {os.path.basename(e.source_file): (getattr(e, "corpus", "demo") or "demo").lower()
+                for e in get_catalog().entries.values()}
+    except Exception:
+        return {}
+
+
+def _edinburgh_data_library_docs() -> List[LibraryDocument]:
+    """LibraryDocument rows for the edinburgh corpus's SQL data tables (Excel/CSV)
+    from the catalog — they're not in the chunk store, so the vectors-only library
+    path misses them. doc_id == generate_doc_id(source_file) for viewer round-trip."""
+    from src.catalog import get_catalog
+    from src.document_rag import generate_doc_id
+    out: List[LibraryDocument] = []
+    for entry in get_catalog().entries.values():
+        if (getattr(entry, "corpus", "demo") or "demo").lower() != "edinburgh":
+            continue
+        if entry.source_type not in ("excel", "csv"):
+            continue
+        fname = os.path.basename(entry.source_file)
+        out.append(LibraryDocument(
+            doc_id=generate_doc_id(entry.source_file),
+            file_name=fname,
+            file_type="data",
+            extension=os.path.splitext(fname)[1].lower(),
+            status="completed",
+            table_names=[t.table_name for t in entry.tables],
+        ))
+    return out
+
+
 def _load_notice_metadata(doc_id: str) -> Optional[NoticeMetadataOut]:
     """Load notice metadata from disk for a document."""
     try:
@@ -124,11 +158,16 @@ async def list_library(user: UserContext = Depends(get_current_user)):
     if _corpus_of(user) == "edinburgh":
         try:
             reg_names = {r.file_name for r in registry.get_completed()}
-            return _vectors_only_library_docs(reg_names)
+            docs = _vectors_only_library_docs(reg_names)
+            docs.extend(_edinburgh_data_library_docs())  # Excel/CSV data tables
+            return docs
         except Exception:
             return []
-    # demo / default: registry documents only (no bulk-corpus merge)
-    return [_build_library_doc(r) for r in registry.get_completed()]
+    # demo / default: registry documents only, minus any tagged to another corpus
+    # (e.g. edinburgh data tables that were also registered) — no cross-corpus leak.
+    corpus_by_name = _catalog_corpus_by_name()
+    return [_build_library_doc(r) for r in registry.get_completed()
+            if corpus_by_name.get(r.file_name, "demo") == "demo"]
 
 
 @router.get("/library/summary")

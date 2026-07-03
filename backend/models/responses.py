@@ -71,13 +71,14 @@ class QuotaInfo(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    ui_intent: str       # "answer" | "doc_list" | "email_trace" | "sql_result"
+    ui_intent: str       # "answer" | "doc_list" | "timeline" | "email_trace" | "sql_result"
     assistant_text: str
     citations: List[Citation] = Field(default_factory=list)
     related_docs: List[RelatedDoc] = Field(default_factory=list)
     sql_artifact: Optional[SQLArtifact] = None
     provider_answers: List[ProviderAnswer] = Field(default_factory=list)
     routing_confidence: Optional[float] = None  # 0.0-1.0, shown to user when low
+    route: Optional[str] = None      # telemetry route: AGENT | HYBRID_COMPLEX | DOCUMENT … (observability)
     cta: Optional[CallToAction] = None
     quota: Optional[QuotaInfo] = None
 
@@ -123,6 +124,10 @@ class FileInfo(BaseModel):
     # Excel/CSV specific: registered/no_schema_match/error/None
     data_table_status: Optional[str] = None
     data_tables_count: int = 0
+    # Data-file schema summary (Excel/CSV): first few column names + sheet count,
+    # so the file list can preview the table shape without opening it.
+    columns: List[str] = Field(default_factory=list)
+    sheets: int = 0
 
 
 class UploadResult(BaseModel):
@@ -138,6 +143,20 @@ class IndexingStatus(BaseModel):
     progress: float = 0.0
     error: Optional[str] = None
     details: dict = Field(default_factory=dict)
+
+
+class QueryActivityStep(BaseModel):
+    seq: int
+    ts: float
+    kind: str                     # thinking | searching | reading | related | analysing | tool | answer
+    label: str
+    detail: str = ""
+
+
+class QueryProgressResponse(BaseModel):
+    request_id: str
+    steps: List[QueryActivityStep] = Field(default_factory=list)
+    done: bool = False
 
 
 class LibraryDocument(BaseModel):
@@ -183,6 +202,12 @@ class KnowledgeCollectionDetail(BaseModel):
     updated_at: str = ""
 
 
+class SchemaColumn(BaseModel):
+    name: str = ""
+    dtype: str = ""               # integer | number | date | boolean | text
+    meaning: str = ""             # jargon expansion, e.g. "EOT → Extension of Time"
+
+
 class DocContent(BaseModel):
     type: str                     # "pdf" | "table" | "text"
     file_name: str = ""
@@ -194,3 +219,8 @@ class DocContent(BaseModel):
     rows: List[dict] = Field(default_factory=list)
     total_rows: int = 0
     error: Optional[str] = None
+    # Data-file schema (Excel/CSV viewer panel): per-column name/type/meaning +
+    # a short table description. Empty for pdf/text content.
+    schema_columns: List[SchemaColumn] = Field(default_factory=list)
+    description: str = ""
+    sheet_name: str = ""

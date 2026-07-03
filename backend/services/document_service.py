@@ -5,10 +5,38 @@ import base64
 import re
 from pathlib import Path, PureWindowsPath
 
-from backend.models.responses import DocContent
+from backend.models.responses import DocContent, SchemaColumn
 from backend.services.response_builder import clean_corrupted_date_string
 
 _DATA_EXTENSIONS = {".xlsx", ".xls", ".csv"}
+
+
+def _dtype_label(dtype) -> str:
+    """pandas dtype → a friendly schema type for the viewer panel."""
+    dt = str(dtype).lower()
+    if "int" in dt:
+        return "integer"
+    if "float" in dt or "decimal" in dt:
+        return "number"
+    if "datetime" in dt or "date" in dt:
+        return "date"
+    if "bool" in dt:
+        return "boolean"
+    return "text"
+
+
+def _build_schema(df, col_jargon: dict | None = None) -> list:
+    """Per-column schema (name, dtype, jargon meaning) for the viewer panel."""
+    cj = col_jargon or {}
+    out = []
+    for c in df.columns:
+        name = str(c)
+        out.append(SchemaColumn(
+            name=name,
+            dtype=_dtype_label(df[c].dtype),
+            meaning=cj.get(name, "") or cj.get(name.strip(), ""),
+        ))
+    return out
 
 
 def _clean_table_rows(rows: list) -> list:
@@ -122,6 +150,25 @@ class DocumentService:
             for table_name, file_path in analyzer.file_paths.items():
                 if generate_doc_id(file_path) == doc_id:
                     return self._serve_table_preview(table_name, analyzer)
+        except Exception:
+            pass
+
+        # Then match by catalog source file → serve the EXTRACTED table (proper
+        # detected headers + learned schema/jargon), not the raw sheet. file_paths
+        # is keyed by parquet path, so a source-file doc_id (registry/sidebar) only
+        # resolves here. Falls through to the raw-file path for 0-table entries.
+        try:
+            from src.catalog import get_catalog
+            from src.data_analyzer_sql import get_data_analyzer
+            from src.document_rag import generate_doc_id
+            analyzer = get_data_analyzer()
+            for entry in get_catalog().entries.values():
+                if entry.source_type not in ("excel", "csv") or not entry.tables:
+                    continue
+                if generate_doc_id(entry.source_file) == doc_id:
+                    tname = entry.tables[0].table_name
+                    if tname in analyzer.tables:
+                        return self._serve_table_preview(tname, analyzer)
         except Exception:
             pass
 
@@ -333,12 +380,15 @@ class DocumentService:
             else:
                 df_full_len = len(pd.read_excel(file_path, usecols=[0]))
                 total_rows = df_full_len
+            col_jargon, description = self._catalog_schema_hints(fp.name)
             return DocContent(
                 type="table",
                 file_name=fp.name,
                 columns=list(df.columns.astype(str)),
                 rows=_clean_table_rows(df.fillna("").to_dict("records")),
                 total_rows=max(total_rows, len(df)),
+                schema_columns=_build_schema(df, col_jargon),
+                description=description,
             )
         except Exception as e:
             return DocContent(type="table", error=str(e))
@@ -350,12 +400,35 @@ class DocumentService:
             ).fetchdf()
             info = analyzer.tables.get(table_name, {})
             display_name = info.get("file_name", table_name)
+            col_jargon, cat_desc = self._catalog_schema_hints(display_name, table_name)
             return DocContent(
                 type="table",
                 file_name=display_name,
                 columns=list(df.columns),
                 rows=_clean_table_rows(df.to_dict("records")),
                 total_rows=info.get("row_count", len(df)),
+                schema_columns=_build_schema(df, col_jargon),
+                description=info.get("description", "") or cat_desc,
+                sheet_name=str(info.get("sheet_name", "") or ""),
             )
         except Exception as e:
             return DocContent(type="table", error=str(e))
+
+    @staticmethod
+    def _catalog_schema_hints(file_name: str, table_name: str = "") -> tuple[dict, str]:
+        """Best-effort per-column meaning (column_jargon) + table description from
+        the catalog, matched by table name first then by source file name."""
+        try:
+            from src.catalog import get_catalog
+            best = None
+            for tm in get_catalog().get_all_tables():
+                if table_name and tm.table_name == table_name:
+                    best = tm
+                    break
+                if Path(tm.source_file).name == file_name and best is None:
+                    best = tm
+            if best:
+                return (best.column_jargon or {}), (best.description or "")
+        except Exception:
+            pass
+        return {}, ""

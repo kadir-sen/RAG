@@ -25,6 +25,8 @@ from .config import (
     GOOGLE_API_KEY,
     PINECONE_API_KEY,
     GEMINI_MODEL,
+    GEMINI_MODEL_LITE,
+    ENABLE_LITE_TIER,
     EMBEDDING_MODEL,
     EMBEDDING_DIMENSION,
     EMBEDDING_PROVIDER,
@@ -212,11 +214,23 @@ class DocumentRAG:
         # (and now local by default), and provider answers go through llm_client.
         try:
             from llama_index.llms.gemini import Gemini
-            Settings.llm = Gemini(
-                api_key=GOOGLE_API_KEY,
-                model=GEMINI_MODEL,
-                system_prompt=self.DOCUMENT_SYSTEM_PROMPT,
-            )
+
+            def _mk_gemini(m: str):
+                return Gemini(api_key=GOOGLE_API_KEY, model=m,
+                              system_prompt=self.DOCUMENT_SYSTEM_PROMPT)
+
+            # Robust to the "Model names should start with `models/`" wrapper
+            # check (see llm_client.create_llm). Getting a WORKING Settings.llm
+            # here matters: when it's unset, LlamaIndex's dense query_engine
+            # silently falls back to its OpenAI default — which, on a dead OpenAI
+            # quota, just burns retries/timeouts.
+            try:
+                Settings.llm = _mk_gemini(GEMINI_MODEL)
+            except Exception as e:
+                if "models/" in str(e) and not GEMINI_MODEL.startswith(("models/", "tunedModels/")):
+                    Settings.llm = _mk_gemini(f"models/{GEMINI_MODEL}")
+                else:
+                    raise
         except Exception as e:
             logger.warning(f"   Gemini LLM unavailable ({e}); Settings.llm unset "
                            f"(provider llm_client synthesis still works)")
@@ -858,6 +872,7 @@ class DocumentRAG:
         doc_ids: Optional[List[str]] = None,
         file_names: Optional[List[str]] = None,
         payload_filters: Optional[Dict[str, Any]] = None,
+        synthesize: bool = True,
     ) -> dict:
         """Query documents with proper page-level citations.
         If doc_ids is provided, only search within those documents.
@@ -865,6 +880,12 @@ class DocumentRAG:
         "delay notice"}); when a scoped query returns nothing we retry once
         unscoped so over-tight scope (or not-yet-backfilled payloads) never turns
         a real answer into "not found".
+
+        synthesize=False is "retrieve-only": return the ranked chunks/sources
+        WITHOUT spending an LLM synthesis call. Used by callers that re-synthesize
+        downstream (the hybrid handler, the multi-step planner, and the ReAct
+        agent's document tool) so the per-source answer isn't paid for and then
+        discarded. ``answer`` is "" in that mode; ``sources`` are always populated.
         """
         log_separator("Document Query")
         logger.info(f"🔍 Question: {question[:100]}...")
@@ -904,7 +925,7 @@ class DocumentRAG:
                     question=question,               # jargon/concept-expanded (dense)
                     raw_question=original_question,   # cleaner text for lexical + rerank
                     top_k=top_k, doc_ids=doc_ids, file_names=file_names,
-                    payload_filters=payload_filters,
+                    payload_filters=payload_filters, synthesize=synthesize,
                 )
                 # Empty-scope safety net: a scoped query that found nothing retries
                 # once unscoped rather than reporting "not found".
@@ -913,6 +934,7 @@ class DocumentRAG:
                     hybrid = self._hybrid_query(
                         question=question, raw_question=original_question,
                         top_k=top_k, doc_ids=doc_ids, file_names=file_names,
+                        synthesize=synthesize,
                     )
                 if hybrid is not None:
                     return hybrid
@@ -921,6 +943,26 @@ class DocumentRAG:
 
         logger.info(f"   Retrieving top {top_k} matches...")
         filters = self._build_metadata_filters(doc_ids, file_names, payload_filters)
+
+        if not synthesize:
+            # Retrieve-only fast path: use a retriever (no synthesizing query
+            # engine, no LLM call). Mirrors the empty-scope corpus-only retry.
+            retriever = (self.index.as_retriever(similarity_top_k=top_k, filters=filters)
+                         if filters is not None
+                         else self.index.as_retriever(similarity_top_k=top_k))
+            nodes = list(retriever.retrieve(question))
+            if payload_filters and not nodes:
+                logger.info("   Scoped dense retrieve empty → retrying (corpus-only)")
+                retry_filters = self._build_metadata_filters(doc_ids, file_names, None)
+                retriever = (self.index.as_retriever(similarity_top_k=top_k, filters=retry_filters)
+                             if retry_filters is not None
+                             else self.index.as_retriever(similarity_top_k=top_k))
+                nodes = list(retriever.retrieve(question))
+            sources = self._sources_from_scored_nodes(nodes)
+            self._report_reading(sources)
+            logger.info(f"✅ Retrieve-only: {len(sources)} unique sources")
+            return {"answer": "", "sources": sources}
+
         if filters is not None:
             query_engine = self.index.as_query_engine(
                 similarity_top_k=top_k, filters=filters,
@@ -956,31 +998,51 @@ class DocumentRAG:
                       else self.index.as_query_engine(similarity_top_k=top_k))
             response = engine.query(question)
 
-        # Extract sources with proper metadata (no regex!)
-        sources = []
+        sources = self._sources_from_scored_nodes(response.source_nodes)
+        self._report_reading(sources)
+        logger.info(f"✅ Found {len(sources)} unique sources")
+        return {"answer": str(response), "sources": sources}
+
+    @staticmethod
+    def _report_reading(sources: List[dict]) -> None:
+        """Publish 'reading <file>' activity steps for the live feed (best-effort,
+        no-op outside a chat request). Deduped, capped so a wide retrieval doesn't
+        flood the feed."""
+        try:
+            from backend.tasks.query_progress import report_step
+            seen = set()
+            for s in (sources or []):
+                fn = s.get("file_name")
+                if not fn or fn in seen:
+                    continue
+                seen.add(fn)
+                report_step("reading", f"reading {fn}", f"p.{s.get('page_number', '?')}")
+                if len(seen) >= 5:
+                    break
+        except Exception:
+            pass
+
+    @staticmethod
+    def _sources_from_scored_nodes(scored_nodes) -> List[dict]:
+        """Build deduped page-level source dicts from LlamaIndex NodeWithScore
+        objects (from a query engine's source_nodes OR a retriever's results).
+        Shared by the synthesizing dense path and the retrieve-only fast path."""
+        sources: List[dict] = []
         seen = set()
-
-        for i, node in enumerate(response.source_nodes, 1):
+        for i, node in enumerate(scored_nodes or [], 1):
             meta = node.metadata
-            # Debug: print all metadata keys and values
-            logger.info(f"   Source {i} RAW metadata: {meta}")
-
             file_name = meta.get("file_name", "Unknown")
             file_path = meta.get("file_path", "")
             score = round(node.score, 3) if node.score else None
 
-            # Ensure page numbers are integers
             try:
                 page_num = int(meta.get("page_number", 1))
             except (ValueError, TypeError):
                 page_num = 1
-
             try:
                 total_pages = int(meta.get("total_pages", 1))
             except (ValueError, TypeError):
                 total_pages = 1
-
-            logger.info(f"   Source {i} EXTRACTED: file={file_name}, page={page_num}, total={total_pages}")
 
             # Dedupe by file+page
             key = f"{file_name}_{page_num}"
@@ -1005,15 +1067,14 @@ class DocumentRAG:
                 "text_snippet": text[:500] + "..." if len(text) > 500 else text,
                 "highlight_text": highlight[:300],
             })
-
-        logger.info(f"✅ Found {len(sources)} unique sources")
-        return {"answer": str(response), "sources": sources}
+        return sources
 
     # ── Hybrid retrieval helpers (Phase 1) ──────────────────────────────
     def _hybrid_query(self, question: str, raw_question: str, top_k: int,
                       doc_ids: Optional[List[str]] = None,
                       file_names: Optional[List[str]] = None,
-                      payload_filters: Optional[Dict[str, Any]] = None) -> Optional[dict]:
+                      payload_filters: Optional[Dict[str, Any]] = None,
+                      synthesize: bool = True) -> Optional[dict]:
         """Dense + lexical candidate fusion (RRF) + optional LLM rerank, then
         synthesize an answer from the final chunks. Returns None when there are
         no candidates at all (caller falls back to the dense path).
@@ -1025,6 +1086,12 @@ class DocumentRAG:
         from .config import RAG_CANDIDATE_K, RAG_RERANK_K, RAG_FINAL_K, ENABLE_RERANK
 
         final_k = top_k or RAG_FINAL_K
+
+        try:
+            from backend.tasks.query_progress import report_step
+            report_step("searching", "searching documents…")
+        except Exception:
+            pass
 
         # 1. Dense candidates (existing vector lane, widened pool)
         dense = self._dense_candidates(question, RAG_CANDIDATE_K, doc_ids, file_names,
@@ -1067,9 +1134,6 @@ class DocumentRAG:
         else:
             final = fused[:final_k]
 
-        # 5. Synthesize the answer from the final chunks
-        answer = self._synthesize_from_nodes(raw_question, final)
-
         # 6. Build sources (dedupe by file+page, preserve order)
         sources = []
         seen = set()
@@ -1079,6 +1143,20 @@ class DocumentRAG:
                 continue
             seen.add(key)
             sources.append(self._node_to_source(nd))
+        self._report_reading(sources)
+
+        # 5. Synthesize the answer from the final chunks — skipped in retrieve-only
+        # mode (hybrid/agent/planner callers re-synthesize downstream), so we don't
+        # pay for a synthesis whose text is then discarded.
+        if synthesize:
+            try:
+                from backend.tasks.query_progress import report_step
+                report_step("analysing", "analysing…")
+            except Exception:
+                pass
+            answer = self._synthesize_from_nodes(raw_question, final)
+        else:
+            answer = ""
 
         logger.info(
             f"   Hybrid: dense={len(dense)} lexical={len(lexical)} "
@@ -1208,6 +1286,7 @@ class DocumentRAG:
                 prompt,
                 system="You are a precise passage reranker. Output JSON only.",
                 cache_key=key,
+                model=GEMINI_MODEL_LITE if ENABLE_LITE_TIER else "",
             )
             order = resp.raw.get("order", []) if isinstance(resp.raw, dict) else []
             picked, used = [], set()

@@ -25,6 +25,7 @@ from .config import (
     ENABLE_THINKING, THINKING_BUDGET_SQL,
 )
 from .logger import logger, log_separator, log_document_processing
+from .catalog import _active_corpus
 
 
 # SQL validation patterns
@@ -551,7 +552,7 @@ class DataAnalyzerSQL:
             f"_clean({clean_info.get('row_count', 0)} rows)"
         )
 
-        # Propagate enrichment metadata to normalized views
+        # Propagate enrichment metadata + corpus tag to normalized views
         base_info = self.tables.get(table_name, {})
         for view_name in [raw_name, clean_name]:
             if view_name in self.tables:
@@ -559,6 +560,7 @@ class DataAnalyzerSQL:
                 self.tables[view_name]["description"] = base_info.get("description", "")
                 self.tables[view_name]["header_metadata"] = base_info.get("header_metadata", {})
                 self.tables[view_name]["insight"] = base_info.get("insight", {})
+                self.tables[view_name]["corpus"] = base_info.get("corpus", "demo")
 
     # ── Deterministic shortcut ───────────────────────────────────
 
@@ -975,6 +977,7 @@ class DataAnalyzerSQL:
             self.tables[table_name] = {
                 "file_name": path.name,
                 "file_path": str(file_path),
+                "corpus": _active_corpus(),
                 **info,
             }
             self.file_paths[table_name] = str(file_path)
@@ -1015,6 +1018,7 @@ class DataAnalyzerSQL:
             self.tables[table_name] = {
                 "file_name": path.name,
                 "file_path": str(file_path),
+                "corpus": _active_corpus(),
                 **info,
             }
             self.file_paths[table_name] = str(file_path)
@@ -1067,6 +1071,7 @@ class DataAnalyzerSQL:
                 "file_name": path.name,
                 "file_path": str(parquet_path),
                 "source_type": "parquet",
+                "corpus": _active_corpus(),
                 **info,
             }
             self.file_paths[view_name] = str(parquet_path)
@@ -1154,6 +1159,16 @@ class DataAnalyzerSQL:
                     self.tables[table_meta.table_name]["semantic_tags"] = getattr(table_meta, 'semantic_tags', [])
                     self.tables[table_meta.table_name]["header_metadata"] = getattr(table_meta, 'header_metadata', {})
                     self.tables[table_meta.table_name]["insight"] = getattr(table_meta, 'insight', {})
+                    _corpus = getattr(table_meta, 'corpus', 'demo')
+                    self.tables[table_meta.table_name]["corpus"] = _corpus
+                    # The _raw/_clean views were created inside register_parquet_view
+                    # (before this corpus override), so re-stamp them now — otherwise
+                    # a reload tags an edinburgh table's normalized views as 'demo'
+                    # and leaks them across corpora.
+                    for _suffix in ("_raw", "_clean"):
+                        _dv = f"{table_meta.table_name}{_suffix}"
+                        if _dv in self.tables:
+                            self.tables[_dv]["corpus"] = _corpus
                     loaded_parquets.add(parquet_path)
                     count += 1
 
@@ -1261,6 +1276,7 @@ class DataAnalyzerSQL:
                     "description": combined_desc,
                     "semantic_tags": combined_tags,
                     "header_metadata": combined_hdr,
+                    "corpus": first_info.get("corpus", "demo"),
                     **info,
                 }
 
@@ -1318,17 +1334,20 @@ class DataAnalyzerSQL:
             if not columns:
                 continue
 
+            # Corpus is part of the grouping key so demo and edinburgh tables
+            # never merge into a single cross-corpus UNION view (isolation leak).
+            corpus = info.get("corpus", "demo")
             target_schema = (
                 info.get("header_metadata", {}).get("target_schema", "") or ""
             )
             if target_schema:
-                schema_groups.setdefault(target_schema, []).append(table_name)
+                schema_groups.setdefault((corpus, target_schema), []).append(table_name)
             else:
                 no_schema.append(table_name)
 
-        # For tables with target_schema: group by schema only (ignore filename differences)
+        # For tables with target_schema: group by (corpus, schema) (ignore filename differences)
         grouped = {}
-        for target_schema, table_names in schema_groups.items():
+        for (corpus, target_schema), table_names in schema_groups.items():
             # Find the common column set (intersection of all tables in schema)
             col_sets = {}
             for tn in table_names:
@@ -1336,19 +1355,20 @@ class DataAnalyzerSQL:
                 col_sets.setdefault(cols, []).append(tn)
             # Use the largest column group
             largest_cols = max(col_sets.keys(), key=lambda c: len(col_sets[c]))
-            group_key = (target_schema, target_schema, largest_cols)
+            group_key = (corpus, target_schema, target_schema, largest_cols)
             grouped[group_key] = col_sets[largest_cols]
 
-        # For tables without schema: fall back to dataset_key + columns
+        # For tables without schema: fall back to (corpus, dataset_key, columns)
         for table_name in no_schema:
             info = self.tables[table_name]
             source = info.get("source_file", info.get("file_name", ""))
             columns = info.get("columns", [])
             dataset_key = canonical_dataset_key(source)
-            group_key = ("", dataset_key, tuple(columns))
+            corpus = info.get("corpus", "demo")
+            group_key = (corpus, "", dataset_key, tuple(columns))
             grouped.setdefault(group_key, []).append(table_name)
 
-        for (target_schema, dataset_key, _col_sig), table_names in grouped.items():
+        for (corpus, target_schema, dataset_key, _col_sig), table_names in grouped.items():
             if len(table_names) < 2:
                 continue
 
@@ -1422,6 +1442,7 @@ class DataAnalyzerSQL:
                     "description": desc,
                     "semantic_tags": tags,
                     "header_metadata": header_metadata,
+                    "corpus": corpus,
                     **info,
                 }
                 if first_source:
@@ -2442,6 +2463,22 @@ class DataAnalyzerSQL:
                 if table_doc_id in doc_ids:
                     matching.append(table_name)
         return matching
+
+    def get_tables_for_corpus(self, corpus: Optional[str]) -> Optional[List[str]]:
+        """DuckDB table names visible to ``corpus`` — the SQL counterpart of the
+        per-user corpus isolation the RAG path applies.
+
+        Returns ``None`` (no restriction) when the corpus is unset/empty so plain
+        scripts and unauthenticated callers keep seeing every table. Otherwise
+        returns only tables tagged with that corpus (base + derived views, which
+        inherit their members' tag), so an 'edinburgh' user never touches the
+        'demo' tables and vice-versa.
+        """
+        c = (corpus or "").lower()
+        if not c:
+            return None
+        return [name for name, info in self.tables.items()
+                if (info.get("corpus") or "demo").lower() == c]
 
     TABLE_SELECTION_PROMPT = (
         "You are a table selector for a DuckDB data warehouse.\n\n"

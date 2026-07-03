@@ -1,7 +1,56 @@
+import { useState } from 'react';
 import type { DocContent } from '../../types/api';
 
 interface Props {
   content: DocContent;
+}
+
+// Collapsible schema panel — learned column meanings (jargon) + types, so the
+// viewer explains what each column is before showing the rows.
+function SchemaPanel({ content }: { content: DocContent }) {
+  const [open, setOpen] = useState(false);
+  const cols = content.schema_columns ?? [];
+  if (!cols.length) return null;
+  const withMeaning = cols.filter((c) => c.meaning).length;
+  return (
+    <div className="border-b border-[var(--border)] bg-[var(--bg-surface)]">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[11px] font-mono text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+      >
+        <span>
+          {open ? '▾' : '▸'} Schema · {cols.length} columns
+          {withMeaning ? ` · ${withMeaning} with meaning` : ''}
+        </span>
+        {content.sheet_name ? <span className="opacity-70">sheet: {content.sheet_name}</span> : null}
+      </button>
+      {open && (
+        <div className="px-3 pb-3">
+          {content.description ? (
+            <p className="mb-2 text-[11px] text-[var(--text-muted)]">{content.description}</p>
+          ) : null}
+          <table className="min-w-full font-mono text-[11px] border-collapse">
+            <thead>
+              <tr className="text-left text-[var(--text-muted)]">
+                <th className="px-2 py-1 font-semibold">Column</th>
+                <th className="px-2 py-1 font-semibold">Type</th>
+                <th className="px-2 py-1 font-semibold">Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cols.map((c) => (
+                <tr key={c.name} className="border-t border-[var(--border)]/50">
+                  <td className="px-2 py-1 text-[var(--text-primary)] whitespace-nowrap">{c.name}</td>
+                  <td className="px-2 py-1 text-[var(--text-secondary)] whitespace-nowrap">{c.dtype}</td>
+                  <td className="px-2 py-1 text-[var(--text-muted)]">{c.meaning || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Mono engineering table — wireframes ViewerExcel: dense rows, zebra striping,
@@ -10,8 +59,11 @@ interface Props {
 export default function ExcelPreview({ content }: Props) {
   if (!content.rows.length) {
     return (
-      <div className="p-6 text-center text-sm text-[var(--text-secondary)] font-mono">
-        No data available
+      <div className="flex-1 overflow-auto">
+        <SchemaPanel content={content} />
+        <div className="p-6 text-center text-sm text-[var(--text-secondary)] font-mono">
+          No data available
+        </div>
       </div>
     );
   }
@@ -22,6 +74,7 @@ export default function ExcelPreview({ content }: Props) {
 
   return (
     <div className="flex-1 overflow-auto">
+      <SchemaPanel content={content} />
       <table className="min-w-full font-mono text-[11px] tabular-nums border-collapse">
         <thead>
           <tr>

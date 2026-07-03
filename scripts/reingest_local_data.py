@@ -54,7 +54,17 @@ def main() -> int:
                         help="Skip the final re-cluster step.")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Skip files already vectorized in the backend (resumable).")
+    parser.add_argument("--corpus", default="",
+                        help="Tag ingested tables/docs with this corpus for isolation "
+                             "(e.g. 'edinburgh'). Empty → 'demo' default.")
     args = parser.parse_args()
+
+    # Set the ingest corpus ContextVar so catalog.add_entry / the SQL loader tag
+    # every table produced in this run with the right corpus (tenant isolation).
+    if args.corpus:
+        from src.document_rag import corpus_var
+        corpus_var.set(args.corpus.lower())
+        print(f"Corpus tag for this run: {args.corpus.lower()}\n")
 
     from src.file_router import route_file
 

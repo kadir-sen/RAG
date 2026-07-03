@@ -108,10 +108,10 @@ INTENT_MAP = {
     "document": "answer",
     "data": "sql_result",
     "hybrid": "answer",
-    "timeline": "doc_list",
+    "timeline": "timeline",   # chronological list → vertical timeline (was doc_list table)
     "thread": "email_trace",
     "draft": "answer",
-    "file_list": "doc_list",
+    "file_list": "doc_list",  # "what files exist" → flat doc table
 }
 
 
@@ -166,6 +166,42 @@ def _looks_like_no_document_answer(answer: str) -> bool:
     return any(re.search(p, text) for p in patterns)
 
 
+def _is_empty_response(answer: str) -> bool:
+    """True for LlamaIndex's placeholder string for an unsynthesized answer.
+
+    `str(Response)` yields the literal "Empty Response" when the query engine
+    retrieves no usable nodes. This leaked verbatim into the chronological /
+    related-docs display (the answer read "Empty Response" with a document list
+    below it). Treat it as no answer so the guard below replaces it.
+    """
+    return (answer or "").strip().lower() in ("", "empty response", "none")
+
+
+def _normalize_empty_answer(
+    answer_text: str,
+    related_docs: List["RelatedDoc"],
+    citations: List["Citation"],
+) -> str:
+    """Replace an empty/placeholder answer with a clean lead-in.
+
+    When the synthesizer produced nothing usable ("Empty Response") but the
+    handler still surfaced related documents/citations (timeline, hybrid, doc
+    list), show a short summary instead of the raw placeholder. With no
+    references at all, just strip the "Empty Response" placeholder to an empty
+    string — never surface it verbatim, and don't invent a message (keeps the
+    existing empty-answer contract).
+    """
+    if not _is_empty_response(answer_text):
+        return answer_text
+    n = len(related_docs)
+    if n:
+        return f"Found {n} related document{'s' if n != 1 else ''}, listed chronologically below."
+    if citations:
+        c = len(citations)
+        return f"Found {c} related document{'s' if c != 1 else ''}."
+    return ""
+
+
 def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     query_type = raw.get("query_type", "document")
     answer_text = _clean_answer_text(raw.get("answer", ""))
@@ -180,12 +216,17 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     if query_type in ("document", "file_list") and _is_bare_refusal(answer_text):
         sources = []
     citations, related_docs = _extract_citations_and_related(sources, query_type)
+    # Never surface LlamaIndex's "Empty Response" placeholder: when documents
+    # were found (timeline/hybrid/doc_list) replace it with a chronological
+    # lead-in; otherwise a graceful no-result message.
+    answer_text = _normalize_empty_answer(answer_text, related_docs, citations)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
     cta = _extract_cta(result_data)
 
-    # Extract routing confidence for frontend display
+    # Extract routing confidence + route for frontend display / observability.
     routing = raw.get("routing", {})
     routing_confidence = routing.get("confidence") if routing else None
+    route = (routing.get("route") or routing.get("decision")) if routing else None
 
     return ChatResponse(
         ui_intent=ui_intent,
@@ -193,6 +234,7 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
         citations=citations,
         related_docs=related_docs,
         routing_confidence=routing_confidence,
+        route=route,
         sql_artifact=sql_artifact,
         cta=cta,
     )
@@ -249,6 +291,7 @@ def _build_from_dual(raw: Dict[str, Any]) -> ChatResponse:
     if query_type in ("document", "file_list") and _is_bare_refusal(answer_text):
         sources = []
     citations, related_docs = _extract_citations_and_related(sources, query_type)
+    answer_text = _normalize_empty_answer(answer_text, related_docs, citations)
     sql_artifact = _build_sql_artifact(sql, result_data, sources)
     cta = _extract_cta(result_data)
 

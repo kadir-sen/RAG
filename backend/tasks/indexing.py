@@ -11,7 +11,7 @@ from src.config import INGEST_MAX_CONCURRENCY
 _INGEST_SEM = threading.BoundedSemaphore(max(1, INGEST_MAX_CONCURRENCY))
 
 
-def index_file_background(file_id: str, file_path: str):
+def index_file_background(file_id: str, file_path: str, corpus: str = ""):
     """Run as FastAPI BackgroundTask."""
     from src.file_router import route_file
     from src.document_registry import get_document_registry
@@ -20,6 +20,14 @@ def index_file_background(file_id: str, file_path: str):
     indexing_progress.start(file_id, Path(file_path).name)
     # Stamp this thread so the deep ingest code can report granular progress.
     current_file_var.set(file_id)
+    # Tag any data tables produced by this ingest with the uploader's corpus
+    # (background tasks don't inherit the request ContextVar, so set it here).
+    if corpus:
+        try:
+            from src.document_rag import corpus_var
+            corpus_var.set(corpus.lower())
+        except Exception:
+            pass
 
     # Wait for a concurrency slot (shows "queued" while others index).
     if not _INGEST_SEM.acquire(blocking=False):

@@ -53,7 +53,10 @@ ENABLE_DUAL_PROVIDER = os.getenv("ENABLE_DUAL_PROVIDER", "false").lower() in ("1
 # hybrid synthesis. Routing thinking is OFF by default to protect demo latency.
 # Budgets are in tokens (provider-specific): Gemini 2.5 thinking_budget, Claude
 # extended-thinking budget_tokens (Claude requires >= 1024 and temperature == 1).
-ENABLE_THINKING = os.getenv("ENABLE_THINKING", "true").lower() in ("1", "true", "yes")
+# Extended thinking adds reasoning tokens (and seconds) to every synthesis call.
+# Off by default: on a small/contended server the latency cost outweighs the
+# marginal quality gain. Re-enable per-deploy via ENABLE_THINKING=true.
+ENABLE_THINKING = os.getenv("ENABLE_THINKING", "false").lower() in ("1", "true", "yes")
 THINKING_BUDGET_SQL = int(os.getenv("THINKING_BUDGET_SQL", "1024"))
 THINKING_BUDGET_SYNTHESIS = int(os.getenv("THINKING_BUDGET_SYNTHESIS", "1024"))
 THINKING_BUDGET_ROUTING = int(os.getenv("THINKING_BUDGET_ROUTING", "0"))
@@ -62,6 +65,11 @@ THINKING_BUDGET_ROUTING = int(os.getenv("THINKING_BUDGET_ROUTING", "0"))
 # Dense vector + lexical (DuckDB FTS/BM25) candidates fused via Reciprocal Rank
 # Fusion, with a document-keyword boost, then an optional LLM rerank. All
 # toggleable; when OFF the original pure-dense path runs unchanged.
+# Route mechanical/structural LLM steps (decompose, rerank — classification is
+# already lite) to GEMINI_MODEL_LITE: same model family, ~3-5x cheaper + faster.
+ENABLE_LITE_TIER = os.getenv("ENABLE_LITE_TIER", "true").lower() in ("1", "true", "yes")
+# Run the independent doc-side and data-side legs of a hybrid query concurrently.
+ENABLE_PARALLEL_RETRIEVAL = os.getenv("ENABLE_PARALLEL_RETRIEVAL", "true").lower() in ("1", "true", "yes")
 ENABLE_HYBRID_RETRIEVAL = os.getenv("ENABLE_HYBRID_RETRIEVAL", "true").lower() in ("1", "true", "yes")
 ENABLE_RERANK = os.getenv("ENABLE_RERANK", "true").lower() in ("1", "true", "yes")
 RAG_CANDIDATE_K = int(os.getenv("RAG_CANDIDATE_K", "30"))   # per-retriever candidate pool
@@ -182,6 +190,21 @@ SQL_LAZY_SUMMARY_MAX_CELLS = int(os.getenv("SQL_LAZY_SUMMARY_MAX_CELLS", "30"))
 
 # ── Planner Guardrails ──────────────────────────────────────
 MAX_PLAN_STEPS = int(os.getenv("MAX_PLAN_STEPS", "5"))
+
+# ── ReAct agent (bounded tool-using loop for complex multi-step queries) ──
+# ON by default: complex/multi-step queries (and HYBRID / low-confidence ones)
+# route to the agent instead of the fixed planner. REACT_MAX_ITERATIONS caps the
+# tool/decide loop; the llm_client soft budget (MAX_LLM_CALLS_PER_QUERY) is the
+# secondary backstop. ROUTE_AGENT_CONF: below this classifier confidence a
+# multi-part query is sent to the agent (it self-corrects better than a guess).
+ENABLE_REACT_AGENT = os.getenv("ENABLE_REACT_AGENT", "true").lower() in ("1", "true", "yes")
+REACT_MAX_ITERATIONS = int(os.getenv("REACT_MAX_ITERATIONS", "5"))
+ROUTE_AGENT_CONF = float(os.getenv("ROUTE_AGENT_CONF", "0.55"))
+# Wall-clock safety cap (seconds): between iterations the agent stops taking new
+# steps once exceeded and synthesizes from what it has. Bounds rare provider-
+# contention spikes (a multi-tool run stacking slow LLM calls) so a single query
+# can't run for minutes. The per-call LLM timeout still applies within a step.
+REACT_TIME_BUDGET_SEC = float(os.getenv("REACT_TIME_BUDGET_SEC", "90"))
 
 # ── Feature Flags ───────────────────────────────────────────
 ENABLE_TIMELINE = os.getenv("ENABLE_TIMELINE", "true").lower() == "true"

@@ -75,13 +75,14 @@ export interface LoginResponse {
 }
 
 export interface ChatResponse {
-  ui_intent: 'answer' | 'doc_list' | 'email_trace' | 'sql_result';
+  ui_intent: 'answer' | 'doc_list' | 'timeline' | 'email_trace' | 'sql_result';
   assistant_text: string;
   citations: Citation[];
   related_docs: RelatedDoc[];
   sql_artifact: SQLArtifact | null;
   provider_answers: ProviderAnswer[];
   routing_confidence: number | null;
+  route?: string | null;        // telemetry route: AGENT | HYBRID_COMPLEX | DOCUMENT … (observability)
   cta: CallToAction | null;
   quota: QuotaInfo | null;
 }
@@ -157,6 +158,8 @@ export interface FileInfo {
   notice_extracted: boolean;
   data_table_status?: DataTableStatus;
   data_tables_count?: number;
+  columns?: string[];
+  sheets?: number;
 }
 
 export interface DataTablesStatus {
@@ -242,6 +245,12 @@ export interface IndexingStatus {
   details: Record<string, unknown>;
 }
 
+export interface SchemaColumn {
+  name: string;
+  dtype: string;   // integer | number | date | boolean | text
+  meaning: string; // jargon expansion
+}
+
 export interface DocContent {
   type: 'pdf' | 'table' | 'text';
   file_name: string;
@@ -253,4 +262,21 @@ export interface DocContent {
   rows: Record<string, unknown>[];
   total_rows: number;
   error: string | null;
+  schema_columns?: SchemaColumn[];
+  description?: string;
+  sheet_name?: string;
+}
+
+export interface ActivityStep {
+  seq: number;
+  ts: number;
+  kind: string; // thinking | searching | reading | related | analysing | tool | answer | routing
+  label: string;
+  detail?: string;
+}
+
+export interface QueryProgress {
+  request_id: string;
+  steps: ActivityStep[];
+  done: boolean;
 }

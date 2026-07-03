@@ -85,10 +85,14 @@ class FileService:
 
         return str(dest), doc_id, False
 
-    def list_files(self) -> List[dict]:
+    def list_files(self, corpus: str = "") -> List[dict]:
         """File listing from SINGLE source: document_registry (GCS-backed).
         Enriches with metadata from RAG and catalog but does NOT add files from them.
         This ensures consistent counts across Cloud Run instances.
+
+        ``corpus`` (e.g. "demo") drops files whose catalog entry belongs to a
+        different corpus, so the demo account never sees edinburgh data tables.
+        Pure documents (no catalog entry) default to the demo corpus.
         """
         files = []
         seen_names = set()
@@ -119,6 +123,9 @@ class FileService:
                     "subject": "",
                     "data_table_status": getattr(rec, 'data_table_status', None),
                     "data_tables_count": getattr(rec, 'data_tables_count', 0),
+                    "corpus": "demo",       # default; overridden from catalog below
+                    "columns": [],
+                    "sheets": 0,
                 })
         except Exception:
             pass
@@ -150,6 +157,11 @@ class FileService:
                     f["file_type"] = "data" if entry.source_type in ("excel", "csv") else f["file_type"]
                     f["tables"] = len(entry.tables)
                     f["rows"] = sum(t.row_count for t in entry.tables)
+                    f["corpus"] = (getattr(entry, "corpus", "demo") or "demo").lower()
+                    f["sheets"] = len(entry.tables)
+                    # Short column summary from the first table (viewer shows full schema).
+                    if entry.tables:
+                        f["columns"] = list(entry.tables[0].columns or [])[:8]
                     # Backfill for files registered before data_table_status existed.
                     # Catalog membership is the truth for "registered".
                     if not f.get("data_table_status"):
@@ -178,6 +190,12 @@ class FileService:
                         f["subject"] = getattr(notice, 'subject', "") or ""
         except Exception:
             pass
+
+        # Per-corpus isolation: drop files whose catalog corpus differs from the
+        # requested one (edinburgh data tables never surface in the demo list).
+        if corpus:
+            c = corpus.lower()
+            files = [f for f in files if (f.get("corpus") or "demo") == c]
 
         return files
 

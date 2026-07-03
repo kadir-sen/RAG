@@ -1,6 +1,7 @@
 """Replaces app.py handle_input() — conversation memory + routing + response contract."""
 
 import asyncio
+import re
 from datetime import datetime
 from typing import List, Optional
 
@@ -64,8 +65,18 @@ class ChatOrchestrator:
         email_ids: list | None = None,
         mode: str | None = None,
         username: str | None = None,
+        request_id: str | None = None,
     ) -> ChatResponse:
         now = datetime.now().isoformat()
+
+        # Live activity feed: stamp the request_id on a contextvar (propagates
+        # into the query worker thread via asyncio.to_thread, same as corpus_var)
+        # so deep router/agent code can publish progress steps the client polls.
+        from backend.tasks.query_progress import query_progress, query_request_var
+        import uuid as _uuid
+        request_id = request_id or _uuid.uuid4().hex[:12]
+        query_request_var.set(request_id)
+        query_progress.start(request_id)
 
         # 1. Save user message
         user_msg = Message(role="user", content=query, timestamp=now)
@@ -79,7 +90,11 @@ class ChatOrchestrator:
         )
         augmented = f"{context}\n\nCurrent question: {query}" if context else query
 
-        # 3. Build email context for correspondence mode
+        # Capture the user's EXPLICIT selection (before the conversation-scoped
+        # fallback below) so we can inject the selected docs' full text directly.
+        explicit_doc_ids = list(doc_ids) if doc_ids else []
+
+        # 3. Build email context for correspondence mode (email files only)
         if email_ids:
             email_context = self._build_email_context(email_ids)
             if email_context:
@@ -88,24 +103,56 @@ class ChatOrchestrator:
                 if not doc_ids:
                     doc_ids = email_ids
 
+        # 3b. Inject the full OCR/extracted text of explicitly selected NON-email
+        # documents (PDF/DOCX/TXT) directly into the prompt. Covers general doc
+        # selection and PDF "conversations" picked in correspondence mode (those
+        # are not .eml/.msg, so the email path skips them and they land here).
+        doc_context = self._build_document_context(
+            list(dict.fromkeys((email_ids or []) + explicit_doc_ids))
+        )
+        if doc_context:
+            augmented = f"{doc_context}\n\n{augmented}"
+
         # 4. Route and execute in thread pool (src/ code is synchronous)
         if not doc_ids:
             doc_ids = store.get_document_ids(conversation_id) or None
 
-        # Per-user corpus isolation: stamp the user's corpus on a contextvar in
-        # THIS async task so it propagates into the query worker thread (the auth
-        # dependency's contextvar runs in a separate threadpool and doesn't reach
-        # here). Retrieval/timeline read it to scope to the user's documents.
+        # Per-user contextvars: stamp the user's corpus AND identity on contextvars
+        # in THIS async task so they propagate into the query worker thread via
+        # asyncio.to_thread. The auth dependency (sync → FastAPI threadpool) sets
+        # these in a DIFFERENT context that never reaches here, so without this:
+        #  - corpus_var would be unset → retrieval/timeline lose corpus scope;
+        #  - current_user_var would be None → llm_client can't attribute tokens to
+        #    the user, so used_tokens stays 0 and the quota bar is stuck at 100%.
         try:
             from src.document_rag import corpus_var
+            from backend.core.security import current_user_var, UserContext
             _corpus = ""
             if username:
                 from src.user_store import get_user_store
                 _u = get_user_store().get_user(username)
-                _corpus = str(((_u or {}).get("features") or {}).get("corpus") or "").lower()
+                if _u:
+                    _corpus = str((_u.get("features") or {}).get("corpus") or "").lower()
+                    current_user_var.set(UserContext(
+                        username=_u["username"],
+                        role=_u.get("role", "user"),
+                        display_name=_u.get("display_name", _u["username"]),
+                        features=_u.get("features", {}) or {},
+                        token_limit=_u.get("token_limit", 0),
+                    ))
             corpus_var.set(_corpus)
         except Exception:
             pass
+
+        # 3c. Draft enrichment: when composing a REPLY to selected emails, gather
+        # supporting facts from the user's OWN project documents (corpus-scoped RAG
+        # — corpus_var is set above, so no cross-corpus leak) so the draft can cite
+        # contract terms / costs / prior decisions, not just the emails. Conversation
+        # state is already in `augmented` (step 2).
+        if email_ids and self._is_draft_intent(query):
+            support = self._build_draft_support_context(query)
+            if support:
+                augmented = f"{augmented}\n\n{support}"
 
         is_dual = ENABLE_DUAL_PROVIDER and len(LLM_PROVIDERS) >= 2
         try:
@@ -233,6 +280,10 @@ class ChatOrchestrator:
             except Exception:
                 pass
 
+        # Mark the activity feed complete (client also stops polling when this
+        # POST resolves; this flips `done` for the final render).
+        query_progress.finish(request_id)
+
         return response
 
     @staticmethod
@@ -263,6 +314,47 @@ class ChatOrchestrator:
             return parsed.body_text if parsed else ""
         return ""
 
+    # Reply-draft intent: "draft/write/prepare/compose a reply/response/letter",
+    # or "reply/respond to …". Mirrors the router's _DRAFT_PATTERNS.
+    _DRAFT_INTENT_RE = re.compile(
+        r"(?:draft|write|prepare|compose)\s+(?:a\s+)?(?:reply|response|answer|letter)"
+        r"|(?:reply|respond)\s+to\b",
+        re.IGNORECASE,
+    )
+
+    def _is_draft_intent(self, query: str) -> bool:
+        return bool(self._DRAFT_INTENT_RE.search(query or ""))
+
+    def _build_draft_support_context(self, query: str, max_facts: int = 6) -> str:
+        """Corpus-scoped supporting facts for a reply draft. Retrieve-only (no
+        synthesis LLM) over the WHOLE corpus (NOT the selected emails) so the draft
+        can ground itself in contract terms / costs / prior decisions. corpus_var is
+        already set by the caller, so this stays within the user's corpus."""
+        try:
+            from src.document_rag import get_document_rag
+            r = get_document_rag().query(query, top_k=max_facts * 2, synthesize=False)
+        except Exception:
+            return ""
+        srcs = (r or {}).get("sources", []) if isinstance(r, dict) else []
+        lines, seen = [], set()
+        for s in srcs:
+            fn = s.get("file_name")
+            txt = (s.get("highlight_text") or s.get("text_snippet") or "").strip()
+            if not fn or not txt:
+                continue
+            key = (fn, s.get("page_number"))
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"- [{fn} p.{s.get('page_number', '?')}] {txt[:280]}")
+            if len(lines) >= max_facts:
+                break
+        if not lines:
+            return ""
+        return ("SUPPORTING FACTS FROM PROJECT DOCUMENTS (use these to ground the "
+                "reply — cite the file where relevant; never contradict the selected "
+                "emails):\n" + "\n".join(lines))
+
     def _build_email_context(self, email_ids: List[str]) -> str:
         """Build full email body context from selected email IDs for correspondence mode."""
         try:
@@ -277,6 +369,14 @@ class ChatOrchestrator:
             for doc_id in email_ids:
                 rec = registry.get(doc_id)
                 if not rec:
+                    continue
+
+                # Only real email files belong here. Non-email selections (e.g. a
+                # PDF of a conversation chosen in correspondence mode) are handled
+                # by _build_document_context via the chunk store — no RAG fallback.
+                fname_l = (rec.file_name or "").lower()
+                is_email = fname_l.endswith((".eml", ".msg")) or getattr(rec, "file_type", "") == "email"
+                if not is_email:
                     continue
 
                 # Get notice metadata for date/sender/recipient
@@ -347,11 +447,14 @@ class ChatOrchestrator:
             last = emails[-1]
             parts.append(
                 f"\nINSTRUCTIONS:\n"
-                f"- The user has selected the {len(emails)} email(s) above. Treat them as the sole source of truth.\n"
+                f"- The user has selected the {len(emails)} email(s) above — they are the correspondence being acted on.\n"
                 f"- If the user asks to draft / write / prepare / compose a reply or response, generate a formal "
                 f"reply on behalf of {last['recipient']} addressed to {last['sender']}, "
                 f"referencing the latest message dated {last['date']} (subject: \"{last['subject']}\"). "
-                f"Use construction-correspondence tone with reference / subject / salutation / body / closing.\n"
+                f"Use construction-correspondence tone with reference / subject / salutation / body / closing. "
+                f"Address every point and action raised in the emails; reflect the conversation so far. "
+                f"If a 'SUPPORTING FACTS FROM PROJECT DOCUMENTS' block is provided below, use it to ground the "
+                f"reply (cite the file) but never contradict the selected emails.\n"
                 f"- Otherwise, answer the user's question using only the content of these emails. "
                 f"If the answer is not present, say so explicitly."
             )
@@ -362,3 +465,85 @@ class ChatOrchestrator:
             import logging
             logging.getLogger("app").warning(f"[Orchestrator] Email context build failed: {e}")
             return ""
+
+    # Per-document and total caps so a large selection never blows up the prompt
+    # (and the LLM cost). Mirrors the spirit of CHAT_MEMORY_MAX_CHARS.
+    _DOC_CONTEXT_PER_DOC_MAX = 8000
+    _DOC_CONTEXT_TOTAL_MAX = 16000
+
+    def _build_document_context(self, doc_ids: List[str]) -> str:
+        """Inject the full OCR/extracted text of explicitly selected NON-email
+        documents (PDF/DOCX/TXT) into the prompt.
+
+        When a user selects specific documents (general selection, chronological
+        view, or a PDF conversation in correspondence mode), ground the answer
+        directly in those files' text rather than relying only on RAG retrieval
+        scope. Full text is read from the chunk store (the persistent mirror of
+        post-OCR chunk text), ordered by page. Emails are skipped here — they are
+        handled by _build_email_context.
+        """
+        if not doc_ids:
+            return ""
+        try:
+            from src.document_registry import get_document_registry
+            from src.chunk_store import get_chunk_store
+
+            registry = get_document_registry()
+            con = get_chunk_store().connection()
+        except Exception as e:
+            import logging
+            logging.getLogger("app").warning(f"[Orchestrator] Document context init failed: {e}")
+            return ""
+
+        blocks: List[str] = []
+        total = 0
+        seen: set[str] = set()
+        for doc_id in doc_ids:
+            if not doc_id or doc_id in seen:
+                continue
+            seen.add(doc_id)
+            rec = registry.get(doc_id)
+            if not rec:
+                continue
+            file_name = rec.file_name or doc_id
+            fl = file_name.lower()
+            if fl.endswith((".eml", ".msg")) or getattr(rec, "file_type", "") == "email":
+                continue  # emails handled by _build_email_context
+
+            # Full extracted text from the chunk store, ordered by page. Fall back
+            # to a file_name lookup when the doc_id doesn't match (the same id
+            # mismatch _resolve_canonical_doc_id guards against on the read side).
+            text = ""
+            try:
+                rows = con.execute(
+                    "SELECT text FROM chunks WHERE doc_id = ? ORDER BY page_number",
+                    [doc_id],
+                ).fetchall()
+                if not rows and file_name:
+                    rows = con.execute(
+                        "SELECT text FROM chunks WHERE file_name = ? ORDER BY page_number",
+                        [file_name],
+                    ).fetchall()
+                text = "\n\n".join((r[0] or "") for r in rows).strip()
+            except Exception:
+                text = ""
+            if not text:
+                continue
+
+            if len(text) > self._DOC_CONTEXT_PER_DOC_MAX:
+                text = text[: self._DOC_CONTEXT_PER_DOC_MAX] + "\n…[truncated]"
+            block = f"--- DOCUMENT: {file_name} ---\n{text}\n--- END {file_name} ---"
+            if total + len(block) > self._DOC_CONTEXT_TOTAL_MAX:
+                break
+            blocks.append(block)
+            total += len(block)
+
+        if not blocks:
+            return ""
+
+        header = (
+            f"SELECTED DOCUMENTS ({len(blocks)}) — treat the text below as the "
+            f"primary source of truth for the user's request. If the answer is "
+            f"not present in it, say so explicitly:"
+        )
+        return header + "\n\n" + "\n\n".join(blocks)
