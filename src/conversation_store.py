@@ -72,6 +72,7 @@ class ConversationStore:
             try:
                 data = json.loads(self.index_path.read_text(encoding="utf-8"))
                 self._index = [self._meta_from_dict(item) for item in data]
+                self._prune_index()
             except Exception as e:
                 logger.warning(f"[ConvStore] Failed to load index for {self.username}: {e}")
                 self._index = []
@@ -83,8 +84,29 @@ class ConversationStore:
                 if self.index_path.exists():
                     data = json.loads(self.index_path.read_text(encoding="utf-8"))
                     self._index = [self._meta_from_dict(item) for item in data]
+                    self._prune_index()
             except Exception:
                 self._index = []
+
+    def _prune_index(self) -> None:
+        """Drop index entries whose conversation file no longer exists.
+
+        The index and the per-conversation files can drift apart (partial GCS
+        sync, storage resets between deploys). A ghost entry renders in the
+        sidebar but 404s on open — prune it here so the list only ever shows
+        openable conversations.
+        """
+        ghosts = [m for m in self._index if not self._conv_path(m.conversation_id).exists()]
+        if not ghosts:
+            return
+        for meta in ghosts:
+            logger.warning(
+                f"[ConvStore] Pruning ghost conversation {meta.conversation_id} "
+                f"('{meta.title}') for {self.username}: file missing"
+            )
+        self._index = [m for m in self._index if self._conv_path(m.conversation_id).exists()]
+        self._save_index()
+        self.sync_to_gcs()
 
     @staticmethod
     def _meta_from_dict(item: Dict[str, Any]) -> ConversationMeta:
@@ -191,6 +213,21 @@ class ConversationStore:
     def get_conversation(self, conv_id: str) -> Optional[Conversation]:
         """Get a full conversation by ID."""
         return self._load_conversation(conv_id)
+
+    def drop_ghost_entry(self, conv_id: str) -> None:
+        """Remove an index entry whose conversation file is missing.
+
+        Called from the API layer when a detail fetch 404s so the ghost does
+        not keep reappearing in the sidebar list.
+        """
+        if self._conv_path(conv_id).exists():
+            return
+        before = len(self._index)
+        self._index = [m for m in self._index if m.conversation_id != conv_id]
+        if len(self._index) != before:
+            logger.warning(f"[ConvStore] Dropped ghost index entry {conv_id} for {self.username}")
+            self._save_index()
+            self.sync_to_gcs()
 
     def list_conversations(self, include_archived: bool = False) -> List[ConversationMeta]:
         """

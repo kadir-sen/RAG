@@ -664,11 +664,17 @@ class QueryRouter:
         # Keyword/regex/intent matching runs on the ORIGINAL query so a wrong
         # acronym expansion can't skew the route. The expanded form is still
         # used by the safety-net schema-semantic and embedding tiers.
-        expanded_query = self.jargon.expand_query(query)
-        if expanded_query != query:
+        # Deterministic classification must see only the CURRENT question:
+        # the orchestrator prepends conversation history ("... Current
+        # question: X"), and phrases in prior turns otherwise hijack the
+        # thread/draft and listing shortcuts below.
+        current_q = self._current_question(query)
+
+        expanded_query = self.jargon.expand_query(current_q)
+        if expanded_query != current_q:
             logger.info(f"   Jargon expanded (retrieval only): {expanded_query[:100]}...")
 
-        query_lower = query.lower()
+        query_lower = current_q.lower()
 
         # ── Cheap deterministic shortcut: Thread/Draft UI-action intents ──
         thread_decision = self._classify_thread_draft(query_lower)
@@ -1274,6 +1280,22 @@ class QueryRouter:
         'test', 'testing', 'ping',
     }
 
+    _CURRENT_QUESTION_RE = re.compile(r'current\s+question\s*:', re.IGNORECASE)
+
+    @staticmethod
+    def _current_question(text: str) -> str:
+        """Return only the CURRENT user question from a context-augmented query.
+
+        The orchestrator (and legacy app.py) pass the router
+        "{<CONVERSATION_HISTORY>...}\\n\\nCurrent question: {query}". Deterministic
+        classifiers and topic extraction must run on the tail only — otherwise
+        phrases in prior turns hijack the route and pollute extracted topics.
+        No marker → the text is returned unchanged (bare queries, tests).
+        """
+        q = QueryRouter._CURRENT_QUESTION_RE.split(text or "")[-1]
+        q = re.sub(r"</?CONVERSATION_HISTORY>", " ", q, flags=re.IGNORECASE)
+        return q.strip()
+
     def _is_greeting(self, query: str) -> bool:
         """Detect simple greetings that don't need routing.
 
@@ -1283,10 +1305,7 @@ class QueryRouter:
         ("yes"/"no"/"ok"), wrongly returning the canned welcome and skipping
         routing entirely.
         """
-        q = query.strip().lower().rstrip('!?., ')
-        # Remove chat context prefix if present
-        if 'current question:' in q:
-            q = q.split('current question:')[-1].strip().rstrip('!?., ')
+        q = QueryRouter._current_question(query).lower().rstrip('!?., ')
         return q in self.GREETING_PATTERNS
 
     def _build_greeting_response(self) -> Dict[str, Any]:
@@ -1589,10 +1608,7 @@ class QueryRouter:
         metadata search match generic words like "documents" and "related".
         This keeps search focused on X, and also strips chat-history wrappers.
         """
-        q = (query or "").strip()
-        if "Current question:" in q:
-            q = q.rsplit("Current question:", 1)[-1].strip()
-        q = re.sub(r"</?CONVERSATION_HISTORY>", " ", q, flags=re.IGNORECASE)
+        q = QueryRouter._current_question(query)
         q = re.sub(r"\s+", " ", q).strip()
 
         patterns = [
@@ -2085,7 +2101,9 @@ class QueryRouter:
     def _handle_file_list_query(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         """Handle file list, topic search, document stats, and delete queries."""
         logger.info("Routing to File List handler...")
-        q = query.lower()
+        # Topic extraction must not scan conversation history — the augmented
+        # query would yield topics like "current question: fasta".
+        q = self._current_question(query).lower()
 
         # 0. Delete intent detection
         delete_match = re.search(

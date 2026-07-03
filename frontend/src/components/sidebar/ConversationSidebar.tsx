@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { isAxiosError } from 'axios';
 import { useConversations } from '../../hooks/useConversations';
 import { useFiles } from '../../hooks/useFiles';
 import { useChatStore } from '../../stores/chatStore';
@@ -150,6 +151,8 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const [editTitle, setEditTitle] = useState('');
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [docSearch, setDocSearch] = useState('');
@@ -165,6 +168,16 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
 
   const libraryQuery = useQuery({ queryKey: ['library'], queryFn: getLibrary, staleTime: 60_000 });
+  const queryClient = useQueryClient();
+
+  const showLoadError = (message: string) => {
+    setLoadError(message);
+    if (loadErrorTimerRef.current) clearTimeout(loadErrorTimerRef.current);
+    loadErrorTimerRef.current = setTimeout(() => setLoadError(null), 5000);
+  };
+  useEffect(() => () => {
+    if (loadErrorTimerRef.current) clearTimeout(loadErrorTimerRef.current);
+  }, []);
 
   // Focus the search input when the search row is toggled open.
   useEffect(() => {
@@ -220,6 +233,15 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
       // and keep the previous conversation visible so the user can retry.
       if (selectionTokenRef.current === id) {
         console.error('[Sidebar] Failed to load conversation', id, err);
+        const status = isAxiosError(err) ? err.response?.status : undefined;
+        if (status === 404) {
+          // The backend drops the ghost index entry on 404 — refetch so the
+          // dead item disappears from the list.
+          queryClient.invalidateQueries({ queryKey: ['conversations'] });
+          showLoadError('This conversation is no longer available.');
+        } else {
+          showLoadError('Could not load conversation — please try again.');
+        }
       }
     } finally {
       if (selectionTokenRef.current === id) {
@@ -548,6 +570,15 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
               aria-label="Search chats"
               className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-md px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--border-light)]"
             />
+          </div>
+        )}
+
+        {loadError && (
+          <div
+            role="alert"
+            className="mx-3 mb-1 px-2.5 py-1.5 rounded-md text-[11px] bg-[rgba(var(--accent-rgb),0.12)] text-[var(--accent)] border border-[rgba(var(--accent-rgb),0.35)]"
+          >
+            {loadError}
           </div>
         )}
 

@@ -108,3 +108,88 @@ class TestTopicExtractionAndSummary:
             "documents related to fire alarm"
         )
         assert captured["topic"] == "fire alarm"
+
+
+def _augmented(question: str) -> str:
+    """Build a context-augmented query exactly like chat_orchestrator does."""
+    context = (
+        "<CONVERSATION_HISTORY>\n"
+        "User: show me emails from John Smith\n"
+        "Assistant: [THREAD] Here are the emails from John Smith. "
+        "You can reply to the consultant about the delay.\n"
+        "</CONVERSATION_HISTORY>"
+    )
+    return f"{context}\n\nCurrent question: {question}"
+
+
+class _JargonStub:
+    def expand_query(self, q):
+        return q
+
+
+class TestCurrentQuestionHelper:
+    def test_no_marker_returns_unchanged(self):
+        assert QueryRouter._current_question("fasta related documents") == (
+            "fasta related documents"
+        )
+
+    def test_strips_context_before_last_marker(self):
+        blob = "history... Current question: first\n\nCurrent question: fasta docs"
+        assert QueryRouter._current_question(blob) == "fasta docs"
+
+    def test_case_insensitive_marker(self):
+        assert QueryRouter._current_question(
+            "ctx current question: fasta"
+        ) == "fasta"
+
+    def test_removes_history_tags(self):
+        blob = "<CONVERSATION_HISTORY>x</CONVERSATION_HISTORY>\n\nCurrent question: y"
+        assert QueryRouter._current_question(blob) == "y"
+
+
+class TestAugmentedQueryRouting:
+    """The orchestrator passes '{context}\\n\\nCurrent question: {q}' to the
+    router. Deterministic classification and topic extraction must see only
+    the current question — prior turns must not hijack the route."""
+
+    def _classify_router(self) -> QueryRouter:
+        router = _make_router()
+        router._jargon = _JargonStub()
+        return router
+
+    def test_listing_wins_over_thread_phrases_in_history(self):
+        # History contains "emails from" / "reply to" — without stripping,
+        # _classify_thread_draft hijacks this to THREAD/DRAFT.
+        d = self._classify_router().classify_query(
+            _augmented("fasta related documents")
+        )
+        assert d.query_type == QueryType.FILE_LIST
+
+    def test_bare_query_still_classifies_file_list(self):
+        d = self._classify_router().classify_query("fasta related documents")
+        assert d.query_type == QueryType.FILE_LIST
+
+    def test_turkish_listing_on_augmented_query(self):
+        d = self._classify_router().classify_query(_augmented("fasta dokümanları"))
+        assert d.query_type == QueryType.FILE_LIST
+
+    def test_topic_extraction_ignores_context(self):
+        captured: dict = {}
+        router = TestTopicExtractionAndSummary()._stubbed_router(captured)
+        result = router._handle_file_list_query(_augmented("Fasta related documents"))
+        assert captured["topic"] == "fasta"
+        assert result["query_type"] == QueryType.FILE_LIST.value
+        assert all(s["type"] == "search_result" for s in result["sources"])
+
+    def test_turkish_topic_extraction_on_augmented_query(self):
+        captured: dict = {}
+        router = TestTopicExtractionAndSummary()._stubbed_router(captured)
+        router._handle_file_list_query(_augmented("fasta dokümanları"))
+        assert captured["topic"] == "fasta"
+
+    def test_content_question_still_not_captured_multiturn(self):
+        r = _make_router()
+        current = r._current_question(
+            _augmented("what do the documents say about liquidated damages")
+        )
+        assert r._classify_document_listing(current.lower()) is None

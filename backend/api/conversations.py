@@ -59,6 +59,9 @@ async def create_conversation(
 async def get_conversation(conv_id: str, store=Depends(get_conversation_store)):
     conv = store.get_conversation(conv_id)
     if not conv:
+        # Self-heal: a listed conversation whose file is gone should also
+        # disappear from the index, or the sidebar keeps showing a dead entry.
+        store.drop_ghost_entry(conv_id)
         raise HTTPException(404, "Conversation not found")
     messages = []
     for m in conv.messages:
