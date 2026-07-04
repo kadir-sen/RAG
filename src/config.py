@@ -33,6 +33,12 @@ EMBEDDING_DIMENSION = 768  # MRL-reduced from 3072 default (also bge-base-en-v1.
 # be ingested with "local" on the Mac and queried with "fastembed" on the server.
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini").lower()
 LOCAL_EMBEDDING_MODEL = os.getenv("LOCAL_EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
+# "api" — hosted copy of the SAME bge model via an OpenAI-compatible
+# /embeddings endpoint (DeepInfra, Together, HF router...). Frees the ~600 MB
+# the in-process ONNX model costs on the 2 GB server; wire-compatible with the
+# existing corpus (same model + same query instruction, only runs remotely).
+EMBEDDING_API_URL = os.getenv("EMBEDDING_API_URL", "")
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
 EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "auto")  # "auto" | "mps" | "cpu" | "cuda"
 
 # Dual-LLM providers (built dynamically from available keys)

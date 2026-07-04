@@ -151,6 +151,24 @@ class DocumentRAG:
         EMBEDDING_PROVIDER=local, else Gemini (cloud). The same model must embed
         both documents and queries, so this single factory is used everywhere via
         Settings.embed_model."""
+        if EMBEDDING_PROVIDER == "api":
+            # Hosted bge over an OpenAI-compatible endpoint — zero model RAM on
+            # the server, wire-compatible with the fastembed/local bge corpus.
+            from .config import EMBEDDING_API_URL, EMBEDDING_API_KEY
+            from .api_embedding import ApiEmbedding
+            log_llm("Setting up API embeddings (remote bge)", LOCAL_EMBEDDING_MODEL)
+            model = ApiEmbedding(
+                url=EMBEDDING_API_URL,
+                api_key=EMBEDDING_API_KEY,
+                model_name=LOCAL_EMBEDDING_MODEL,
+            )
+            dim = len(model.get_text_embedding("dimension probe"))
+            if dim != EMBEDDING_DIMENSION:
+                raise RuntimeError(
+                    f"Embedding API model '{LOCAL_EMBEDDING_MODEL}' is {dim}-dim but "
+                    f"EMBEDDING_DIMENSION={EMBEDDING_DIMENSION}.")
+            return model
+
         if EMBEDDING_PROVIDER == "fastembed":
             # ONNX bge via fastembed — low RAM, no torch (fits a 2 GB server).
             # Wire-compatible with the sentence-transformers bge corpus.
