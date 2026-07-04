@@ -25,7 +25,13 @@ export async function sendMessage(
   if (requestId) {
     payload.request_id = requestId;
   }
-  const { data } = await apiClient.post<ChatResponse>('/chat', payload);
+  // RAG-synthesis queries routinely take 2-6 minutes on the 2 GB demo box
+  // (swap-bound), well past the 120s client default that covers every other
+  // request. Without this override the backend finishes but the UI shows
+  // "The request took too long" — override the timeout for /chat only.
+  const { data } = await apiClient.post<ChatResponse>('/chat', payload, {
+    timeout: 360_000,
+  });
   return data;
 }
 
