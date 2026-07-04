@@ -151,7 +151,10 @@ jobs:
 
             # Health gate: fail the deploy (and surface logs) if the API is unhealthy.
             echo "Waiting for API health..."
-            for i in $(seq 1 20); do
+            # 240s: cold startup on the swap-bound 2 GB box regularly exceeds
+            # 100s (registry + catalog + graph load) — the app was healthy but
+            # the old 100s gate marked the deploy failed.
+            for i in $(seq 1 48); do
               if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
                 echo "Health OK"
                 exit 0
