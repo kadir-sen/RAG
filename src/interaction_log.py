@@ -68,6 +68,16 @@ class InteractionLog:
             "CREATE TABLE IF NOT EXISTS co_retrieval ("
             "doc_a VARCHAR, doc_b VARCHAR, cnt INTEGER, PRIMARY KEY (doc_a, doc_b))"
         )
+        # Trust Guard telemetry: one row per chat query (skipped runs included —
+        # they are the coverage denominator for the admin stats).
+        self._con.execute(
+            "CREATE TABLE IF NOT EXISTS trust_guard_runs ("
+            "run_id VARCHAR PRIMARY KEY, ts VARCHAR, username VARCHAR, query VARCHAR, "
+            "route VARCHAR, risk VARCHAR, routing_confidence DOUBLE, "
+            "action VARCHAR, sufficiency DOUBLE, unknown_entities INTEGER, "
+            "re_retrieved BOOLEAN, llm_calls INTEGER, latency_ms DOUBLE, "
+            "skipped BOOLEAN, skipped_reason VARCHAR)"
+        )
         logger.info(f"[InteractionLog] Ready ({self.count()} interactions)")
 
     def count(self) -> int:
@@ -128,6 +138,115 @@ class InteractionLog:
         return [{"query": r[0], "route": r[1],
                  "source_files": json.loads(r[2] or "[]"),
                  "scope": json.loads(r[3] or "{}")} for r in rows]
+
+    # ── Trust Guard telemetry ─────────────────────────────────────────────
+    def log_trust_guard_run(self, run_id: str = "", username: str = "", query: str = "",
+                            route: str = "", risk: str = "",
+                            routing_confidence: Optional[float] = None,
+                            action: str = "", sufficiency: float = 0.0,
+                            unknown_entities: int = 0, re_retrieved: bool = False,
+                            llm_calls: int = 0, latency_ms: float = 0.0,
+                            skipped: bool = False, skipped_reason: str = "",
+                            ts: str = "") -> None:
+        """Record one Trust Guard evaluation (guarded OR skipped). Best-effort."""
+        rid = run_id or hashlib.sha256(f"{ts}|{username}|{query}".encode()).hexdigest()[:24]
+        try:
+            conf = float(routing_confidence) if routing_confidence is not None else None
+        except (TypeError, ValueError):
+            conf = None
+        try:
+            with self._db_lock:
+                self._con.execute(
+                    "INSERT OR IGNORE INTO trust_guard_runs VALUES "
+                    "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [rid, ts, username, (query or "")[:2000], route, risk, conf,
+                     action, float(sufficiency or 0.0), int(unknown_entities or 0),
+                     bool(re_retrieved), int(llm_calls or 0), float(latency_ms or 0.0),
+                     bool(skipped), skipped_reason],
+                )
+        except Exception as e:
+            logger.debug(f"[InteractionLog] trust_guard_run skipped: {e}")
+
+    def trust_guard_stats(self, days: int = 30) -> Dict:
+        """Aggregate Trust Guard stats over the last `days` days."""
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        empty = {
+            "total_runs": 0, "guarded": 0, "skipped": 0, "coverage_pct": 0.0,
+            "actions": {}, "skip_reasons": {}, "risk": {},
+            "avg_latency_ms": 0.0, "p95_latency_ms": 0.0, "avg_llm_calls": 0.0,
+            "catches": {"unknown_entity_runs": 0, "re_retrievals": 0,
+                        "rewrites_or_refusals": 0},
+        }
+        try:
+            with self._db_lock:
+                total, guarded = self._con.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN NOT skipped THEN 1 ELSE 0 END), 0) "
+                    "FROM trust_guard_runs WHERE ts >= ?", [cutoff],
+                ).fetchone()
+                if not total:
+                    return empty
+                actions = dict(self._con.execute(
+                    "SELECT action, COUNT(*) FROM trust_guard_runs "
+                    "WHERE ts >= ? AND NOT skipped GROUP BY action", [cutoff],
+                ).fetchall())
+                skip_reasons = dict(self._con.execute(
+                    "SELECT skipped_reason, COUNT(*) FROM trust_guard_runs "
+                    "WHERE ts >= ? AND skipped GROUP BY skipped_reason", [cutoff],
+                ).fetchall())
+                risk = dict(self._con.execute(
+                    "SELECT risk, COUNT(*) FROM trust_guard_runs "
+                    "WHERE ts >= ? GROUP BY risk", [cutoff],
+                ).fetchall())
+                lat = self._con.execute(
+                    "SELECT COALESCE(AVG(latency_ms), 0), "
+                    "COALESCE(quantile_cont(latency_ms, 0.95), 0), "
+                    "COALESCE(AVG(llm_calls), 0) "
+                    "FROM trust_guard_runs WHERE ts >= ? AND NOT skipped", [cutoff],
+                ).fetchone()
+                catches = self._con.execute(
+                    "SELECT COALESCE(SUM(CASE WHEN unknown_entities > 0 THEN 1 ELSE 0 END), 0), "
+                    "COALESCE(SUM(CASE WHEN re_retrieved THEN 1 ELSE 0 END), 0), "
+                    "COALESCE(SUM(CASE WHEN action IN ('rewrite','refuse') THEN 1 ELSE 0 END), 0) "
+                    "FROM trust_guard_runs WHERE ts >= ? AND NOT skipped", [cutoff],
+                ).fetchone()
+            return {
+                "total_runs": int(total),
+                "guarded": int(guarded),
+                "skipped": int(total) - int(guarded),
+                "coverage_pct": round(100.0 * int(guarded) / int(total), 1),
+                "actions": {str(k): int(v) for k, v in actions.items()},
+                "skip_reasons": {str(k): int(v) for k, v in skip_reasons.items()},
+                "risk": {str(k): int(v) for k, v in risk.items()},
+                "avg_latency_ms": round(float(lat[0]), 1),
+                "p95_latency_ms": round(float(lat[1]), 1),
+                "avg_llm_calls": round(float(lat[2]), 2),
+                "catches": {
+                    "unknown_entity_runs": int(catches[0]),
+                    "re_retrievals": int(catches[1]),
+                    "rewrites_or_refusals": int(catches[2]),
+                },
+            }
+        except Exception as e:
+            logger.debug(f"[InteractionLog] trust_guard_stats failed: {e}")
+            return empty
+
+    def trust_guard_recent(self, limit: int = 50) -> List[Dict]:
+        """Most recent Trust Guard runs for the admin panel."""
+        try:
+            with self._db_lock:
+                rows = self._con.execute(
+                    "SELECT ts, username, query, route, risk, action, sufficiency, "
+                    "latency_ms, skipped, skipped_reason FROM trust_guard_runs "
+                    "ORDER BY ts DESC LIMIT ?", [limit],
+                ).fetchall()
+            return [{"ts": r[0], "username": r[1], "query": r[2], "route": r[3],
+                     "risk": r[4], "action": r[5], "sufficiency": float(r[6] or 0.0),
+                     "latency_ms": float(r[7] or 0.0), "skipped": bool(r[8]),
+                     "skipped_reason": r[9]} for r in rows]
+        except Exception as e:
+            logger.debug(f"[InteractionLog] trust_guard_recent failed: {e}")
+            return []
 
     def recent(self, limit: int = 200) -> List[Dict]:
         rows = self._con.execute(

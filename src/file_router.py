@@ -107,6 +107,22 @@ def route_file(file_path: str) -> ProcessingResult:
             table_names=table_names,
             notice_extracted=result.notice_extracted,
         )
+        # Entity Registry seed — deterministic, zero LLM calls, never breaks
+        # ingest. Feeds Trust Guard's fast corpus-scoped entity pre-check
+        # (sender/recipient/cc + subject proper-nouns + the filename itself).
+        try:
+            from datetime import datetime as _dt
+            from .document_rag import _current_user_corpus
+            from .entity_registry import get_entity_registry
+            get_entity_registry().ingest_from_notice(
+                doc_id=doc_id,
+                file_name=Path(file_path).name,
+                notice_summary=result.notice_summary,
+                corpus=(_current_user_corpus() or "demo"),
+                ts=_dt.now().isoformat(),
+            )
+        except Exception as ee:
+            logger.debug(f"[FileRouter] entity registry hook skipped: {ee}")
         # Topic clustering assignment — fire-and-forget; needs the freshly
         # upserted chunks in Pinecone, which is why we run it after
         # mark_completed and off the request thread. Data-only files don't

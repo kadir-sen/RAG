@@ -11,6 +11,7 @@ import LibraryPickerModal from './LibraryPickerModal';
 import KnowledgeModal from '../knowledge/KnowledgeModal';
 import Badge from '../shared/Badge';
 import DataTablesPanel from '../admin/DataTablesPanel';
+import TrustGuardPanel from '../admin/TrustGuardPanel';
 import { getFileTypeBadge } from '../../styles/tokens';
 
 export default function LeftDrawer() {
@@ -21,6 +22,7 @@ export default function LeftDrawer() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [dataTablesOpen, setDataTablesOpen] = useState(false);
+  const [trustGuardOpen, setTrustGuardOpen] = useState(false);
   const [openFolders, setOpenFolders] = useState<Record<'documents' | 'tables' | 'communications', boolean>>({
     documents: false,
     tables: false,
@@ -226,6 +228,20 @@ export default function LeftDrawer() {
               <p className="text-[10px] text-[var(--text-muted)] font-medium">
                 Tables
                 <span className="ml-1 underline opacity-70">manage</span>
+              </p>
+            </button>
+          </div>
+
+          {/* Trust Guard stats */}
+          <div className="px-3 pb-2">
+            <button
+              onClick={() => setTrustGuardOpen(true)}
+              className="w-full rounded-lg bg-[var(--bg-primary)] px-2.5 py-1.5 text-left border border-[var(--border)] hover:border-[var(--accent)]/50 transition-colors"
+              title="Answer verification coverage and stats"
+            >
+              <p className="text-[10px] text-[var(--text-muted)] font-medium">
+                Trust Guard
+                <span className="ml-1 underline opacity-70">stats</span>
               </p>
             </button>
           </div>
@@ -441,6 +457,12 @@ export default function LeftDrawer() {
       <DataTablesPanel
         open={dataTablesOpen}
         onClose={() => setDataTablesOpen(false)}
+      />
+
+      {/* Trust Guard verification stats panel */}
+      <TrustGuardPanel
+        open={trustGuardOpen}
+        onClose={() => setTrustGuardOpen(false)}
       />
     </div>
   );

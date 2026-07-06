@@ -216,6 +216,18 @@ REACT_TIME_BUDGET_SEC = float(os.getenv("REACT_TIME_BUDGET_SEC", "90"))
 ENABLE_TIMELINE = os.getenv("ENABLE_TIMELINE", "true").lower() == "true"
 ENABLE_AB_TESTING = os.getenv("ENABLE_AB_TESTING", "false").lower() == "true"
 
+# ── Trust Guard (risk-gated answer verification) ────────────
+# Post-answer verification layer: risk classifier + corpus entity pre-check +
+# claim-level verifier (lite model) + caveat/rewrite composer. Targets the QA
+# failure patterns (false premise acceptance, fake-entity substitution, ghost
+# attribution) without slowing low-risk chat. Fails open: any error returns the
+# draft answer unverified.
+ENABLE_TRUST_GUARD = os.getenv("ENABLE_TRUST_GUARD", "true").lower() in ("1", "true", "yes")
+# Minimum query risk tier that triggers verification: low | medium | high.
+TRUST_GUARD_MIN_RISK = os.getenv("TRUST_GUARD_MIN_RISK", "medium")
+# Max re-retrieval rounds when the verifier reports insufficient evidence.
+TRUST_GUARD_MAX_RERETRIEVALS = int(os.getenv("TRUST_GUARD_MAX_RERETRIEVALS", "1"))
+
 # ── Template-Based Extraction ──────────────────────────────
 TEMPLATE_FILE = STORAGE_DIR / "parquet" / "templates.json"
 TEMPLATE_CONFIDENCE_THRESHOLD = float(os.getenv("TEMPLATE_THRESHOLD", "0.85"))

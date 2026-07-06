@@ -67,7 +67,9 @@ function StepTrail({ steps }: { steps: ActivityStep[] }) {
           <li key={s.seq} className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
             <span className="font-mono text-[var(--accent)]">✓</span>
             <span className="truncate">{s.label}</span>
-            {s.detail && <span className="font-mono text-[10px] opacity-70 truncate">{s.detail}</span>}
+            {s.detail && s.kind !== 'draft' && (
+              <span className="font-mono text-[10px] opacity-70 truncate">{s.detail}</span>
+            )}
           </li>
         ))}
       </ul>
@@ -101,6 +103,19 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
 
+  // Trust Guard verdict → badge label. "verified" reassures; anything weaker
+  // warns. Caveat text itself is already appended to assistant_text upstream.
+  const tg = response?.trust_guard;
+  const trustLabel = !tg
+    ? null
+    : tg.analyst_review_required || tg.sufficiency_label === 'insufficient'
+      ? 'needs analyst review'
+      : tg.sufficiency_label === 'verified'
+        ? 'verified'
+        : tg.sufficiency_label === 'partially_supported'
+          ? 'partially verified'
+          : null;
+
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
@@ -127,6 +142,13 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
               {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
                 <Badge label="low confidence" />
               )}
+            </div>
+          )}
+
+          {/* Trust Guard verification badge — always visible when present */}
+          {trustLabel && (
+            <div className="mb-1.5 flex items-center gap-2">
+              <Badge label={trustLabel} />
             </div>
           )}
 

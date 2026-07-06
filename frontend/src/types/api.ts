@@ -74,6 +74,47 @@ export interface LoginResponse {
   user: AuthUser;
 }
 
+export interface TrustGuardRun {
+  ts: string;
+  username: string;
+  query: string;
+  route: string;
+  risk: string;
+  action: string;
+  sufficiency: number;
+  latency_ms: number;
+  skipped: boolean;
+  skipped_reason: string;
+}
+
+export interface TrustGuardStats {
+  ok: boolean;
+  total_runs: number;
+  guarded: number;
+  skipped: number;
+  coverage_pct: number;
+  actions: Record<string, number>;
+  skip_reasons: Record<string, number>;
+  risk: Record<string, number>;
+  avg_latency_ms: number;
+  p95_latency_ms: number;
+  avg_llm_calls: number;
+  catches: {
+    unknown_entity_runs: number;
+    re_retrievals: number;
+    rewrites_or_refusals: number;
+  };
+  recent: TrustGuardRun[];
+}
+
+export interface TrustGuardInfo {
+  sufficiency_label: 'verified' | 'partially_supported' | 'insufficient' | 'unverified' | '';
+  sufficiency: number; // 0..1
+  caveats: string[];
+  analyst_review_required: boolean;
+  action: 'approve' | 'approve_with_caveats' | 'rewrite' | 'refuse' | '';
+}
+
 export interface ChatResponse {
   ui_intent: 'answer' | 'doc_list' | 'timeline' | 'email_trace' | 'sql_result';
   assistant_text: string;
@@ -85,6 +126,7 @@ export interface ChatResponse {
   route?: string | null;        // telemetry route: AGENT | HYBRID_COMPLEX | DOCUMENT … (observability)
   cta: CallToAction | null;
   quota: QuotaInfo | null;
+  trust_guard?: TrustGuardInfo | null;
 }
 
 export interface ConversationMeta {

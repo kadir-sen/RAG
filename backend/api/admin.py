@@ -355,3 +355,14 @@ def flywheel_status() -> dict:
         "golden_rows": len(load_golden_set()),
         "learned_routing_examples": len(get_learned_routing_examples(limit=10_000)),
     }
+
+
+@router.get("/admin/trust-guard/stats")
+def trust_guard_stats(days: int = 30, recent: int = 50) -> dict:
+    """Trust Guard coverage/action/latency snapshot + recent runs (admin panel)."""
+    from src.interaction_log import get_interaction_log
+    log = get_interaction_log()
+    stats = log.trust_guard_stats(days=days)
+    stats["ok"] = True
+    stats["recent"] = log.trust_guard_recent(limit=recent)
+    return stats

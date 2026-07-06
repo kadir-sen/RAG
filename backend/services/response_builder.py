@@ -84,7 +84,26 @@ from backend.models.responses import (
     ProviderAnswer,
     RelatedDoc,
     SQLArtifact,
+    TrustGuardInfo,
 )
+
+
+def _build_trust_guard(raw: Dict[str, Any]) -> "TrustGuardInfo | None":
+    """Map the router's trust_guard dict onto the response model.
+    Absent or skipped verdicts (guard off / low risk / fail-open) → None."""
+    tg = raw.get("trust_guard")
+    if not isinstance(tg, dict) or tg.get("skipped"):
+        return None
+    try:
+        return TrustGuardInfo(
+            sufficiency_label=str(tg.get("sufficiency_label") or ""),
+            sufficiency=float(tg.get("sufficiency") or 0.0),
+            caveats=[str(c) for c in (tg.get("caveats") or [])],
+            analyst_review_required=bool(tg.get("analyst_review_required")),
+            action=str(tg.get("action") or ""),
+        )
+    except Exception:
+        return None
 
 
 # Regex: only safe URL chars (hex hash, alphanumeric, dash, underscore, dot)
@@ -237,6 +256,7 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
         route=route,
         sql_artifact=sql_artifact,
         cta=cta,
+        trust_guard=_build_trust_guard(raw),
     )
 
 

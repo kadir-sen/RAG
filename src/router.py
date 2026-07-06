@@ -1359,6 +1359,9 @@ class QueryRouter:
             "answer": greeting,
             "query_type": QueryType.DOCUMENT.value,
             "sources": [],
+            # Deterministic marker so the trust guard wrapper skips greetings
+            # (query_type alone reads as a guarded "document" answer).
+            "is_greeting": True,
         }
 
     def _is_complex_query(self, query: str) -> bool:
@@ -4096,9 +4099,11 @@ class QueryRouter:
                 "used_llm": decision.used_llm,
             }
 
-            # Cheap, conditional self-verify → feeds the feedback-free learning loop
-            # (logged by the orchestrator) and marks out-of-corpus answers. Strong
-            # answers cost nothing here.
+            # Cheap, conditional self-verify → feeds the feedback-free learning
+            # loop and marks out-of-corpus answers. Strong answers cost nothing
+            # here. NOTE: Trust Guard verification now runs at the orchestrator
+            # choke point (run_trust_guard_on_result) so agent/hybrid/dual early
+            # returns are covered too; when it runs it overwrites verify_verdict.
             try:
                 result["verify_verdict"] = self._verify_answer(query, result)
             except Exception:

@@ -220,6 +220,25 @@ class ChatOrchestrator:
         except Exception:
             pass
 
+        # 4c. Trust Guard: single choke point — EVERY answer path (document,
+        # agent, hybrid, dual, greeting, selected-context) flows through here;
+        # the guard itself decides to skip and records why. Runs AFTER the
+        # corpus filter so verification sees the final citation set. Sync +
+        # LLM-calling → own to_thread (contextvars set above propagate, so
+        # re-retrieval stays corpus-scoped and progress steps still publish).
+        import time as _time
+        _guard_t0 = _time.perf_counter()
+        guard_verdict = None
+        try:
+            from src import trust_guard
+            guard_verdict = await asyncio.to_thread(
+                trust_guard.run_trust_guard_on_result,
+                router, augmented, raw_result, doc_ids, email_ids,
+            )
+        except Exception:
+            guard_verdict = None
+        _guard_ms = (_time.perf_counter() - _guard_t0) * 1000.0
+
         # 5. Map to response contract
         response = build_chat_response(raw_result, is_dual=is_dual)
 
@@ -239,6 +258,32 @@ class ChatOrchestrator:
                 verdict=raw_result.get("verify_verdict", ""),
                 ts=datetime.now().isoformat(),
             )
+        except Exception:
+            pass
+
+        # 5c. Trust Guard telemetry: one row per query, INCLUDING skipped runs
+        # (they are the coverage denominator). Best-effort, never blocks.
+        try:
+            if guard_verdict is not None:
+                from src.interaction_log import get_interaction_log
+                routing = raw_result.get("routing") or {}
+                get_interaction_log().log_trust_guard_run(
+                    run_id=request_id,
+                    username=username or "",
+                    query=query,
+                    route=raw_result.get("query_type", ""),
+                    risk=guard_verdict.risk,
+                    routing_confidence=routing.get("confidence"),
+                    action=guard_verdict.action if not guard_verdict.skipped else "",
+                    sufficiency=guard_verdict.sufficiency,
+                    unknown_entities=len(guard_verdict.unknown_entities or []),
+                    re_retrieved=guard_verdict.re_retrieved,
+                    llm_calls=guard_verdict.llm_calls,
+                    latency_ms=_guard_ms,
+                    skipped=guard_verdict.skipped,
+                    skipped_reason=guard_verdict.skipped_reason,
+                    ts=datetime.now().isoformat(),
+                )
         except Exception:
             pass
 
