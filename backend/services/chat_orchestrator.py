@@ -144,6 +144,21 @@ class ChatOrchestrator:
         except Exception:
             pass
 
+        # 2b. Context artifact: the most recent assistant answer's persisted
+        # ToolResult, so composite follow-ups ("make this into a report
+        # section") can reuse it without re-running the analysis. ContextVar
+        # propagates into the router worker thread.
+        try:
+            from src.router import context_artifact_var
+            _ctx_art = None
+            for m in reversed(recent or []):
+                if getattr(m, "role", "") == "assistant" and getattr(m, "artifact", None):
+                    _ctx_art = m.artifact
+                    break
+            context_artifact_var.set(_ctx_art)
+        except Exception:
+            pass
+
         # 3c. Draft enrichment: when composing a REPLY to selected emails, gather
         # supporting facts from the user's OWN project documents (corpus-scoped RAG
         # — corpus_var is set above, so no cross-corpus leak) so the draft can cite
@@ -220,6 +235,25 @@ class ChatOrchestrator:
         except Exception:
             pass
 
+        # 4c. Trust Guard: single choke point — EVERY answer path (document,
+        # agent, hybrid, dual, greeting, selected-context) flows through here;
+        # the guard itself decides to skip and records why. Runs AFTER the
+        # corpus filter so verification sees the final citation set. Sync +
+        # LLM-calling → own to_thread (contextvars set above propagate, so
+        # re-retrieval stays corpus-scoped and progress steps still publish).
+        import time as _time
+        _guard_t0 = _time.perf_counter()
+        guard_verdict = None
+        try:
+            from src import trust_guard
+            guard_verdict = await asyncio.to_thread(
+                trust_guard.run_trust_guard_on_result,
+                router, augmented, raw_result, doc_ids, email_ids,
+            )
+        except Exception:
+            guard_verdict = None
+        _guard_ms = (_time.perf_counter() - _guard_t0) * 1000.0
+
         # 5. Map to response contract
         response = build_chat_response(raw_result, is_dual=is_dual)
 
@@ -242,6 +276,32 @@ class ChatOrchestrator:
         except Exception:
             pass
 
+        # 5c. Trust Guard telemetry: one row per query, INCLUDING skipped runs
+        # (they are the coverage denominator). Best-effort, never blocks.
+        try:
+            if guard_verdict is not None:
+                from src.interaction_log import get_interaction_log
+                routing = raw_result.get("routing") or {}
+                get_interaction_log().log_trust_guard_run(
+                    run_id=request_id,
+                    username=username or "",
+                    query=query,
+                    route=raw_result.get("query_type", ""),
+                    risk=guard_verdict.risk,
+                    routing_confidence=routing.get("confidence"),
+                    action=guard_verdict.action if not guard_verdict.skipped else "",
+                    sufficiency=guard_verdict.sufficiency,
+                    unknown_entities=len(guard_verdict.unknown_entities or []),
+                    re_retrieved=guard_verdict.re_retrieved,
+                    llm_calls=guard_verdict.llm_calls,
+                    latency_ms=_guard_ms,
+                    skipped=guard_verdict.skipped,
+                    skipped_reason=guard_verdict.skipped_reason,
+                    ts=datetime.now().isoformat(),
+                )
+        except Exception:
+            pass
+
         # 6. Save assistant message
         assistant_msg = Message(
             role="assistant",
@@ -254,6 +314,10 @@ class ChatOrchestrator:
             ),
             sql=response.sql_artifact.generated_sql if response.sql_artifact else None,
             result_data=response.sql_artifact.preview_rows if response.sql_artifact else None,
+            # Persist compact (raw engine dumps can be large; follow-ups only
+            # need tables/summary/caveats/validation).
+            artifact={k: v for k, v in response.programme_artifact.items()
+                      if k != "raw"} if response.programme_artifact else None,
         )
         store.add_message(conversation_id, assistant_msg)
 

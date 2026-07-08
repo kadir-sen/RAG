@@ -24,6 +24,9 @@ class QueryType(Enum):
     THREAD = "thread"      # correspondence thread view
     DRAFT = "draft"        # draft response generation
     FILE_LIST = "file_list"  # database file listing
+    PROGRAMME = "programme"  # deterministic P6/XER analysis tools
+    DELAY_REPORT = "delay_report"  # forensic delay-event chronology sections
+    COMPOSITE = "composite"  # chat-native multi-block orchestration
 
 
 # ── Router Decision ──────────────────────────────────────────
@@ -36,6 +39,9 @@ class RouterDecision:
     reasons: List[str]           # human-readable explanation
     used_llm: bool = False
     llm_usage: Optional[Dict[str, Any]] = None
+    # Route-specific payload (e.g. matched programme tool_id/workflow id);
+    # optional so existing constructors stay valid.
+    metadata: Optional[Dict[str, Any]] = None
 
 
 # ── Plan Step Types ──────────────────────────────────────────

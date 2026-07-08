@@ -1556,8 +1556,11 @@ class DocumentRAG:
             f"QUESTION: {question}\n\n"
             "ANSWER:"
         )
-        response = llm.complete(prompt)
-        answer = response.text
+        # Route through the gateway (was a raw create_llm bypass): gains
+        # caching/retry/usage-logging/quota + fallback + error sanitization.
+        from src.llm import gateway
+        _res = gateway.complete("rag_answer_synthesis", prompt)
+        answer = _res.text if _res.status != "degraded" else _res.degraded_message
 
         # Step 4: Extract sources metadata
         sources = []
@@ -1871,13 +1874,11 @@ class DocumentRAG:
             "ANSWER:"
         )
 
-        try:
-            llm, _ = create_llm(provider)
-            response = llm.complete(prompt)
-            answer = getattr(response, "text", str(response))
-        except Exception as e:
-            logger.error(f"[NamedDoc] {provider} synthesis failed: {e}")
-            answer = ""
+        # Route through the gateway: gains caching/retry/usage-logging/quota
+        # + fallback + error sanitization (previously a raw create_llm bypass).
+        from src.llm import gateway
+        _res = gateway.complete("rag_answer_synthesis", prompt)
+        answer = _res.text if _res.status != "degraded" else _res.degraded_message
 
         # Build sources list (named first, then semantic)
         sources: List[Dict[str, Any]] = []

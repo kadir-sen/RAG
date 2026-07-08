@@ -27,6 +27,55 @@ from .config import (
 from .logger import logger, log_separator, log_document_processing
 from .catalog import _active_corpus
 
+# User-safe message for any SQL-path failure. NEVER interpolate the exception —
+# raw provider errors (429/quota/billing URL) must not reach the chat.
+SQL_UNAVAILABLE_MSG = ("SQL analysis is temporarily unavailable; please narrow "
+                       "the question or try again shortly.")
+
+
+def _reraise_budget(exc: Exception) -> None:
+    """Budget/quota exceptions must reach the FastAPI 402 handler — never get
+    swallowed into an answer string. Call this first in every SQL except."""
+    from .usage_tracker import BudgetExceededError
+    from .user_store import UserQuotaExceededError
+    if isinstance(exc, (BudgetExceededError, UserQuotaExceededError)):
+        raise exc
+
+
+class SqlFailureReason:
+    """Internal SQL-failure taxonomy. The user-facing message stays simple
+    (SQL_UNAVAILABLE_MSG), but logs/telemetry carry the exact reason so a
+    schema/column problem is never conflated with an LLM-quota outage."""
+    NO_COMPATIBLE_TABLE = "NO_COMPATIBLE_TABLE"
+    LOW_CONFIDENCE_MAPPING = "LOW_CONFIDENCE_MAPPING"
+    SQL_GENERATION_LLM_UNAVAILABLE = "SQL_GENERATION_LLM_UNAVAILABLE"
+    SQL_PARSE_ERROR = "SQL_PARSE_ERROR"
+    DUCKDB_EXECUTION_ERROR = "DUCKDB_EXECUTION_ERROR"
+    NO_ROWS = "NO_ROWS"
+    DATE_ANOMALY = "DATE_ANOMALY"
+    UNKNOWN = "UNKNOWN"
+
+
+def classify_sql_failure(exc: Exception) -> str:
+    """Map a raw SQL-path exception to a SqlFailureReason (never surfaced raw)."""
+    msg = str(exc).lower()
+    if any(t in msg for t in ("429", "quota", "resource_exhausted", "rate limit",
+                              "billing", "generativelanguage.googleapis.com",
+                              "llm call failed")):
+        return SqlFailureReason.SQL_GENERATION_LLM_UNAVAILABLE
+    if any(t in msg for t in ("binder error", "catalog error", "referenced column",
+                              "does not have a column", "parser error",
+                              "syntax error", "conversion error")):
+        return SqlFailureReason.DUCKDB_EXECUTION_ERROR
+    return SqlFailureReason.UNKNOWN
+
+
+def _log_sql_failure(reason: str, table_name: Optional[str] = None,
+                     detail: str = "") -> None:
+    """Structured, non-leaking telemetry line for a SQL failure."""
+    logger.warning(f"[SQLFailure] reason={reason} table={table_name or '-'} "
+                   f"detail={(detail or '')[:200]}")
+
 
 # SQL validation patterns
 DANGEROUS_PATTERNS = [
@@ -723,10 +772,21 @@ class DataAnalyzerSQL:
                 question, sql, result_df, table_name
             )
 
-            summary = self._generate_summary(question, sql, result_df,
-                                             provider=provider,
-                                             table_name=table_name,
-                                             detail_df=detail_df)
+            # The SQL is already deterministic; only the narration needs an LLM.
+            # If that call fails (provider outage / dead quota), keep the computed
+            # result and fall back to the LLM-free template summary rather than
+            # discarding a correct answer. Genuine budget/user-quota still 402s.
+            try:
+                summary = self._generate_summary(question, sql, result_df,
+                                                 provider=provider,
+                                                 table_name=table_name,
+                                                 detail_df=detail_df)
+            except Exception as se:
+                _reraise_budget(se)
+                logger.warning(f"   Shortcut summary LLM unavailable ({se}); "
+                               f"using deterministic summary")
+                summary = self._lazy_summary(question, sql, result_df,
+                                             table_name, detail_df=detail_df)
 
             file_path = self.file_paths.get(table_name, '')
             from .document_rag import generate_doc_id
@@ -2194,12 +2254,14 @@ class DataAnalyzerSQL:
                         logger.info(f"   Self-corrected SQL: {sql[:100]}...")
 
                 if not is_valid:
-                    logger.error(f"   SQL validation failed after retry: {error}")
+                    _log_sql_failure(SqlFailureReason.SQL_PARSE_ERROR,
+                                     table_name, error)
                     return {
                         "answer": f"Cannot execute this query: {error}",
                         "sources": [{"error": error}],
                         "sql": sql,
                         "result_data": None,
+                        "failure_reason": SqlFailureReason.SQL_PARSE_ERROR,
                     }
 
             # Also validate table references (include normalized views)
@@ -2294,12 +2356,15 @@ class DataAnalyzerSQL:
             }
 
         except Exception as e:
-            logger.error(f"   Query error: {e}")
+            _reraise_budget(e)   # budget/quota → 402, never an answer string
+            reason = classify_sql_failure(e)
+            _log_sql_failure(reason, table_name, str(e))
             return {
-                "answer": f"Error executing query: {str(e)}",
-                "sources": [{"error": str(e), "table_name": table_name}],
+                "answer": SQL_UNAVAILABLE_MSG,
+                "sources": [{"table_name": table_name}],
                 "sql": sql,
                 "result_data": None,
+                "failure_reason": reason,
             }
 
     def query_with_provider(self, question: str, provider: str,
@@ -2401,11 +2466,14 @@ class DataAnalyzerSQL:
             }
 
         except Exception as e:
-            logger.error(f"   [{provider}] Query error: {e}")
+            _reraise_budget(e)
+            reason = classify_sql_failure(e)
+            _log_sql_failure(reason, table_name, f"[{provider}] {e}")
             return {
-                "answer": f"Error executing query: {str(e)}",
-                "sources": [{"error": str(e), "table_name": table_name}],
+                "answer": SQL_UNAVAILABLE_MSG,
+                "sources": [{"table_name": table_name}],
                 "sql": sql, "result_data": None,
+                "failure_reason": reason,
             }
 
     def query_dual(self, question: str, table_name: Optional[str] = None,
@@ -2426,10 +2494,11 @@ class DataAnalyzerSQL:
                     prov, result = future.result()
                     results[prov] = result
                 except Exception as e:
+                    _reraise_budget(e)
                     prov = futures[future]
                     logger.error(f"   [{prov}] Dual query failed: {e}")
                     results[prov] = {
-                        "answer": f"Error from {prov}: {e}",
+                        "answer": SQL_UNAVAILABLE_MSG,
                         "sources": [], "sql": None, "result_data": None,
                     }
 

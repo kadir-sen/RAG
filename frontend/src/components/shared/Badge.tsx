@@ -15,6 +15,11 @@ const TONE_BY_LABEL: Record<string, 'accent' | 'success' | 'warning' | 'danger' 
   error: 'danger',
   // misc
   'low confidence': 'warning',
+  // trust guard verification
+  verified: 'success',
+  'partially verified': 'warning',
+  'needs analyst review': 'warning',
+  unverified: 'muted',
 };
 
 const TONE_CLASSES: Record<string, string> = {

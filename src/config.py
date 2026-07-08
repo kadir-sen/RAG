@@ -102,12 +102,16 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 DOCUMENTS_DIR = DATA_DIR / "documents"
 TABLES_DIR = DATA_DIR / "tables"
+PROGRAMME_DIR = DATA_DIR / "programmes"   # Primavera P6 XER exports
 STORAGE_DIR = BASE_DIR / "storage"
+ARTIFACTS_DIR = STORAGE_DIR / "artifacts"  # generated analysis outputs (xlsx …)
 
 # Ensure directories exist
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
 TABLES_DIR.mkdir(parents=True, exist_ok=True)
+PROGRAMME_DIR.mkdir(parents=True, exist_ok=True)
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Chunking settings
 CHUNK_SIZE = 1024
@@ -215,6 +219,18 @@ REACT_TIME_BUDGET_SEC = float(os.getenv("REACT_TIME_BUDGET_SEC", "90"))
 # ── Feature Flags ───────────────────────────────────────────
 ENABLE_TIMELINE = os.getenv("ENABLE_TIMELINE", "true").lower() == "true"
 ENABLE_AB_TESTING = os.getenv("ENABLE_AB_TESTING", "false").lower() == "true"
+
+# ── Trust Guard (risk-gated answer verification) ────────────
+# Post-answer verification layer: risk classifier + corpus entity pre-check +
+# claim-level verifier (lite model) + caveat/rewrite composer. Targets the QA
+# failure patterns (false premise acceptance, fake-entity substitution, ghost
+# attribution) without slowing low-risk chat. Fails open: any error returns the
+# draft answer unverified.
+ENABLE_TRUST_GUARD = os.getenv("ENABLE_TRUST_GUARD", "true").lower() in ("1", "true", "yes")
+# Minimum query risk tier that triggers verification: low | medium | high.
+TRUST_GUARD_MIN_RISK = os.getenv("TRUST_GUARD_MIN_RISK", "medium")
+# Max re-retrieval rounds when the verifier reports insufficient evidence.
+TRUST_GUARD_MAX_RERETRIEVALS = int(os.getenv("TRUST_GUARD_MAX_RERETRIEVALS", "1"))
 
 # ── Template-Based Extraction ──────────────────────────────
 TEMPLATE_FILE = STORAGE_DIR / "parquet" / "templates.json"

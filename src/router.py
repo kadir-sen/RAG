@@ -8,6 +8,7 @@ Routing strategy (LLM-free by default):
 """
 import re
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Tuple, Dict, Any, List, Optional
 
@@ -18,6 +19,12 @@ from .config import (
 )
 from .types import QueryType, RouterDecision, LLMUsage
 from .logger import logger, log_separator
+
+# Most recent assistant artifact from the SAME conversation ("make this into a
+# report section"). Set per-request by the chat orchestrator; a ContextVar so
+# concurrent requests on the singleton router never cross-contaminate.
+context_artifact_var: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "context_artifact", default=None)
 
 
 # ── Keyword sets (English only) ───────────────────────────────
@@ -694,6 +701,36 @@ class QueryRouter:
                         f"conf={listing_decision.confidence:.2f})")
             return listing_decision
 
+        # ── Cheap deterministic shortcut: composite multi-block intents ──
+        # Chart / html-section / combined phrasings run a fixed orchestration
+        # plan and render as chat blocks. Checked BEFORE programme/delay
+        # shortcuts because composite phrasings embed their trigger words.
+        composite_decision = self._classify_composite(query_lower)
+        if composite_decision is not None:
+            logger.info(f"   -> Pattern: COMPOSITE "
+                        f"({(composite_decision.metadata or {}).get('id')})")
+            return composite_decision
+
+        # ── Cheap deterministic shortcut: programme-analysis tool intent ──
+        # XER/P6 analyses (DCMA, milestone shift, inventory) run deterministic
+        # Python engines — the LLM must neither classify nor compute them.
+        # Registry triggers (positive + negative) decide; causation/notice/
+        # correspondence wording blocks the route via negative triggers.
+        programme_decision = self._classify_programme(query_lower)
+        if programme_decision is not None:
+            logger.info(f"   -> Pattern: PROGRAMME "
+                        f"({(programme_decision.metadata or {}).get('id')})")
+            return programme_decision
+
+        # ── Cheap deterministic shortcut: delay-event chronology sections ──
+        # Claim-report-style chronology ("6.1 style", "chronology for X") runs
+        # a fixed evidence→register→narrative pipeline — never free RAG prose.
+        # Programme shortcut runs FIRST so dcma/milestone wording wins.
+        delay_decision = self._classify_delay_report(query_lower)
+        if delay_decision is not None:
+            logger.info("   -> Pattern: DELAY_REPORT")
+            return delay_decision
+
         # ── Primary: the LLM decides, armed with schema + document-topic context ──
         decision = self._classify_llm_rich(query, mode=mode)
         if decision is not None:
@@ -744,6 +781,17 @@ class QueryRouter:
             logger.info(f"   -> [safety-net] Pattern: {content_search_decision.query_type.value.upper()} "
                         f"(conf={content_search_decision.confidence:.2f})")
             return content_search_decision
+
+        # High-risk-document guard (Fix 2): when the LLM classifier is down,
+        # causation / liability / EOT / responsibility questions must NOT be
+        # force-routed to DATA by the schema-semantic gate just because they
+        # contain data-ish vocabulary ("delay", "days"). Route DOCUMENT so the
+        # Trust-Guarded RAG path answers them cautiously. Runs ONLY in the
+        # safety net (classifier outage), so healthy routing is untouched.
+        hr_decision = self._classify_high_risk_document(query_lower)
+        if hr_decision is not None:
+            logger.info("   -> [safety-net] High-risk → DOCUMENT (classifier outage)")
+            return self._apply_mode_bias(hr_decision, mode)
 
         schema_decision = self._classify_schema_semantic(expanded_query)
         if schema_decision is not None:
@@ -898,6 +946,25 @@ class QueryRouter:
                     reasons=[f"Document content-search pattern matched: {pattern}"],
                 )
         return None
+
+    def _classify_high_risk_document(self, query_lower: str) -> Optional[RouterDecision]:
+        """Match causation/liability/EOT/responsibility language (reuses the
+        Trust Guard + programme negative lexicons). Returns a DOCUMENT decision
+        or None. Used only by the safety net on classifier outage."""
+        try:
+            from .trust_guard import _HIGH_RISK_RE
+            from .programme_tools.registry import SHARED_NEGATIVE_TRIGGERS
+        except Exception:
+            return None
+        import re as _re
+        hit = bool(_HIGH_RISK_RE.search(query_lower)) or any(
+            _re.search(p, query_lower) for p in SHARED_NEGATIVE_TRIGGERS)
+        if not hit:
+            return None
+        return RouterDecision(
+            query_type=QueryType.DOCUMENT, confidence=0.85,
+            reasons=["high-risk (causation/liability/EOT) under classifier "
+                     "outage → DOCUMENT, not DATA"])
 
     def _classify_schema_semantic(self, query: str) -> Optional[RouterDecision]:
         """Conservative schema-aware DATA gate before keyword routing."""
@@ -1359,6 +1426,9 @@ class QueryRouter:
             "answer": greeting,
             "query_type": QueryType.DOCUMENT.value,
             "sources": [],
+            # Deterministic marker so the trust guard wrapper skips greetings
+            # (query_type alone reads as a guarded "document" answer).
+            "is_greeting": True,
         }
 
     def _is_complex_query(self, query: str) -> bool:
@@ -1386,6 +1456,10 @@ class QueryRouter:
         call — reuses the classifier result we already have."""
         from .config import ROUTE_AGENT_CONF
         try:
+            if decision.query_type in (QueryType.PROGRAMME,
+                                       QueryType.DELAY_REPORT,
+                                       QueryType.COMPOSITE):
+                return False  # fixed pipelines — never the agent
             if decision.query_type == QueryType.HYBRID:
                 return True
             if decision.confidence < ROUTE_AGENT_CONF and query.count("?") >= 2:
@@ -1820,6 +1894,32 @@ class QueryRouter:
                     "sql": None,
                     "confidence": 0.5,
                 }
+
+        # Existence-gate: before running SQL, ask the schema catalog whether a
+        # compatible table actually exists for the concepts in this query. This
+        # stops "equipment utilization by block" from picking an unrelated cost
+        # table and collapsing into a generic "SQL unavailable". Fail-open.
+        try:
+            from .document_rag import _current_user_corpus
+            from .data_catalog import plan_sql
+            plan = plan_sql(query, corpus_id=_current_user_corpus())
+            if plan.execution_mode == "no_data" and plan.required_concepts:
+                logger.info(f"   [existence-gate] no compatible table for "
+                            f"{plan.required_concepts} → clarification")
+                concept_txt = ", ".join(plan.required_concepts)
+                return {
+                    "query": query,
+                    "query_type": QueryType.DATA.value,
+                    "answer": (
+                        "I read this as a data-analysis request, but I don't see "
+                        f"a compatible table for {concept_txt} in the current "
+                        "project. I can show the available tables or help map "
+                        "your uploaded Excel columns."),
+                    "sources": [], "sql": None, "confidence": 0.6,
+                    "failure_reason": "NO_COMPATIBLE_TABLE",
+                }
+        except Exception as e:
+            logger.debug(f"   [existence-gate] skipped: {e}")
 
         # Check if query needs multiple tables
         relevant = self.data_analyzer.select_tables(query, max_tables=3, allowed_tables=allowed_tables)
@@ -3706,11 +3806,214 @@ class QueryRouter:
 
     # ── Dispatch helpers ────────────────────────────────────────
 
+    # ── Programme-analysis tools (deterministic XER engines) ─────────────
+
+    def _classify_programme(self, query_lower: str) -> Optional[RouterDecision]:
+        """Deterministic programme-tool intent from the registry triggers.
+        Returns a high-confidence PROGRAMME decision or None. Never raises."""
+        try:
+            from .programme_tools import match_query as _pt_match
+            m = _pt_match(query_lower)
+        except Exception as e:
+            logger.debug(f"[ProgrammeRoute] classify skipped: {e}")
+            return None
+        if not m:
+            return None
+        return RouterDecision(
+            query_type=QueryType.PROGRAMME,
+            confidence=0.95,
+            reasons=[f"programme trigger matched: {m['kind']}:{m['id']}"],
+            metadata=m,
+        )
+
+    def _classify_composite(self, query_lower: str) -> Optional[RouterDecision]:
+        """Deterministic composite-intent match (chart/html/combined asks).
+        Returns a high-confidence COMPOSITE decision or None. Never raises."""
+        try:
+            from .orchestration import match_composite as _co_match
+            m = _co_match(query_lower)
+        except Exception as e:
+            logger.debug(f"[CompositeRoute] classify skipped: {e}")
+            return None
+        if not m:
+            return None
+        return RouterDecision(
+            query_type=QueryType.COMPOSITE,
+            confidence=0.95,
+            reasons=[f"composite trigger matched: {m['id']}"],
+            metadata=m,
+        )
+
+    def _handle_composite_query(self, query: str,
+                                doc_ids: Optional[List[str]] = None,
+                                context_artifact: Optional[Dict[str, Any]] = None,
+                                ) -> Dict[str, Any]:
+        """Run a registered composite intent → chat-native blocks."""
+        from .orchestration import match_composite, run_composite
+        current_q = self._current_question(query)
+        m = match_composite(current_q.lower())
+        if m is None:
+            return {"answer": "I couldn't map that request to a registered "
+                              "capability — try naming the analysis "
+                              "explicitly.",
+                    "query_type": "composite", "clarification": True,
+                    "sources": []}
+        result = run_composite(m["id"], current_q, {}, self, doc_ids,
+                               context_artifact)
+        out: Dict[str, Any] = {
+            "answer": result.answer,
+            "query_type": "composite",
+            "blocks": result.blocks,
+            "sources": result.sources,
+        }
+        if result.status == "needs_clarification":
+            out["clarification"] = True
+        if result.primary_artifact:
+            out["programme_artifact"] = result.primary_artifact
+        if result.trust_guard:
+            out["trust_guard"] = result.trust_guard
+        return out
+
+    def _classify_delay_report(self, query_lower: str) -> Optional[RouterDecision]:
+        """Deterministic delay-report intent from the delay_reports registry.
+        Returns a high-confidence DELAY_REPORT decision or None. Never raises."""
+        try:
+            from .delay_reports import match_query as _dr_match
+            m = _dr_match(query_lower)
+        except Exception as e:
+            logger.debug(f"[DelayReportRoute] classify skipped: {e}")
+            return None
+        if not m:
+            return None
+        return RouterDecision(
+            query_type=QueryType.DELAY_REPORT,
+            confidence=0.95,
+            reasons=[f"delay-report trigger matched: {m['id']}"],
+            metadata=m,
+        )
+
+    def _programme_records(self, doc_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Completed .xer registry records, optionally scoped to doc_ids."""
+        try:
+            from .document_registry import get_document_registry
+            recs = get_document_registry().get_completed()
+        except Exception as e:
+            logger.warning(f"[ProgrammeRoute] registry unavailable: {e}")
+            return []
+        out = []
+        for r in recs:
+            if getattr(r, "file_type", "") != "programme":
+                continue
+            if doc_ids and r.doc_id not in doc_ids:
+                continue
+            out.append({"doc_id": r.doc_id, "file_name": r.file_name,
+                        "file_path": r.file_path, "status": r.status})
+        return out
+
+    @staticmethod
+    def _programme_clarification(message: str) -> Dict[str, Any]:
+        """Missing-input response: a normal chat answer, never an error."""
+        return {"answer": message, "query_type": "programme", "sources": [],
+                "clarification": True}
+
+    def _handle_programme_query(self, query: str,
+                                doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Run a registered programme tool or the analysis-pack workflow.
+
+        The LLM chooses nothing here: the registry match is deterministic,
+        preconditions produce clarifications, engines compute, and the
+        narrative composer+guard turn the ToolResult into prose.
+        """
+        from .programme_tools import REGISTRY, match_query, run_tool
+        from .programme_tools.narrative import compose_narrative
+        from .programme_tools.workflows.preliminary_programme_analysis import run_pack
+
+        def _report(kind, label, detail=""):
+            try:
+                from backend.tasks.query_progress import report_step
+                report_step(kind, label, detail)
+            except Exception:
+                pass
+
+        current_q = self._current_question(query)
+        match = match_query(current_q.lower())
+        if match is None:
+            # Route was forced (e.g. fallback) without a trigger — inventory is
+            # the safe default overview.
+            match = {"kind": "tool", "id": "programme.inventory"}
+
+        records = self._programme_records(doc_ids)
+        if not records:
+            return self._programme_clarification(
+                "Please upload at least one XER programme file to run this "
+                "analysis. You can drag a Primavera P6 .xer export into the "
+                "file panel."
+            )
+
+        # ── Workflow: preliminary programme analysis pack ──
+        if match["kind"] == "workflow":
+            _report("tool", "Building preliminary programme analysis pack...")
+            pack = run_pack(records, progress=_report)
+            answer = "\n\n".join(
+                f"## {s['title']}\n\n{s['narrative']}" for s in pack["sections"]
+            )
+            if pack["status"] != "complete":
+                answer = ("_This pack is partial — see the section notes and "
+                          "caveats._\n\n" + answer)
+            return {"answer": answer, "query_type": "programme",
+                    "programme_artifact": pack, "sources": []}
+
+        # ── Single tool ──
+        tool_id = match["id"]
+        spec = REGISTRY.get(tool_id)
+        if spec is None:
+            return self._programme_clarification(
+                f"'{tool_id}' is not a registered programme analysis.")
+        if len(records) < spec.min_xer_files:
+            return self._programme_clarification(
+                f"{spec.title} requires at least {spec.min_xer_files} XER "
+                f"revision(s); currently {len(records)} available. Please "
+                "upload the missing programme file(s)."
+            )
+
+        options: Dict[str, Any] = {}
+        if tool_id == "programme.dcma_14_point" and len(records) > 1:
+            # Single-file tool: try the filename resolver; ambiguous → ask.
+            hints = []
+            try:
+                hints = self._resolve_filename_hints(current_q)
+            except Exception:
+                pass
+            hinted = [r for r in records if r["file_name"] in hints]
+            if len(hinted) == 1:
+                records = hinted
+            else:
+                names = ", ".join(r["file_name"] for r in records[:10])
+                return self._programme_clarification(
+                    "Which programme should I run the DCMA check on? "
+                    f"Available XER files: {names}."
+                )
+
+        _report("tool", f"Running {spec.title}...")
+        result = run_tool(tool_id, records, options=options)
+        _report("analysing", "Drafting narrative from computed results...")
+        answer = compose_narrative(result, getattr(result, "_engine_ctx", None))
+        return {"answer": answer, "query_type": "programme",
+                "programme_artifact": result.to_dict(), "sources": []}
+
     def _dispatch_query(
         self, query_type: 'QueryType', query: str, expanded: str,
         doc_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Dispatch query to appropriate handler by type."""
+        if query_type == QueryType.COMPOSITE:
+            return self._handle_composite_query(query, doc_ids,
+                                                context_artifact_var.get())
+        if query_type == QueryType.PROGRAMME:
+            return self._handle_programme_query(query, doc_ids)
+        if query_type == QueryType.DELAY_REPORT:
+            from .delay_reports import run_event_chronology
+            return run_event_chronology(query, self, doc_ids)
         if query_type == QueryType.FILE_LIST:
             return self._handle_file_list_query(query, doc_ids)
         elif query_type == QueryType.THREAD:
@@ -3735,6 +4038,18 @@ class QueryRouter:
 
         allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
 
+        if query_type == QueryType.COMPOSITE:
+            single = self._handle_composite_query(query, doc_ids,
+                                                  context_artifact_var.get())
+            return {p: single for p in LLM_PROVIDERS}
+        if query_type == QueryType.PROGRAMME:
+            # Deterministic engines: run once, mirror to every provider.
+            single = self._handle_programme_query(query, doc_ids)
+            return {p: single for p in LLM_PROVIDERS}
+        if query_type == QueryType.DELAY_REPORT:
+            from .delay_reports import run_event_chronology
+            single = run_event_chronology(query, self, doc_ids)
+            return {p: single for p in LLM_PROVIDERS}
         if query_type == QueryType.FILE_LIST:
             single = self._handle_file_list_query(query, doc_ids)
             return {p: single for p in LLM_PROVIDERS}
@@ -3956,9 +4271,18 @@ class QueryRouter:
                 logger.info(f"Query complete (selected context) - {len(result.get('sources', []))} sources")
                 return result
 
+            # Deterministic programme/delay-report intent beats the complex-
+            # query/agent gate: an XER analysis or a chronology section must
+            # never be pulled into the ReAct agent — their pipelines are fixed
+            # and the LLM must not freewheel their outputs.
+            _cq_lower = self._current_question(query).lower()
+            _programme_intent = (self._classify_composite(_cq_lower)
+                                 or self._classify_programme(_cq_lower)
+                                 or self._classify_delay_report(_cq_lower))
+
             # Check if this is a complex multi-step query → ReAct agent (if on),
             # else the fixed hybrid executor. The agent failing falls through here.
-            if self._is_complex_query(query):
+            if _programme_intent is None and self._is_complex_query(query):
                 agent_result = self._try_react_agent(expanded, doc_ids, trace, "Detected complex query")
                 if agent_result is not None:
                     return agent_result
@@ -3970,8 +4294,10 @@ class QueryRouter:
                 logger.info(f"Query complete (hybrid) - {len(result.get('sources', []))} sources")
                 return result
 
-            # Classify with 3-tier strategy (mode-aware)
-            decision = self.classify_query(query, mode=mode)
+            # Classify with 3-tier strategy (mode-aware). A matched programme
+            # intent short-circuits classification (same decision the shortcut
+            # inside classify_query would produce).
+            decision = _programme_intent or self.classify_query(query, mode=mode)
             trace.route = decision.query_type.value.upper()
             if decision.llm_usage:
                 trace.record_llm_call(LLMUsage(
@@ -4096,9 +4422,11 @@ class QueryRouter:
                 "used_llm": decision.used_llm,
             }
 
-            # Cheap, conditional self-verify → feeds the feedback-free learning loop
-            # (logged by the orchestrator) and marks out-of-corpus answers. Strong
-            # answers cost nothing here.
+            # Cheap, conditional self-verify → feeds the feedback-free learning
+            # loop and marks out-of-corpus answers. Strong answers cost nothing
+            # here. NOTE: Trust Guard verification now runs at the orchestrator
+            # choke point (run_trust_guard_on_result) so agent/hybrid/dual early
+            # returns are covered too; when it runs it overwrites verify_verdict.
             try:
                 result["verify_verdict"] = self._verify_answer(query, result)
             except Exception:

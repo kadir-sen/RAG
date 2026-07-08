@@ -1,3 +1,4 @@
+import ReactMarkdown from 'react-markdown';
 import { useActivityFeed } from '../../hooks/useActivityFeed';
 import type { ActivityStep } from '../../types/api';
 
@@ -11,6 +12,12 @@ const KIND_GLYPH: Record<string, string> = {
   analysing: '∴',
   tool: '⚙',
   answer: '✓',
+  // Trust Guard verification steps
+  draft: '✎',
+  verifying: '⇄',
+  re_retrieval: '⚲',
+  rewriting: '✎',
+  verified: '✓',
 };
 
 function glyph(kind: string): string {
@@ -56,6 +63,9 @@ export default function ActivityFeed({ requestId, visible }: Props) {
   }
 
   const last = steps.length - 1;
+  // Trust Guard ships the draft answer text in a `draft` step's detail; show it
+  // as a dimmed provisional bubble so the user can read while verification runs.
+  const draftStep = [...steps].reverse().find((s) => s.kind === 'draft' && s.detail);
   return (
     <div
       className="px-4 py-3"
@@ -82,7 +92,7 @@ export default function ActivityFeed({ requestId, visible }: Props) {
                 {active ? glyph(s.kind) : '✓'}
               </span>
               <span className="truncate">{s.label}</span>
-              {s.detail && (
+              {s.detail && s.kind !== 'draft' && (
                 <span className="font-mono text-[10px] text-[var(--text-muted)] truncate">
                   {s.detail}
                 </span>
@@ -92,6 +102,16 @@ export default function ActivityFeed({ requestId, visible }: Props) {
           );
         })}
       </ul>
+      {draftStep && (
+        <div className="mt-3 rounded-lg border border-dashed border-[var(--border)] px-4 py-3 opacity-70">
+          <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-[var(--warning)]">
+            Draft — verifying…
+          </div>
+          <div className="prose prose-invert prose-sm max-w-none text-sm leading-relaxed text-[var(--text-secondary)]">
+            <ReactMarkdown>{draftStep.detail!}</ReactMarkdown>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
