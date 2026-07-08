@@ -42,6 +42,41 @@ def _reraise_budget(exc: Exception) -> None:
         raise exc
 
 
+class SqlFailureReason:
+    """Internal SQL-failure taxonomy. The user-facing message stays simple
+    (SQL_UNAVAILABLE_MSG), but logs/telemetry carry the exact reason so a
+    schema/column problem is never conflated with an LLM-quota outage."""
+    NO_COMPATIBLE_TABLE = "NO_COMPATIBLE_TABLE"
+    LOW_CONFIDENCE_MAPPING = "LOW_CONFIDENCE_MAPPING"
+    SQL_GENERATION_LLM_UNAVAILABLE = "SQL_GENERATION_LLM_UNAVAILABLE"
+    SQL_PARSE_ERROR = "SQL_PARSE_ERROR"
+    DUCKDB_EXECUTION_ERROR = "DUCKDB_EXECUTION_ERROR"
+    NO_ROWS = "NO_ROWS"
+    DATE_ANOMALY = "DATE_ANOMALY"
+    UNKNOWN = "UNKNOWN"
+
+
+def classify_sql_failure(exc: Exception) -> str:
+    """Map a raw SQL-path exception to a SqlFailureReason (never surfaced raw)."""
+    msg = str(exc).lower()
+    if any(t in msg for t in ("429", "quota", "resource_exhausted", "rate limit",
+                              "billing", "generativelanguage.googleapis.com",
+                              "llm call failed")):
+        return SqlFailureReason.SQL_GENERATION_LLM_UNAVAILABLE
+    if any(t in msg for t in ("binder error", "catalog error", "referenced column",
+                              "does not have a column", "parser error",
+                              "syntax error", "conversion error")):
+        return SqlFailureReason.DUCKDB_EXECUTION_ERROR
+    return SqlFailureReason.UNKNOWN
+
+
+def _log_sql_failure(reason: str, table_name: Optional[str] = None,
+                     detail: str = "") -> None:
+    """Structured, non-leaking telemetry line for a SQL failure."""
+    logger.warning(f"[SQLFailure] reason={reason} table={table_name or '-'} "
+                   f"detail={(detail or '')[:200]}")
+
+
 # SQL validation patterns
 DANGEROUS_PATTERNS = [
     r'\bDROP\b', r'\bDELETE\b', r'\bINSERT\b', r'\bUPDATE\b',
@@ -2219,12 +2254,14 @@ class DataAnalyzerSQL:
                         logger.info(f"   Self-corrected SQL: {sql[:100]}...")
 
                 if not is_valid:
-                    logger.error(f"   SQL validation failed after retry: {error}")
+                    _log_sql_failure(SqlFailureReason.SQL_PARSE_ERROR,
+                                     table_name, error)
                     return {
                         "answer": f"Cannot execute this query: {error}",
                         "sources": [{"error": error}],
                         "sql": sql,
                         "result_data": None,
+                        "failure_reason": SqlFailureReason.SQL_PARSE_ERROR,
                     }
 
             # Also validate table references (include normalized views)
@@ -2320,12 +2357,14 @@ class DataAnalyzerSQL:
 
         except Exception as e:
             _reraise_budget(e)   # budget/quota → 402, never an answer string
-            logger.error(f"   Query error: {e}")
+            reason = classify_sql_failure(e)
+            _log_sql_failure(reason, table_name, str(e))
             return {
                 "answer": SQL_UNAVAILABLE_MSG,
                 "sources": [{"table_name": table_name}],
                 "sql": sql,
                 "result_data": None,
+                "failure_reason": reason,
             }
 
     def query_with_provider(self, question: str, provider: str,
@@ -2428,11 +2467,13 @@ class DataAnalyzerSQL:
 
         except Exception as e:
             _reraise_budget(e)
-            logger.error(f"   [{provider}] Query error: {e}")
+            reason = classify_sql_failure(e)
+            _log_sql_failure(reason, table_name, f"[{provider}] {e}")
             return {
                 "answer": SQL_UNAVAILABLE_MSG,
                 "sources": [{"table_name": table_name}],
                 "sql": sql, "result_data": None,
+                "failure_reason": reason,
             }
 
     def query_dual(self, question: str, table_name: Optional[str] = None,
