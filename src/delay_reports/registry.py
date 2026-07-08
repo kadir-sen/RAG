@@ -45,8 +45,10 @@ REGISTRY: Dict[str, ToolSpec] = {
                       "evidence list + caveats",
         positive_triggers=[
             r"(prepare|create|build|write|produce|generate|draft)\b.*chronolog",
-            r"chronolog\w*\s+(for|of)\b",
-            r"6\.1\s*style",
+            r"chronolog\w*\s+(for|of|in|section)\b",   # "chronology in 6.1 format"
+            r"6\.1\s*(style|format|section)",           # style OR format OR section
+            r"'s\s+chronolog",                          # "Blockwork's chronology"
+            r"(claim|forensic)\s+chronolog",            # "claim/forensic chronology"
             r"delay\s+(event\s+)?(narrative|report\s+section|section)",
             r"(narrative|report)\s+section\s+.*\bdelay",
             r"(identify|find|extract)\b.*delay events?",

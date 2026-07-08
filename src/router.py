@@ -1895,6 +1895,32 @@ class QueryRouter:
                     "confidence": 0.5,
                 }
 
+        # Existence-gate: before running SQL, ask the schema catalog whether a
+        # compatible table actually exists for the concepts in this query. This
+        # stops "equipment utilization by block" from picking an unrelated cost
+        # table and collapsing into a generic "SQL unavailable". Fail-open.
+        try:
+            from .document_rag import _current_user_corpus
+            from .data_catalog import plan_sql
+            plan = plan_sql(query, corpus_id=_current_user_corpus())
+            if plan.execution_mode == "no_data" and plan.required_concepts:
+                logger.info(f"   [existence-gate] no compatible table for "
+                            f"{plan.required_concepts} → clarification")
+                concept_txt = ", ".join(plan.required_concepts)
+                return {
+                    "query": query,
+                    "query_type": QueryType.DATA.value,
+                    "answer": (
+                        "I read this as a data-analysis request, but I don't see "
+                        f"a compatible table for {concept_txt} in the current "
+                        "project. I can show the available tables or help map "
+                        "your uploaded Excel columns."),
+                    "sources": [], "sql": None, "confidence": 0.6,
+                    "failure_reason": "NO_COMPATIBLE_TABLE",
+                }
+        except Exception as e:
+            logger.debug(f"   [existence-gate] skipped: {e}")
+
         # Check if query needs multiple tables
         relevant = self.data_analyzer.select_tables(query, max_tables=3, allowed_tables=allowed_tables)
         if len(relevant) > 1:
