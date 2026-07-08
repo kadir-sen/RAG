@@ -172,16 +172,21 @@ class SchemaProfiler:
                 return 100.0
             cand_tokens = cand.split()
             # ratio is length-sensitive; token_set tolerates word-order/extra
-            # words but over-rewards a short candidate that is merely a *token*
-            # of a longer header ("machinery" ⊂ "estimated machinery hours"),
-            # so damp it when the candidate is strictly shorter than the header.
+            # words but returns 100 whenever the smaller token set is a *subset*
+            # of the larger ("machinery" ⊂ "estimated machinery hours", or "no" ⊂
+            # "no of workers"), so damp it by the token-count ratio in EITHER
+            # direction. Legit single-word synonyms still score 100 via exact hits.
             ts = fuzz.token_set_ratio(norm_raw, cand)
-            if len(cand_tokens) < len(raw_tokens):
-                ts *= len(cand_tokens) / len(raw_tokens)
+            mn = min(len(cand_tokens), len(raw_tokens))
+            mx = max(len(cand_tokens), len(raw_tokens))
+            if mx > mn > 0:
+                ts *= mn / mx
             s = max(fuzz.ratio(norm_raw, cand), ts)
-            # A full multi-word candidate phrase appearing verbatim is strong
-            # ("total manpower count on site" ⊇ "manpower count").
-            if len(cand_tokens) >= 2 and (cand in norm_raw or norm_raw in cand):
+            # A full multi-word candidate phrase appearing verbatim in the header
+            # is strong ("total manpower count on site" ⊇ "manpower count"). Only
+            # this direction — the reverse (header ⊂ candidate) lets a 1-char
+            # header like "m" falsely match "machine name" by substring.
+            if len(cand_tokens) >= 2 and len(norm_raw) >= 4 and cand in norm_raw:
                 s = max(s, 95.0)
             best = max(best, s)
         return best

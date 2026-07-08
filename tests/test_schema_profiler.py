@@ -117,6 +117,21 @@ class TestNoMatch:
         assert profiler.profile([]).schema_id is None
         assert profiler.profile(["", "   "]).schema_id is None
 
+    @pytest.mark.parametrize("cols", [
+        ["m", "estimate"],          # 'm' must NOT match "Machinery Name"
+        ["s"],                       # 's' must NOT match "...Hours"
+        ["yp"],
+        ["a", "f", "g", "k", "l"],  # single letters must map to nothing
+        ["end", "total"],            # short generic tokens, no subset false-100
+        ["no"],                      # 'no' must NOT subset-match "no of workers"
+    ])
+    def test_short_columns_do_not_false_match(self, profiler, cols):
+        r = profiler.profile(cols)
+        # no single-/double-char header should be bound to a canonical field
+        assert all(len(k) > 3 for k in r.column_map), \
+            f"short header falsely mapped: {r.column_map}"
+        assert r.schema_id is None
+
     def test_conflict_resolution_highest_score_wins(self, profiler):
         # Two headers that both lean toward "Machinery Name"; the exact one wins,
         # the weaker one must not also claim the same field.
