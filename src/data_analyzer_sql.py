@@ -737,10 +737,21 @@ class DataAnalyzerSQL:
                 question, sql, result_df, table_name
             )
 
-            summary = self._generate_summary(question, sql, result_df,
-                                             provider=provider,
-                                             table_name=table_name,
-                                             detail_df=detail_df)
+            # The SQL is already deterministic; only the narration needs an LLM.
+            # If that call fails (provider outage / dead quota), keep the computed
+            # result and fall back to the LLM-free template summary rather than
+            # discarding a correct answer. Genuine budget/user-quota still 402s.
+            try:
+                summary = self._generate_summary(question, sql, result_df,
+                                                 provider=provider,
+                                                 table_name=table_name,
+                                                 detail_df=detail_df)
+            except Exception as se:
+                _reraise_budget(se)
+                logger.warning(f"   Shortcut summary LLM unavailable ({se}); "
+                               f"using deterministic summary")
+                summary = self._lazy_summary(question, sql, result_df,
+                                             table_name, detail_df=detail_df)
 
             file_path = self.file_paths.get(table_name, '')
             from .document_rag import generate_doc_id
