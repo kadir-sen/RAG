@@ -26,6 +26,7 @@ EXTENSION_MAP = {
     ".xlsx": "data",
     ".xls": "data",
     ".csv": "data",
+    ".xer": "programme",  # Primavera P6 export — parsed on demand, no RAG index
 }
 
 
@@ -49,6 +50,9 @@ class ProcessingResult:
     # Per-sheet schema match diagnostics for Excel/CSV (one entry per sheet attempted)
     # Each: {sheet, schema_id, ratio, matched_columns, missing_columns, registered}
     schema_match_details: List[Dict[str, Any]] = field(default_factory=list)
+    # Parsed XER metadata (file_type == "programme" only) — persisted to the
+    # registry so resolvers can pick baseline/current without re-parsing.
+    programme_meta: Optional[Dict] = None
 
 
 def route_file(file_path: str) -> ProcessingResult:
@@ -89,6 +93,8 @@ def route_file(file_path: str) -> ProcessingResult:
         result = _process_email(file_path)
     elif file_type == "data":
         result = _process_data_file(file_path)
+    elif file_type == "programme":
+        result = _process_programme(file_path)
     else:
         result = ProcessingResult(
             success=False,
@@ -107,6 +113,13 @@ def route_file(file_path: str) -> ProcessingResult:
             table_names=table_names,
             notice_extracted=result.notice_extracted,
         )
+        # Programme metadata (data_date etc.) → registry, so input resolvers
+        # never re-parse XER files at question time.
+        if result.programme_meta:
+            try:
+                registry.set_programme_meta(doc_id, result.programme_meta)
+            except Exception as pe:
+                logger.debug(f"[FileRouter] programme_meta persist skipped: {pe}")
         # Entity Registry seed — deterministic, zero LLM calls, never breaks
         # ingest. Feeds Trust Guard's fast corpus-scoped entity pre-check
         # (sender/recipient/cc + subject proper-nouns + the filename itself).
@@ -324,6 +337,62 @@ def _learn_jargon_from_terms(new_terms: list) -> None:
                 pass  # built-in or duplicate — skip silently
     except Exception as e:
         logger.warning(f"[FileRouter] jargon learning skipped: {e}")
+
+
+PROGRAMME_PARSER_VERSION = 1
+
+
+def build_programme_meta(data: Any) -> Dict[str, Any]:
+    """JSON-safe metadata dict from a parsed XerData."""
+    proj = data.project
+    def _iso(dt):
+        return dt.isoformat() if dt else None
+    return {
+        "programme_type": "unknown",  # baseline/update flag settable later
+        "data_date": _iso(proj.data_date) if proj else None,
+        "plan_start": _iso(proj.plan_start) if proj else None,
+        "scheduled_finish": _iso(proj.scheduled_finish) if proj else None,
+        "activity_count": len(data.tasks),
+        "relationship_count": len(data.relationships),
+        "milestone_count": sum(1 for t in data.tasks if t.is_milestone),
+        "project_short_name": (proj.short_name if proj else None),
+        "parser_version": PROGRAMME_PARSER_VERSION,
+    }
+
+
+def _process_programme(file_path: str) -> ProcessingResult:
+    """Validate + register a Primavera P6 XER export.
+
+    No chunking/embedding/OCR — programme files are parsed on demand by the
+    deterministic programme tools. Ingest only verifies the file parses and
+    records lightweight metadata; a corrupt file gets an error status so the
+    programme-tool preconditions never count it.
+    """
+    try:
+        from .programme_tools.vendor.dcma import parse_xer
+        data = parse_xer(Path(file_path).read_bytes())
+        if not data.raw_tables.get("TASK") or not data.projects:
+            return ProcessingResult(
+                success=False, file_path=file_path, file_type="programme",
+                error="Not a valid P6 XER export (no TASK table or project data).",
+            )
+        proj = data.project
+        logger.info(
+            f"[FileRouter] Programme registered: {Path(file_path).name} — "
+            f"project={proj.short_name if proj else '?'}, "
+            f"data_date={proj.data_date if proj else '?'}, "
+            f"tasks={len(data.tasks)}, relationships={len(data.relationships)}"
+        )
+        return ProcessingResult(
+            success=True, file_path=file_path, file_type="programme",
+            programme_meta=build_programme_meta(data),
+        )
+    except Exception as e:
+        logger.warning(f"[FileRouter] XER parse failed for {file_path}: {e}")
+        return ProcessingResult(
+            success=False, file_path=file_path, file_type="programme",
+            error=f"XER parse failed: {e}",
+        )
 
 
 def _process_document(file_path: str) -> ProcessingResult:
