@@ -74,6 +74,81 @@ export interface LoginResponse {
   user: AuthUser;
 }
 
+// ── Programme analysis (deterministic XER tools) ─────────────
+
+export interface ProgrammeTable {
+  title: string;
+  columns: string[];
+  rows: (string | number | null)[][];
+  caption?: string;
+}
+
+export interface ProgrammeChartPoint {
+  x: string;            // ISO date
+  y: string | number | null;
+  marker?: string | null;
+}
+
+export interface ProgrammeChart {
+  chart_id: string;
+  type: string;         // "line"
+  title: string;
+  x_label?: string;
+  y_label?: string;
+  series: { name: string; points: ProgrammeChartPoint[] }[];
+}
+
+export interface ProgrammeArtifactFile {
+  artifact_id: string;
+  kind: string;
+  filename: string;
+  url: string;
+}
+
+export interface ProgrammeValidation {
+  computation_guard?: {
+    pre?: 'passed' | 'failed';
+    post?: 'passed' | 'violations';
+    violations?: string[];
+  };
+  narrative_guard?: {
+    status:
+      | 'approved'
+      | 'rewritten_then_approved'
+      | 'fallback_after_rejection'
+      | 'llm_unavailable'
+      | 'deterministic_only';
+    violations?: string[];
+  };
+}
+
+export interface ProgrammeToolResult {
+  tool_id: string;
+  status: 'complete' | 'partial' | 'failed';
+  summary: string;
+  tables: ProgrammeTable[];
+  charts: ProgrammeChart[];
+  artifacts: ProgrammeArtifactFile[];
+  warnings: string[];
+  caveats: string[];
+  requires_analyst_review: boolean;
+  validation?: ProgrammeValidation;
+}
+
+export interface ProgrammePackSection {
+  section_id: string;
+  title: string;
+  tool_result: ProgrammeToolResult | null;
+  narrative: string;
+}
+
+/** Either a single ToolResult or a workflow pack (has `sections`). */
+export interface ProgrammeArtifact extends Partial<ProgrammeToolResult> {
+  pack_id?: string;
+  workflow_id?: string;
+  sections?: ProgrammePackSection[];
+}
+
 export interface TrustGuardRun {
   ts: string;
   username: string;
@@ -107,6 +182,84 @@ export interface TrustGuardStats {
   recent: TrustGuardRun[];
 }
 
+// ── Chat-native response blocks ──────────────────────────────
+
+export interface MarkdownTextBlock {
+  type: 'markdown_text';
+  block_id: string;
+  text: string;
+}
+
+export interface DataTableBlock {
+  type: 'data_table';
+  block_id: string;
+  title: string;
+  columns: string[];
+  rows: (string | number | null)[][];
+  caption?: string;
+}
+
+export interface ChartBlockData {
+  type: 'chart';
+  block_id: string;
+  chart_type: 'line' | 'bar';
+  title: string;
+  x_label?: string;
+  y_label?: string;
+  series?: { name: string; points: { x: string | number; y: string | number | null; marker?: string | null }[] }[] | null;
+  categories?: string[] | null;
+  values?: number[] | null;
+}
+
+export interface HtmlReportSectionBlock {
+  type: 'html_report_section';
+  block_id: string;
+  title: string;
+  html: string;
+  fallback_markdown: string;
+  sanitized: true;
+}
+
+export interface ArtifactLinkBlock {
+  type: 'artifact_link';
+  block_id: string;
+  url: string;
+  filename: string;
+  kind: string;
+}
+
+export interface CaveatsBlockData {
+  type: 'caveats';
+  block_id: string;
+  caveats: string[];
+  warnings: string[];
+}
+
+export interface ValidationStatusBlock {
+  type: 'validation_status';
+  block_id: string;
+  guards: Record<string, 'passed' | 'failed' | 'fallback' | 'skipped'>;
+  requires_analyst_review: boolean;
+  fallbacks_used: string[];
+}
+
+export interface ClarificationBlockData {
+  type: 'clarification';
+  block_id: string;
+  question: string;
+  options: { label: string; value: string }[];
+}
+
+export type ChatBlock =
+  | MarkdownTextBlock
+  | DataTableBlock
+  | ChartBlockData
+  | HtmlReportSectionBlock
+  | ArtifactLinkBlock
+  | CaveatsBlockData
+  | ValidationStatusBlock
+  | ClarificationBlockData;
+
 export interface TrustGuardInfo {
   sufficiency_label: 'verified' | 'partially_supported' | 'insufficient' | 'unverified' | '';
   sufficiency: number; // 0..1
@@ -116,7 +269,7 @@ export interface TrustGuardInfo {
 }
 
 export interface ChatResponse {
-  ui_intent: 'answer' | 'doc_list' | 'timeline' | 'email_trace' | 'sql_result';
+  ui_intent: 'answer' | 'doc_list' | 'timeline' | 'email_trace' | 'sql_result' | 'programme_result' | 'blocks';
   assistant_text: string;
   citations: Citation[];
   related_docs: RelatedDoc[];
@@ -127,6 +280,8 @@ export interface ChatResponse {
   cta: CallToAction | null;
   quota: QuotaInfo | null;
   trust_guard?: TrustGuardInfo | null;
+  programme_artifact?: ProgrammeArtifact | null;
+  blocks?: ChatBlock[] | null;
 }
 
 export interface ConversationMeta {

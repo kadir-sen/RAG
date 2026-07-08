@@ -144,6 +144,21 @@ class ChatOrchestrator:
         except Exception:
             pass
 
+        # 2b. Context artifact: the most recent assistant answer's persisted
+        # ToolResult, so composite follow-ups ("make this into a report
+        # section") can reuse it without re-running the analysis. ContextVar
+        # propagates into the router worker thread.
+        try:
+            from src.router import context_artifact_var
+            _ctx_art = None
+            for m in reversed(recent or []):
+                if getattr(m, "role", "") == "assistant" and getattr(m, "artifact", None):
+                    _ctx_art = m.artifact
+                    break
+            context_artifact_var.set(_ctx_art)
+        except Exception:
+            pass
+
         # 3c. Draft enrichment: when composing a REPLY to selected emails, gather
         # supporting facts from the user's OWN project documents (corpus-scoped RAG
         # — corpus_var is set above, so no cross-corpus leak) so the draft can cite
@@ -299,6 +314,10 @@ class ChatOrchestrator:
             ),
             sql=response.sql_artifact.generated_sql if response.sql_artifact else None,
             result_data=response.sql_artifact.preview_rows if response.sql_artifact else None,
+            # Persist compact (raw engine dumps can be large; follow-ups only
+            # need tables/summary/caveats/validation).
+            artifact={k: v for k, v in response.programme_artifact.items()
+                      if k != "raw"} if response.programme_artifact else None,
         )
         store.add_message(conversation_id, assistant_msg)
 

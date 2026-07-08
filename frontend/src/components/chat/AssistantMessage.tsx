@@ -13,6 +13,8 @@ import EmailTraceResponse from './EmailTraceResponse';
 import CtaButton from './CtaButton';
 import DocumentAnalysisTable from './DocumentAnalysisTable';
 import DocumentAnalysisTimeline, { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
+import ProgrammeResult from './ProgrammeResult';
+import BlockRenderer from './blocks/BlockRenderer';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -99,7 +101,8 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
   // every "related documents" surface is the structured table the user expects.
   const showRelatedAsTable =
     intent !== 'doc_list' && intent !== 'timeline' &&
-    intent !== 'email_trace' && intent !== 'sql_result' && relatedCount >= 2;
+    intent !== 'email_trace' && intent !== 'sql_result' &&
+    intent !== 'programme_result' && relatedCount >= 2;
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
 
@@ -125,9 +128,12 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
 
   // Inline citations are only meaningful for plain answer responses where the
   // text itself is the primary content. Doc-list / timeline / email-trace /
-  // sql_result intents render their own structured sources.
+  // sql_result intents render their own structured sources. programme_result
+  // is included: delay-chronology paragraphs carry "(file, p.N)" refs whose
+  // clickable counterparts are these citations.
   const showInlineCitations =
-    intent === 'answer' && !!response?.citations?.length;
+    (intent === 'answer' || intent === 'programme_result') &&
+    !!response?.citations?.length;
 
   return (
     <div className="mb-6 px-4 animate-fade-in-up group">
@@ -167,8 +173,19 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
               )}
             </div>
 
-            {/* Intent-specific rendering */}
-            {response && (
+            {/* Chat-native block path: when blocks are present they own the
+                rich rendering; intent-specific branches are skipped. Trust
+                badge, step trail and footer stay. */}
+            {!!response?.blocks?.length && (
+              <BlockRenderer
+                blocks={response.blocks}
+                onDocClick={onDocClick}
+                onSend={onRetry}
+              />
+            )}
+
+            {/* Intent-specific rendering (legacy path, unchanged) */}
+            {response && !response.blocks?.length && (
               <>
                 {showTimeline ? (
                   <div className="mt-3">
@@ -211,9 +228,14 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
                       <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
                     )}
 
+                    {/* Deterministic programme-analysis output (XER tools). */}
+                    {intent === 'programme_result' && response.programme_artifact && (
+                      <ProgrammeResult artifact={response.programme_artifact} />
+                    )}
+
                     {/* A single related doc → compact bubble strip (table is overkill). */}
                     {intent !== 'doc_list' && intent !== 'timeline' &&
-                     intent !== 'email_trace' && (
+                     intent !== 'email_trace' && intent !== 'programme_result' && (
                       <RelatedDocsList
                         docs={response.related_docs}
                         onDocClick={onDocClick}

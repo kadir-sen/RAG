@@ -81,7 +81,7 @@ class TrustGuardInfo(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    ui_intent: str       # "answer" | "doc_list" | "timeline" | "email_trace" | "sql_result"
+    ui_intent: str       # "answer" | "doc_list" | "timeline" | "email_trace" | "sql_result" | "programme_result"
     assistant_text: str
     citations: List[Citation] = Field(default_factory=list)
     related_docs: List[RelatedDoc] = Field(default_factory=list)
@@ -92,6 +92,12 @@ class ChatResponse(BaseModel):
     cta: Optional[CallToAction] = None
     quota: Optional[QuotaInfo] = None
     trust_guard: Optional[TrustGuardInfo] = None
+    # Deterministic programme-analysis output (ToolResult dict or workflow
+    # pack) — free-form because the contract lives in src/programme_tools.
+    programme_artifact: Optional[dict] = None
+    # Chat-native rich blocks (validated by backend.models.blocks) — additive:
+    # legacy answers carry None and render exactly as before.
+    blocks: Optional[List[dict]] = None
 
 
 class ConversationMeta(BaseModel):
