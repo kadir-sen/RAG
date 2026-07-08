@@ -395,8 +395,11 @@ class HybridExecutor:
                 table_results[tname] = result
                 all_sources.extend(result.get("sources", []))
             except Exception as e:
+                from .data_analyzer_sql import _reraise_budget
+                _reraise_budget(e)
                 logger.warning(f"[HybridExecutor] Table {tname} query failed: {e}")
-                table_results[tname] = {"answer": f"Error: {e}", "sources": []}
+                table_results[tname] = {
+                    "answer": "This table could not be analyzed.", "sources": []}
 
         # Combine results via LLM
         combine_parts = []
@@ -470,9 +473,11 @@ class HybridExecutor:
                     _, result = future.result()
                     results[prov] = result
                 except Exception as e:
+                    from .data_analyzer_sql import _reraise_budget
+                    _reraise_budget(e)
                     logger.error(f"[HybridExecutor] [{prov}] Failed: {e}")
                     results[prov] = {
-                        "answer": f"Error from {prov}: {e}",
+                        "answer": "This analysis is temporarily unavailable.",
                         "sources": [], "sql": None, "result_data": None,
                     }
 

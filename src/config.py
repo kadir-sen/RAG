@@ -102,12 +102,16 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 DOCUMENTS_DIR = DATA_DIR / "documents"
 TABLES_DIR = DATA_DIR / "tables"
+PROGRAMME_DIR = DATA_DIR / "programmes"   # Primavera P6 XER exports
 STORAGE_DIR = BASE_DIR / "storage"
+ARTIFACTS_DIR = STORAGE_DIR / "artifacts"  # generated analysis outputs (xlsx …)
 
 # Ensure directories exist
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
 TABLES_DIR.mkdir(parents=True, exist_ok=True)
+PROGRAMME_DIR.mkdir(parents=True, exist_ok=True)
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Chunking settings
 CHUNK_SIZE = 1024

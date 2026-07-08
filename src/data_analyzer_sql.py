@@ -27,6 +27,20 @@ from .config import (
 from .logger import logger, log_separator, log_document_processing
 from .catalog import _active_corpus
 
+# User-safe message for any SQL-path failure. NEVER interpolate the exception —
+# raw provider errors (429/quota/billing URL) must not reach the chat.
+SQL_UNAVAILABLE_MSG = ("SQL analysis is temporarily unavailable; please narrow "
+                       "the question or try again shortly.")
+
+
+def _reraise_budget(exc: Exception) -> None:
+    """Budget/quota exceptions must reach the FastAPI 402 handler — never get
+    swallowed into an answer string. Call this first in every SQL except."""
+    from .usage_tracker import BudgetExceededError
+    from .user_store import UserQuotaExceededError
+    if isinstance(exc, (BudgetExceededError, UserQuotaExceededError)):
+        raise exc
+
 
 # SQL validation patterns
 DANGEROUS_PATTERNS = [
@@ -2294,10 +2308,11 @@ class DataAnalyzerSQL:
             }
 
         except Exception as e:
+            _reraise_budget(e)   # budget/quota → 402, never an answer string
             logger.error(f"   Query error: {e}")
             return {
-                "answer": f"Error executing query: {str(e)}",
-                "sources": [{"error": str(e), "table_name": table_name}],
+                "answer": SQL_UNAVAILABLE_MSG,
+                "sources": [{"table_name": table_name}],
                 "sql": sql,
                 "result_data": None,
             }
@@ -2401,10 +2416,11 @@ class DataAnalyzerSQL:
             }
 
         except Exception as e:
+            _reraise_budget(e)
             logger.error(f"   [{provider}] Query error: {e}")
             return {
-                "answer": f"Error executing query: {str(e)}",
-                "sources": [{"error": str(e), "table_name": table_name}],
+                "answer": SQL_UNAVAILABLE_MSG,
+                "sources": [{"table_name": table_name}],
                 "sql": sql, "result_data": None,
             }
 
@@ -2426,10 +2442,11 @@ class DataAnalyzerSQL:
                     prov, result = future.result()
                     results[prov] = result
                 except Exception as e:
+                    _reraise_budget(e)
                     prov = futures[future]
                     logger.error(f"   [{prov}] Dual query failed: {e}")
                     results[prov] = {
-                        "answer": f"Error from {prov}: {e}",
+                        "answer": SQL_UNAVAILABLE_MSG,
                         "sources": [], "sql": None, "result_data": None,
                     }
 

@@ -90,9 +90,26 @@ from backend.models.responses import (
 
 def _build_trust_guard(raw: Dict[str, Any]) -> "TrustGuardInfo | None":
     """Map the router's trust_guard dict onto the response model.
-    Absent or skipped verdicts (guard off / low risk / fail-open) → None."""
+
+    Fix 5: a verdict skipped because the verifier was DOWN (skipped_reason
+    "error") on a medium/high-risk query must still surface an "unverified —
+    analyst review" badge — otherwise a high-risk answer ships looking clean.
+    Benign skips (low risk / disabled / route excluded) → None as before."""
     tg = raw.get("trust_guard")
-    if not isinstance(tg, dict) or tg.get("skipped"):
+    if not isinstance(tg, dict):
+        return None
+    if tg.get("skipped"):
+        if (tg.get("skipped_reason") == "error"
+                and str(tg.get("risk") or "") in ("medium", "high")):
+            return TrustGuardInfo(
+                sufficiency_label="unverified",
+                sufficiency=0.0,
+                caveats=["This answer could not be automatically verified "
+                         "(verification temporarily unavailable); analyst "
+                         "review is recommended."],
+                analyst_review_required=True,
+                action="unverified",
+            )
         return None
     try:
         return TrustGuardInfo(
@@ -131,6 +148,9 @@ INTENT_MAP = {
     "thread": "email_trace",
     "draft": "answer",
     "file_list": "doc_list",  # "what files exist" → flat doc table
+    "programme": "programme_result",  # deterministic XER analysis output
+    "delay_report": "programme_result",  # chronology sections reuse the same renderer
+    "composite": "blocks",   # chat-native multi-block orchestration output
 }
 
 
@@ -229,6 +249,11 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     result_data = raw.get("result_data")
 
     ui_intent = INTENT_MAP.get(query_type, "answer")
+    # Programme/delay-report clarifications ("please upload an XER", "name the
+    # event") are plain prose — the rich renderer would show an empty shell.
+    if query_type in ("programme", "delay_report") and (
+            raw.get("clarification") or not raw.get("programme_artifact")):
+        ui_intent = "answer"
     # Drop citations only for empty or bare-refusal document answers. Nuanced
     # answers keep their citations (routing fixes handle the old misroute case
     # where a data query produced irrelevant email citations).
@@ -247,6 +272,25 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
     routing_confidence = routing.get("confidence") if routing else None
     route = (routing.get("route") or routing.get("decision")) if routing else None
 
+    # Chat-native blocks: contract-guard them before they reach the client.
+    # Invalid blocks are dropped with a caveat; an empty result falls back to
+    # the plain answer text (never a 500, never a broken renderer).
+    blocks = None
+    if raw.get("blocks"):
+        from backend.models.blocks import validate_blocks
+        valid, dropped = validate_blocks(raw.get("blocks"))
+        if dropped:
+            valid = [b for b in valid]  # keep list mutable copy semantics clear
+            if valid and valid[0].get("type") != "clarification":
+                valid.append({"type": "caveats", "block_id": "contract-guard",
+                              "caveats": [], "warnings":
+                              [f"{len(dropped)} response block(s) failed "
+                               "validation and were omitted."]})
+        blocks = valid or None
+        if blocks is None and not answer_text:
+            answer_text = ("The response could not be rendered; please try "
+                           "rephrasing your request.")
+
     return ChatResponse(
         ui_intent=ui_intent,
         assistant_text=answer_text,
@@ -257,6 +301,9 @@ def _build_from_single(raw: Dict[str, Any]) -> ChatResponse:
         sql_artifact=sql_artifact,
         cta=cta,
         trust_guard=_build_trust_guard(raw),
+        programme_artifact=raw.get("programme_artifact")
+            if isinstance(raw.get("programme_artifact"), dict) else None,
+        blocks=blocks,
     )
 
 
