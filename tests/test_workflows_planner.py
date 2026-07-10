@@ -33,9 +33,8 @@ def test_available_triggers(q, expected):
 
 @pytest.mark.parametrize("q,expected", [
     ("Create internal EOT claim roadmap.", WorkflowId.INTERNAL_EOT_ROADMAP),
-    ("Generate preliminary delay claim report pack.",
-     WorkflowId.PRELIMINARY_DELAY_CLAIM_PACK),
-    ("Assess method statement viability.", WorkflowId.METHOD_VIABILITY),
+    ("Prepare a delay briefing.", WorkflowId.DELAY_BRIEFING),
+    ("Generate the monthly progress report.", WorkflowId.MONTHLY_PROGRESS_REPORT),
 ])
 def test_planned_triggers(q, expected):
     wp = plan(q.lower())

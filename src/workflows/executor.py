@@ -193,6 +193,12 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
     elif target == "adapter:contract_mechanism":
         from .adapters import contract_mechanism as _adp_contract
         wr = _adp_contract.run(query, router, doc_ids)
+    elif target == "adapter:method_viability":
+        from .adapters import method_viability as _adp_method
+        wr = _adp_method.run(query, router, doc_ids)
+    elif target == "adapter:delay_claim_pack":
+        from .adapters import delay_claim_pack as _adp_pack2
+        wr = _adp_pack2.run(query, router, doc_ids)
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

@@ -55,8 +55,8 @@ def test_failed_runs_do_not_create_a_signal():
 def test_suggestion_only_points_at_available_workflows():
     # Even a DOMINANT successful history for a planned/unavailable id must be
     # refused — the memory can only route to a runnable workflow.
-    q = _uniq("planned method viability history")
-    _seed(q, WorkflowId.METHOD_VIABILITY, "success", 5)
+    q = _uniq("planned eot roadmap history")
+    _seed(q, WorkflowId.INTERNAL_EOT_ROADMAP, "success", 5)
     assert qp.suggest(q) is None
 
 
