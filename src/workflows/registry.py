@@ -1,0 +1,306 @@
+"""Registered workflow catalogue.
+
+The planner may only select a WorkflowId present here; the executor delegates
+`target` to an existing composite runner or a workflow adapter, or — for
+planned/unavailable entries — returns a structured "not implemented yet /
+here's a substitute" message. No LLM-named workflows, ever.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
+from .types import WorkflowId, WorkflowStatus, WorkflowStep
+
+
+@dataclass(frozen=True)
+class WorkflowSpec:
+    workflow_id: WorkflowId
+    name: str
+    status: WorkflowStatus
+    trigger_examples: List[str]
+    required_inputs: List[str]
+    steps: List[WorkflowStep]
+    risk: str = "medium"
+    expected_blocks: List[str] = field(default_factory=list)
+    # Available/partial: delegation target — "composite:<id>" or "adapter:<name>".
+    target: Optional[str] = None
+    analyst_review_required: bool = False
+    # Planned/unavailable extras:
+    substitute: Optional[WorkflowId] = None
+    substitute_hint: str = ""
+    runnable_now: List[str] = field(default_factory=list)
+
+
+def _step(step_id, tool_id, desc, **kw) -> WorkflowStep:
+    return WorkflowStep(step_id=step_id, tool_id=tool_id, description=desc, **kw)
+
+
+WORKFLOWS: Dict[WorkflowId, WorkflowSpec] = {
+    # ── AVAILABLE ────────────────────────────────────────────
+    WorkflowId.PROGRAMME_INVENTORY: WorkflowSpec(
+        workflow_id=WorkflowId.PROGRAMME_INVENTORY,
+        name="Programme inventory",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["What programme files are available?",
+                          "List XER files.", "Which programme is latest?"],
+        required_inputs=["at least one .xer file"],
+        steps=[_step("inventory", "programme.inventory",
+                     "Catalogue XER revisions", expected_outputs=["data_table"])],
+        expected_blocks=["data_table", "caveats", "validation_status"],
+        target="adapter:programme_inventory",
+    ),
+    WorkflowId.PROJECT_DATA_INVENTORY: WorkflowSpec(
+        workflow_id=WorkflowId.PROJECT_DATA_INVENTORY,
+        name="Project data inventory",
+        status=WorkflowStatus.PARTIAL,
+        trigger_examples=["What data is available for this project?"],
+        required_inputs=["uploaded programme/Excel files"],
+        steps=[_step("inventory", "programme.inventory",
+                     "Programme revisions (Excel-table listing is Sprint 2)",
+                     expected_outputs=["data_table"])],
+        expected_blocks=["data_table", "caveats", "validation_status"],
+        target="adapter:programme_inventory",
+    ),
+    WorkflowId.DCMA_LATEST: WorkflowSpec(
+        workflow_id=WorkflowId.DCMA_LATEST,
+        name="DCMA on latest programme",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["Run DCMA on latest programme.",
+                          "Programme health check.", "DCMA 14-point check."],
+        required_inputs=["latest .xer (auto-resolved)"],
+        steps=[_step("resolve", "resolve.inputs", "Resolve latest XER"),
+               _step("dcma", "programme.dcma_14_point", "14-point scorecard",
+                     expected_outputs=["data_table", "artifact_link"])],
+        expected_blocks=["markdown_text", "data_table", "artifact_link",
+                         "caveats", "validation_status"],
+        target="composite:composite.dcma_latest",
+    ),
+    WorkflowId.MILESTONE_SHIFT_CHART: WorkflowSpec(
+        workflow_id=WorkflowId.MILESTONE_SHIFT_CHART,
+        name="Milestone shift chart",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["Show milestone movements as a chart.",
+                          "Compare milestone shifts across XERs.",
+                          "Milestone slippage graph."],
+        required_inputs=["two or more dated .xer revisions"],
+        steps=[_step("resolve", "resolve.inputs", "Require >=2 XERs"),
+               _step("shift", "programme.milestone_shift", "Milestone drift",
+                     expected_outputs=["chart", "data_table"])],
+        expected_blocks=["markdown_text", "chart", "data_table",
+                         "caveats", "validation_status"],
+        target="composite:composite.milestone_shift_visual",
+    ),
+    WorkflowId.PRELIMINARY_PROGRAMME_PACK: WorkflowSpec(
+        workflow_id=WorkflowId.PRELIMINARY_PROGRAMME_PACK,
+        name="Preliminary programme analysis pack",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["Generate a preliminary programme analysis pack.",
+                          "Create programme report pack."],
+        required_inputs=["one or more .xer files"],
+        steps=[_step("inventory", "programme.inventory", "Inventory"),
+               _step("dcma", "programme.dcma_14_point", "DCMA per revision"),
+               _step("shift", "programme.milestone_shift",
+                     "Milestone shift (if >=2 XERs)", required=False)],
+        expected_blocks=["markdown_text", "caveats", "validation_status"],
+        target="adapter:preliminary_pack",
+    ),
+    WorkflowId.DELAY_CHRONOLOGY_SECTION: WorkflowSpec(
+        workflow_id=WorkflowId.DELAY_CHRONOLOGY_SECTION,
+        name="Delay chronology (6.1 section)",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["Prepare 6.1 chronology for Delayed Blockwork.",
+                          "Delayed Blockwork's chronology in 6.1 format.",
+                          "Create claim chronology section for delayed access."],
+        required_inputs=["named delay event", "correspondence evidence"],
+        steps=[_step("scope", "delay.chronology", "Resolve event scope"),
+               _step("evidence", "delay.chronology", "Retrieve evidence"),
+               _step("table", "delay.chronology", "Build chronology table"),
+               _step("narrative", "narrative.guarded",
+                     "Guarded narrative (if LLM available)", requires_llm=True,
+                     required=False)],
+        expected_blocks=["markdown_text", "data_table", "html_report_section",
+                         "caveats", "validation_status"],
+        risk="high",
+        analyst_review_required=True,
+        target="adapter:delay_chronology",  # html mode overrides in executor
+    ),
+    WorkflowId.SQL_METRIC_CHART: WorkflowSpec(
+        workflow_id=WorkflowId.SQL_METRIC_CHART,
+        name="SQL metric chart",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["Create manpower by trade chart.",
+                          "Show equipment utilization by block.",
+                          "Show IPC cumulative progress."],
+        required_inputs=["a compatible Excel/data table"],
+        steps=[_step("resolve", "resolve.inputs", "Resolve compatible table"),
+               _step("metric", "sql.metric", "Deterministic metric",
+                     expected_outputs=["data_table"]),
+               _step("chart", "viz.bar_chart", "Chart from table",
+                     required=False)],
+        expected_blocks=["markdown_text", "chart", "data_table", "caveats",
+                         "validation_status"],
+        target="composite:composite.sql_metric_chart",
+    ),
+    WorkflowId.CONTEXT_TO_REPORT_SECTION: WorkflowSpec(
+        workflow_id=WorkflowId.CONTEXT_TO_REPORT_SECTION,
+        name="Context to report section",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["Make this into a report section.",
+                          "Turn the previous chart into a report block.",
+                          "Create an HTML section from this."],
+        required_inputs=["a previous analysis result in context"],
+        steps=[_step("compose", "html.compose_section", "Sanitized HTML section",
+                     expected_outputs=["html_report_section"])],
+        expected_blocks=["html_report_section", "caveats", "validation_status"],
+        target="composite:composite.context_to_section",
+    ),
+
+    WorkflowId.DELAY_EVENT_CANDIDATE_REGISTER: WorkflowSpec(
+        workflow_id=WorkflowId.DELAY_EVENT_CANDIDATE_REGISTER,
+        name="Candidate delay event register",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["Build a candidate delay event register.",
+                          "Suggest delay events from the record.",
+                          "Delay event register for the blockwork delay."],
+        required_inputs=["correspondence evidence corpus"],
+        steps=[_step("scope", "delay.chronology", "Resolve topic scope"),
+               _step("evidence", "delay.chronology", "Retrieve evidence"),
+               _step("extract", "narrative.guarded",
+                     "Containment-guarded extraction", requires_llm=True),
+               _step("persist", "resolve.inputs",
+                     "Persist candidates for analyst review", human_gate=True)],
+        expected_blocks=["markdown_text", "data_table", "caveats",
+                         "validation_status"],
+        risk="high",
+        analyst_review_required=True,
+        target="adapter:candidate_register",
+    ),
+
+    WorkflowId.EVENT_EVIDENCE_TABLE: WorkflowSpec(
+        workflow_id=WorkflowId.EVENT_EVIDENCE_TABLE,
+        name="Event evidence table",
+        status=WorkflowStatus.AVAILABLE,
+        trigger_examples=["Show evidence table for confirmed delay events.",
+                          "Show evidence for Event 01.",
+                          "Which documents support Event 01?"],
+        required_inputs=["confirmed delay events"],
+        steps=[_step("read", "resolve.inputs", "Read confirmed events"),
+               _step("table", "resolve.inputs", "Evidence table for the event",
+                     expected_outputs=["data_table"])],
+        expected_blocks=["markdown_text", "data_table", "caveats",
+                         "validation_status"],
+        risk="high",
+        analyst_review_required=True,
+        target="adapter:event_evidence_table",
+        substitute=WorkflowId.DELAY_EVENT_CANDIDATE_REGISTER,
+    ),
+
+    # ── PLANNED / UNAVAILABLE ────────────────────────────────
+    WorkflowId.DELAY_BRIEFING: WorkflowSpec(
+        workflow_id=WorkflowId.DELAY_BRIEFING,
+        name="Delay briefing",
+        status=WorkflowStatus.PLANNED,
+        trigger_examples=["Prepare a delay briefing."],
+        required_inputs=["named delay events", "programme + evidence"],
+        steps=[],
+        substitute=WorkflowId.DELAY_CHRONOLOGY_SECTION,
+        substitute_hint="prepare a 6.1 chronology for a named delay event",
+        runnable_now=["delay chronology section", "programme inventory"],
+    ),
+    WorkflowId.MONTHLY_PROGRESS_REPORT: WorkflowSpec(
+        workflow_id=WorkflowId.MONTHLY_PROGRESS_REPORT,
+        name="Monthly progress report",
+        status=WorkflowStatus.PLANNED,
+        trigger_examples=["Generate the monthly progress report."],
+        required_inputs=["progress Excel data", "programme revisions"],
+        steps=[],
+        substitute=WorkflowId.PRELIMINARY_PROGRAMME_PACK,
+        substitute_hint="generate a preliminary programme analysis pack",
+        runnable_now=["preliminary programme pack", "SQL progress chart"],
+    ),
+    WorkflowId.PRELIMINARY_DELAY_CLAIM_PACK: WorkflowSpec(
+        workflow_id=WorkflowId.PRELIMINARY_DELAY_CLAIM_PACK,
+        name="Preliminary delay claim report pack",
+        status=WorkflowStatus.PLANNED,
+        trigger_examples=["Generate preliminary delay claim report pack.",
+                          "Delay claim report pack."],
+        required_inputs=["named delay events", "programme revisions",
+                         "notices/contract", "evidence corpus"],
+        steps=[],
+        substitute=WorkflowId.PRELIMINARY_PROGRAMME_PACK,
+        substitute_hint="generate a preliminary programme analysis pack, then a "
+                        "6.1 chronology per delay event",
+        runnable_now=["preliminary programme pack", "delay chronology section"],
+    ),
+    WorkflowId.NOTICE_COMPLIANCE_MATRIX: WorkflowSpec(
+        workflow_id=WorkflowId.NOTICE_COMPLIANCE_MATRIX,
+        name="Notice compliance matrix",
+        status=WorkflowStatus.PLANNED,
+        trigger_examples=["Create notice compliance matrix.",
+                          "Notice compliance check."],
+        required_inputs=["contract notice clauses", "issued notices/correspondence"],
+        steps=[],
+        substitute=WorkflowId.DELAY_CHRONOLOGY_SECTION,
+        substitute_hint="build a 6.1 chronology of the notice correspondence",
+        runnable_now=["delay chronology section"],
+    ),
+    WorkflowId.CONTRACT_MECHANISM_SUMMARY: WorkflowSpec(
+        workflow_id=WorkflowId.CONTRACT_MECHANISM_SUMMARY,
+        name="Contract mechanism summary",
+        status=WorkflowStatus.PLANNED,
+        trigger_examples=["Summarise the contract's EOT mechanism.",
+                          "Contract mechanism extraction."],
+        required_inputs=["the executed contract / conditions"],
+        steps=[],
+        substitute=None,
+        substitute_hint="ask a document question against the contract file",
+        runnable_now=["document Q&A on the contract"],
+    ),
+    WorkflowId.METHOD_VIABILITY: WorkflowSpec(
+        workflow_id=WorkflowId.METHOD_VIABILITY,
+        name="Method viability",
+        status=WorkflowStatus.PLANNED,
+        trigger_examples=["Assess delay-analysis method viability."],
+        required_inputs=["baseline + as-built programmes", "records"],
+        steps=[],
+        substitute=WorkflowId.PRELIMINARY_PROGRAMME_PACK,
+        substitute_hint="run a programme pack to assess data availability first",
+        runnable_now=["preliminary programme pack"],
+    ),
+    WorkflowId.INTERNAL_EOT_ROADMAP: WorkflowSpec(
+        workflow_id=WorkflowId.INTERNAL_EOT_ROADMAP,
+        name="Internal EOT roadmap",
+        status=WorkflowStatus.PLANNED,
+        trigger_examples=["Create internal EOT claim roadmap.",
+                          "Internal EOT roadmap."],
+        required_inputs=["delay events", "programme", "notices", "contract"],
+        steps=[],
+        substitute=WorkflowId.PRELIMINARY_PROGRAMME_PACK,
+        substitute_hint="start with a preliminary programme pack + chronologies",
+        runnable_now=["preliminary programme pack", "delay chronology section"],
+    ),
+}
+
+
+# Composite intent id → WorkflowId (planner step 1 delegation map).
+COMPOSITE_TO_WORKFLOW: Dict[str, WorkflowId] = {
+    "composite.milestone_shift_visual": WorkflowId.MILESTONE_SHIFT_CHART,
+    "composite.sql_metric_chart": WorkflowId.SQL_METRIC_CHART,
+    "composite.chronology_html": WorkflowId.DELAY_CHRONOLOGY_SECTION,
+    "composite.context_to_section": WorkflowId.CONTEXT_TO_REPORT_SECTION,
+    "composite.dcma_latest": WorkflowId.DCMA_LATEST,
+    # composite.programme_compare / composite.evidence_explain intentionally
+    # NOT mapped — they keep their existing composite route (planner → None).
+}
+
+
+def get_spec(workflow_id: WorkflowId) -> Optional[WorkflowSpec]:
+    return WORKFLOWS.get(workflow_id)
+
+
+def is_available(workflow_id: WorkflowId) -> bool:
+    spec = WORKFLOWS.get(workflow_id)
+    return bool(spec and spec.status in (WorkflowStatus.AVAILABLE,
+                                         WorkflowStatus.PARTIAL))

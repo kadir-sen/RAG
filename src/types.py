@@ -27,6 +27,7 @@ class QueryType(Enum):
     PROGRAMME = "programme"  # deterministic P6/XER analysis tools
     DELAY_REPORT = "delay_report"  # forensic delay-event chronology sections
     COMPOSITE = "composite"  # chat-native multi-block orchestration
+    WORKFLOW = "workflow"    # registered construction workflow (façade layer)
 
 
 # ── Router Decision ──────────────────────────────────────────
