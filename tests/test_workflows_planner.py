@@ -32,7 +32,6 @@ def test_available_triggers(q, expected):
 
 
 @pytest.mark.parametrize("q,expected", [
-    ("Create notice compliance matrix.", WorkflowId.NOTICE_COMPLIANCE_MATRIX),
     ("Create internal EOT claim roadmap.", WorkflowId.INTERNAL_EOT_ROADMAP),
     ("Generate preliminary delay claim report pack.",
      WorkflowId.PRELIMINARY_DELAY_CLAIM_PACK),

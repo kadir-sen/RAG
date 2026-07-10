@@ -36,4 +36,4 @@ def test_composite_map_points_at_available_workflows():
 def test_get_spec_and_is_available():
     assert get_spec(WorkflowId.DCMA_LATEST).status == WorkflowStatus.AVAILABLE
     assert is_available(WorkflowId.PROGRAMME_INVENTORY)
-    assert not is_available(WorkflowId.NOTICE_COMPLIANCE_MATRIX)
+    assert not is_available(WorkflowId.CONTRACT_MECHANISM_SUMMARY)

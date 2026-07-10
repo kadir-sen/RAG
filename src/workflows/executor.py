@@ -13,8 +13,6 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from src.orchestration.helpers import table_block
-
 from . import caveats as CV
 from . import context as CTX
 from .adapters import (
@@ -112,46 +110,6 @@ def _unavailable_result(spec: WorkflowSpec, query: str) -> WorkflowResult:
     )
 
 
-def _notice_matrix_response(spec: WorkflowSpec,
-                            ctx: WorkflowContext) -> WorkflowResult:
-    """Notice-compliance-matrix is planned, but its response is prerequisite-
-    aware: it names the confirmed-delay-event dependency and points at the
-    workflow that satisfies it — never a generic 'unavailable'."""
-    wid = spec.workflow_id
-    try:
-        from src.delay_reports import candidate_store
-        confirmed = candidate_store.confirmed_events(corpus=ctx.corpus_id)
-    except Exception:
-        confirmed = []
-
-    if not confirmed:
-        text = ("**Notice compliance matrix** is planned. It requires "
-                "**confirmed delay events** to check each event against the "
-                "contract's notice clauses. First run the *candidate delay "
-                "event register*, then confirm the relevant events.")
-        return WorkflowResult(
-            workflow_id=wid, status=RESULT_UNAVAILABLE, answer=text,
-            blocks=[{"type": "markdown_text", "block_id": "prereq",
-                     "text": text}],
-            substitute=WorkflowId.DELAY_EVENT_CANDIDATE_REGISTER.value)
-
-    ordered = sorted(confirmed, key=lambda c: c.get("event_date") or "")
-    text = (f"**Notice compliance matrix** is planned (Sprint 3). "
-            f"{len(ordered)} confirmed delay event(s) are available; the "
-            "Sprint 3 matrix will check each against the notice clauses. "
-            "Meanwhile you can review the *event evidence table* or a *6.1 "
-            "chronology* for any confirmed event.")
-    rows = [[i + 1, c.get("event_date", ""), c.get("actor", ""),
-             (c.get("issue") or "")[:80]] for i, c in enumerate(ordered)]
-    table = {"title": "Confirmed delay events (notice-matrix inputs)",
-             "columns": ["#", "Date", "Party", "Issue"], "rows": rows}
-    return WorkflowResult(
-        workflow_id=wid, status=RESULT_UNAVAILABLE, answer=text,
-        blocks=[{"type": "markdown_text", "block_id": "prereq", "text": text},
-                table_block(table, "confirmed")],
-        substitute=WorkflowId.EVENT_EVIDENCE_TABLE.value)
-
-
 def _clarification_result(wid: WorkflowId, question: str,
                           options: Optional[List[dict]] = None) -> WorkflowResult:
     return WorkflowResult(
@@ -175,8 +133,6 @@ def run_workflow(plan: WorkflowPlan, query: str, router: Any,
             wr = WorkflowResult(workflow_id=plan.workflow_id,
                                 status=RESULT_FAILED,
                                 answer="Unknown workflow.")
-        elif spec.workflow_id == WorkflowId.NOTICE_COMPLIANCE_MATRIX:
-            wr = _notice_matrix_response(spec, ctx)
         elif spec.status in (WorkflowStatus.PLANNED, WorkflowStatus.UNAVAILABLE):
             wr = _unavailable_result(spec, query)
         else:
@@ -231,6 +187,9 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
     elif target == "adapter:event_evidence_table":
         from .adapters import event_evidence_table as _adp_evidence
         wr = _adp_evidence.run(query, router, doc_ids)
+    elif target == "adapter:notice_matrix":
+        from .adapters import notice_matrix as _adp_notice
+        wr = _adp_notice.run(query, router, doc_ids)
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")
