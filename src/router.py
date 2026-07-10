@@ -3826,6 +3826,47 @@ class QueryRouter:
             metadata=m,
         )
 
+    def _classify_workflow(self, query_lower: str) -> Optional[RouterDecision]:
+        """Registered-workflow match (façade layer). Runs before composite/
+        programme/delay so workflow-grade asks get the uniform result +
+        input-resolution summary. Returns None for plain RAG/data questions and
+        for composites it deliberately leaves on their existing route. Never
+        raises."""
+        try:
+            from .workflows import plan as _wf_plan
+            wf = _wf_plan(query_lower)
+        except Exception as e:
+            logger.debug(f"[WorkflowRoute] classify skipped: {e}")
+            return None
+        if wf is None:
+            return None
+        return RouterDecision(
+            query_type=QueryType.WORKFLOW,
+            confidence=0.95,
+            reasons=[f"workflow matched: {wf.workflow_id.value} "
+                     f"({wf.status.value})"],
+            metadata={"kind": "workflow", "id": wf.workflow_id.value,
+                      "plan": wf},
+        )
+
+    def _handle_workflow_query(self, query: str,
+                               doc_ids: Optional[List[str]] = None,
+                               plan: Any = None,
+                               context_artifact: Optional[Dict[str, Any]] = None,
+                               ) -> Dict[str, Any]:
+        """Execute a registered workflow → chat-native blocks."""
+        from .workflows import (plan as _wf_plan, run_workflow,
+                                workflow_result_to_response)
+        current_q = self._current_question(query)
+        wf_plan = plan or _wf_plan(current_q.lower())
+        if wf_plan is None:
+            return {"answer": "I couldn't map that request to a registered "
+                              "workflow.", "query_type": "workflow",
+                    "clarification": True, "sources": []}
+        result = run_workflow(wf_plan, current_q, self, doc_ids,
+                              context_artifact)
+        return workflow_result_to_response(result)
+
     def _classify_composite(self, query_lower: str) -> Optional[RouterDecision]:
         """Deterministic composite-intent match (chart/html/combined asks).
         Returns a high-confidence COMPOSITE decision or None. Never raises."""
@@ -4006,6 +4047,9 @@ class QueryRouter:
         doc_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Dispatch query to appropriate handler by type."""
+        if query_type == QueryType.WORKFLOW:
+            return self._handle_workflow_query(query, doc_ids, plan=None,
+                                               context_artifact=context_artifact_var.get())
         if query_type == QueryType.COMPOSITE:
             return self._handle_composite_query(query, doc_ids,
                                                 context_artifact_var.get())
@@ -4038,6 +4082,11 @@ class QueryRouter:
 
         allowed_tables = self.data_analyzer.get_tables_for_doc_ids(doc_ids) if doc_ids else None
 
+        if query_type == QueryType.WORKFLOW:
+            single = self._handle_workflow_query(
+                query, doc_ids, plan=None,
+                context_artifact=context_artifact_var.get())
+            return {p: single for p in LLM_PROVIDERS}
         if query_type == QueryType.COMPOSITE:
             single = self._handle_composite_query(query, doc_ids,
                                                   context_artifact_var.get())
@@ -4276,7 +4325,8 @@ class QueryRouter:
             # never be pulled into the ReAct agent — their pipelines are fixed
             # and the LLM must not freewheel their outputs.
             _cq_lower = self._current_question(query).lower()
-            _programme_intent = (self._classify_composite(_cq_lower)
+            _programme_intent = (self._classify_workflow(_cq_lower)
+                                 or self._classify_composite(_cq_lower)
                                  or self._classify_programme(_cq_lower)
                                  or self._classify_delay_report(_cq_lower))
 
