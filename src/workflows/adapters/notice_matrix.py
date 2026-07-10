@@ -51,9 +51,30 @@ def run(query: str, router: Any, doc_ids: Optional[List[str]] = None
             substitute=WorkflowId.DELAY_EVENT_CANDIDATE_REGISTER.value)
 
     notices = nm.enumerate_served_notices(corpus=corpus)
-    matrix = nm.build_matrix(confirmed, notices)
 
-    rows = [[r.event_topic[:40], r.event_date, f"{r.required_days}d (assumed)",
+    # Prefer CLAUSE-DERIVED periods from the contract; fall back to assumed.
+    rules = None
+    clause_derived = False
+    try:
+        from src.delay_reports import contract_mechanism as cm
+        mechs = cm.get_contract_mechanisms(corpus=corpus).mechanisms
+        derived = cm.notice_rules_from_mechanisms(mechs)
+        if derived:
+            rules = {**nm.DEFAULT_NOTICE_RULES, **derived}
+            clause_derived = True
+    except Exception:
+        rules = None
+    matrix = nm.build_matrix(confirmed, notices, rules)
+    if clause_derived:
+        matrix.caveats = [
+            "Required notice periods are CLAUSE-DERIVED from the contract "
+            "document but must still be verified against the executed contract "
+            "(amendments/cross-references)."] + [
+            c for c in matrix.caveats if "assumed" not in c.lower()]
+
+    req_basis = "clause" if clause_derived else "assumed"
+    rows = [[r.event_topic[:40], r.event_date,
+             f"{r.required_days}d ({req_basis})",
              r.deadline, _STATUS_LABEL.get(r.status, r.status),
              r.served_date or "—",
              ("+%dd" % r.gap_days if r.gap_days and r.gap_days > 0

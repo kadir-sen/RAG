@@ -35,7 +35,6 @@ def test_available_triggers(q, expected):
     ("Create internal EOT claim roadmap.", WorkflowId.INTERNAL_EOT_ROADMAP),
     ("Generate preliminary delay claim report pack.",
      WorkflowId.PRELIMINARY_DELAY_CLAIM_PACK),
-    ("Summarise the contract mechanism.", WorkflowId.CONTRACT_MECHANISM_SUMMARY),
     ("Assess method statement viability.", WorkflowId.METHOD_VIABILITY),
 ])
 def test_planned_triggers(q, expected):

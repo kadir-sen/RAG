@@ -190,6 +190,9 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
     elif target == "adapter:notice_matrix":
         from .adapters import notice_matrix as _adp_notice
         wr = _adp_notice.run(query, router, doc_ids)
+    elif target == "adapter:contract_mechanism":
+        from .adapters import contract_mechanism as _adp_contract
+        wr = _adp_contract.run(query, router, doc_ids)
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")
