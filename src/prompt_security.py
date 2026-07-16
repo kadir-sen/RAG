@@ -7,7 +7,7 @@ Implements OWASP-aligned mitigations:
   - Denylist for common injection phrases
 """
 import re
-from typing import Optional
+from typing import Optional, Tuple
 
 from .logger import logger
 
@@ -108,16 +108,90 @@ def build_system_prompt(*parts: str) -> str:
 
 # ── SQL output validation helpers ────────────────────────────
 
-def validate_sql_tables(sql: str, allowed_tables: list) -> bool:
-    """Check that SQL only references allowed table names."""
-    sql_upper = sql.upper()
-    # Extract FROM / JOIN table references
-    from_matches = re.findall(r'\bFROM\s+(\w+)', sql_upper)
-    join_matches = re.findall(r'\bJOIN\s+(\w+)', sql_upper)
-    referenced = set(from_matches + join_matches)
+_SQL_BLOCK_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
+_SQL_LINE_COMMENT_RE = re.compile(r'--[^\n]*')
+_SQL_STRING_RE = re.compile(r"'(?:[^']|'')*'")
+_SQL_DQUOTED_RE = re.compile(r'"(?:[^"]|"")*"')
 
-    allowed_upper = {t.upper() for t in allowed_tables}
-    for table in referenced:
-        if table not in allowed_upper:
-            return False
-    return True
+
+def strip_sql_literals(sql: str, mask_identifiers: bool = False) -> str:
+    """Blank out comments and string literals so keyword/table scans read only
+    SQL structure, never data.
+
+    With mask_identifiers, double-quoted identifiers are blanked too — that is
+    what stops a column named "Progress Update" from looking like an UPDATE.
+    Leave it False when the identifiers themselves are what you're reading.
+    """
+    out = _SQL_BLOCK_COMMENT_RE.sub(' ', sql or '')
+    out = _SQL_LINE_COMMENT_RE.sub(' ', out)
+    out = _SQL_STRING_RE.sub("''", out)
+    if mask_identifiers:
+        out = _SQL_DQUOTED_RE.sub('""', out)
+    return out
+
+
+# CTE definitions: WITH name AS ( / , name AS ( — optionally RECURSIVE and
+# DuckDB's [NOT] MATERIALIZED hint.
+_CTE_DEF_RE = re.compile(
+    r'(?:\bWITH\b|,)\s*(?:RECURSIVE\s+)?(?:"((?:[^"]|"")+)"|([A-Za-z_][\w$]*))'
+    r'\s+AS\s*(?:(?:NOT\s+)?MATERIALIZED\s*)?\(',
+    re.IGNORECASE,
+)
+
+# Table references after FROM/JOIN. Group 3 (an opening paren) marks a table
+# *function* call — read_csv_auto('/etc/passwd') lands here.
+_TABLE_REF_RE = re.compile(
+    r'\b(?:FROM|JOIN)\s+(?:"((?:[^"]|"")+)"|([A-Za-z_][\w$]*)\s*(\()?)',
+    re.IGNORECASE,
+)
+
+# May follow FROM/JOIN without naming a table.
+_NON_TABLE_KEYWORDS = {'LATERAL', 'SELECT', 'VALUES', 'UNNEST'}
+
+
+# Violation kinds. The caller must treat these differently: a table function is
+# an attack (refuse outright), an unknown table is usually just a hallucinated
+# name (let the normal self-correction retry fix it).
+TABLE_FUNCTION = 'table_function'
+UNKNOWN_TABLE = 'unknown_table'
+
+
+def find_table_violation(sql: str, allowed_tables: list
+                         ) -> Optional[Tuple[str, str]]:
+    """First table-reference violation in SQL, or None.
+
+    Returns (kind, detail) where kind is TABLE_FUNCTION or UNKNOWN_TABLE.
+    Locally-defined CTE names count as allowed; subqueries (FROM (SELECT ...))
+    are skipped. Table functions are reported regardless of the allowed list —
+    that is the rule that stops FROM read_csv_auto('/etc/passwd').
+    """
+    scrubbed = strip_sql_literals(sql)
+
+    cte_names = set()
+    for m in _CTE_DEF_RE.finditer(scrubbed):
+        name = (m.group(1) or m.group(2) or '').upper()
+        if name:
+            cte_names.add(name)
+
+    allowed_upper = {str(t).upper() for t in allowed_tables} | cte_names
+
+    for m in _TABLE_REF_RE.finditer(scrubbed):
+        quoted, bare, is_call = m.group(1), m.group(2), m.group(3)
+        name = (quoted or bare or '').upper()
+        if not name or (not quoted and name in _NON_TABLE_KEYWORDS):
+            continue
+        if is_call and not quoted:
+            return TABLE_FUNCTION, f"table function '{name.lower()}(...)'"
+        if name not in allowed_upper:
+            return UNKNOWN_TABLE, f"unknown table '{name.lower()}'"
+
+    return None
+
+
+def validate_sql_tables(sql: str, allowed_tables: list) -> Tuple[bool, str]:
+    """Check that SQL only reads allowed tables. Returns (is_valid, reason)."""
+    violation = find_table_violation(sql, allowed_tables)
+    if violation is None:
+        return True, ''
+    _kind, detail = violation
+    return False, f"{detail} is not allowed"

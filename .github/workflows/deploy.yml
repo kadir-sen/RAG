@@ -41,6 +41,7 @@ jobs:
         # gate stays fast and deterministic.
         run: |
           pytest -q \
+            tests/test_sql_security.py \
             tests/test_router_document_listing.py \
             tests/test_router_intent_doc_list.py \
             tests/test_router_rebalance.py \
