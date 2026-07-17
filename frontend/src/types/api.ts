@@ -217,6 +217,9 @@ export interface HtmlReportSectionBlock {
   title: string;
   html: string;
   fallback_markdown: string;
+  /** The backend's assertion that it sanitized this html — not something the
+   *  client verifies or relies on. HtmlReportBlock sanitizes again before
+   *  injecting, precisely so a wrong assertion here cannot become an XSS. */
   sanitized: true;
 }
 
