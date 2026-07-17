@@ -201,7 +201,9 @@ REGISTRY: Dict[str, ToolSpec] = {
         positive_triggers=[
             r"(progress|s)[- ]?curve",
             r"planned (vs\.?|versus) (actual|recorded) progress",
-            r"cumulative progress",
+            # NB: not a bare "cumulative progress" — that is an IPC/Excel data
+            # question ("cumulative progress % by activity"), not a programme
+            # S-curve; keep this to explicit curve/plan-slippage phrasing.
             r"how far (behind|ahead) .*(plan|programme|schedule)",
         ],
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
