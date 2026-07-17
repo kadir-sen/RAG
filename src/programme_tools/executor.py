@@ -11,7 +11,11 @@ import logging
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from .adapters import dcma_adapter, inventory_adapter, milestone_adapter
+from .adapters import (
+    asbuilt_path_adapter, comparison_adapter, critical_path_adapter,
+    dcma_adapter, float_erosion_adapter, inventory_adapter, milestone_adapter,
+    progress_adapter, resources_adapter, variance_adapter, windows_adapter,
+)
 from .adapters.xer_loader import XerLoadError
 from .guards import computation_guard
 from .schemas import AdapterOutput, ArtifactBlob, ToolResult, failed_result
@@ -23,6 +27,14 @@ _ADAPTERS: Dict[str, Callable[..., AdapterOutput]] = {
     inventory_adapter.TOOL_ID: inventory_adapter.run,
     dcma_adapter.TOOL_ID: dcma_adapter.run,
     milestone_adapter.TOOL_ID: milestone_adapter.run,
+    variance_adapter.TOOL_ID: variance_adapter.run,
+    critical_path_adapter.TOOL_ID: critical_path_adapter.run,
+    comparison_adapter.TOOL_ID: comparison_adapter.run,
+    progress_adapter.TOOL_ID: progress_adapter.run,
+    windows_adapter.TOOL_ID: windows_adapter.run,
+    float_erosion_adapter.TOOL_ID: float_erosion_adapter.run,
+    resources_adapter.TOOL_ID: resources_adapter.run,
+    asbuilt_path_adapter.TOOL_ID: asbuilt_path_adapter.run,
 }
 
 

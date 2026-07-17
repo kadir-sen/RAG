@@ -47,7 +47,12 @@ jobs:
             tests/test_router_rebalance.py \
             tests/test_response_builder.py \
             tests/test_response_builder_dedupe.py \
-            tests/test_api_embedding.py
+            tests/test_api_embedding.py \
+            tests/test_workflows_registry.py \
+            tests/test_workflows_planner.py \
+            tests/test_workflows_executor.py \
+            tests/test_programme_guards.py \
+            tests/test_assembled_report.py
 
   # ── 2. Build the Docker image and push it to GHCR ────────────────────────
   build-and-push:

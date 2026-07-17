@@ -119,6 +119,30 @@ def plan(query: str) -> Optional[WorkflowPlan]:
         if pm.get("id") == "programme.inventory":
             return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_INVENTORY],
                                    query)
+        if pm.get("id") == "programme.variance":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_VARIANCE],
+                                   query)
+        if pm.get("id") == "programme.critical_path":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_CRITICAL_PATH],
+                                   query)
+        if pm.get("id") == "programme.comparison":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_COMPARISON],
+                                   query)
+        if pm.get("id") == "programme.progress":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_PROGRESS],
+                                   query)
+        if pm.get("id") == "programme.windows":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_WINDOWS],
+                                   query)
+        if pm.get("id") == "programme.float_erosion":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_FLOAT_EROSION],
+                                   query)
+        if pm.get("id") == "programme.resources":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_RESOURCES],
+                                   query)
+        if pm.get("id") == "programme.asbuilt_path":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_ASBUILT_PATH],
+                                   query)
         # Plain dcma / milestone programme-tool queries stay on the legacy
         # PROGRAMME route (reached as workflows via composite triggers only).
         return None

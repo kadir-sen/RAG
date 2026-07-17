@@ -205,6 +205,59 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
     elif target == "adapter:delay_briefing":
         from .adapters import delay_briefing as _adp_briefing
         wr = _adp_briefing.run(query, router, doc_ids)
+    elif target == "adapter:programme_variance":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_VARIANCE, "programme.variance", router,
+            doc_ids, min_files=2,
+            need_message="As-planned vs as-recorded variance needs a baseline "
+                         "and a later dated .xer revision (at least two).")
+    elif target == "adapter:programme_critical_path":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_CRITICAL_PATH, "programme.critical_path",
+            router, doc_ids, min_files=1,
+            need_message="Critical path analysis needs a programme .xer file.")
+    elif target == "adapter:programme_comparison":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_COMPARISON, "programme.comparison", router,
+            doc_ids, min_files=2,
+            need_message="Revision comparison needs two dated .xer revisions.")
+    elif target == "adapter:programme_progress":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_PROGRESS, "programme.progress", router,
+            doc_ids, min_files=2,
+            need_message="A progress curve needs a baseline and a later "
+                         "dated .xer update.")
+    elif target == "adapter:programme_windows":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_WINDOWS, "programme.windows", router,
+            doc_ids, min_files=2,
+            need_message="Windows analysis needs at least two dated .xer "
+                         "revisions.")
+    elif target == "adapter:programme_float_erosion":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_FLOAT_EROSION, "programme.float_erosion",
+            router, doc_ids, min_files=2,
+            need_message="Float erosion tracking needs at least two dated "
+                         ".xer revisions.")
+    elif target == "adapter:programme_resources":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_RESOURCES, "programme.resources", router,
+            doc_ids, min_files=1,
+            need_message="Resource loading needs a resourced programme .xer.")
+    elif target == "adapter:programme_asbuilt_path":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_ASBUILT_PATH, "programme.asbuilt_path", router,
+            doc_ids, min_files=2,
+            need_message="An as-built critical path needs at least two dated "
+                         ".xer revisions.")
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

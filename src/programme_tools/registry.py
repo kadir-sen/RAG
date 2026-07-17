@@ -119,6 +119,180 @@ REGISTRY: Dict[str, ToolSpec] = {
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=2,
     ),
+    "programme.variance": ToolSpec(
+        tool_id="programme.variance",
+        title="As-Planned vs As-Recorded Variance",
+        description="Compares a baseline programme against the latest recorded "
+                    "one, grouped by a P6 activity-code dimension, reporting "
+                    "each group's start/finish slippage.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="A baseline and at least one later .xer revision",
+            missing_message="Variance analysis requires a baseline and a later "
+                            "recorded XER revision (at least two).",
+        )],
+        output_schema="variance table + finish-slip bar chart + xlsx",
+        positive_triggers=[
+            r"as[- ]?planned (vs\.?|versus|against) as[- ]?(recorded|built)",
+            r"\bvariance\b.*(analysis|programme|schedule|activity|wbs)",
+            r"planned (vs\.?|versus) (recorded|actual|as[- ]?built)",
+            r"(slippage|slip) by (activity|code|wbs|zone|area|trade)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
+    "programme.critical_path": ToolSpec(
+        tool_id="programme.critical_path",
+        title="Baseline Critical Path",
+        description="Traces the planned critical (longest) path of a programme "
+                    "by backward driving-logic, with a float-based fallback.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="At least one .xer programme (the baseline)",
+            missing_message="Critical path analysis requires a programme XER.",
+        )],
+        output_schema="critical-path activity table + xlsx",
+        positive_triggers=[
+            r"(baseline |planned )?critical path",
+            r"longest path",
+            r"driving (path|logic|activities)",
+            r"what('?s| is) (on|driving) the critical path",
+        ],
+        # "as-built critical path" belongs to programme.asbuilt_path, not here.
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS + [r"as[- ]?built"],
+        min_xer_files=1,
+    ),
+    "programme.comparison": ToolSpec(
+        tool_id="programme.comparison",
+        title="Revision Comparison / Change Log",
+        description="Diffs two programme revisions like a Claim Digger — "
+                    "added/deleted/renamed activities, duration/logic/lag/"
+                    "constraint/calendar changes, and retrospective actual-date "
+                    "changes.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="Two .xer revisions to diff",
+            missing_message="Revision comparison requires two programme XER "
+                            "revisions.",
+        )],
+        output_schema="change-category summary + detail tables",
+        positive_triggers=[
+            r"(compare|diff|comparison of) .*(revisions?|programmes?|schedules?|updates?)",
+            r"change log",
+            r"claim digg\w+",
+            r"what changed between (the )?(two )?(programmes?|revisions?|updates?)",
+            r"retrospective (changes?|actual)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
+    "programme.progress": ToolSpec(
+        tool_id="programme.progress",
+        title="Progress S-curve",
+        description="Planned vs as-recorded cumulative progress; slippage is "
+                    "the horizontal offset between the curves.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="A baseline and at least one later update",
+            missing_message="A progress curve needs a baseline and a later "
+                            "update (two dated XER revisions).",
+        )],
+        output_schema="planned/recorded S-curve line chart + summary table",
+        positive_triggers=[
+            r"(progress|s)[- ]?curve",
+            r"planned (vs\.?|versus) (actual|recorded) progress",
+            # NB: not a bare "cumulative progress" — that is an IPC/Excel data
+            # question ("cumulative progress % by activity"), not a programme
+            # S-curve; keep this to explicit curve/plan-slippage phrasing.
+            r"how far (behind|ahead) .*(plan|programme|schedule)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
+    "programme.windows": ToolSpec(
+        tool_id="programme.windows",
+        title="Windows / Period Movement",
+        description="Window-by-window completion-date movement and critical-"
+                    "path turnover across consecutive data dates — the "
+                    "SCL-preferred contemporaneous method.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="At least two dated .xer revisions",
+            missing_message="Windows analysis requires at least two dated XER "
+                            "revisions.",
+        )],
+        output_schema="per-window movement table + movement bar chart",
+        positive_triggers=[
+            r"windows? (analysis|method)",
+            r"period movement",
+            r"(time )?slice analysis",
+            r"window[- ]by[- ]window",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
+    "programme.float_erosion": ToolSpec(
+        tool_id="programme.float_erosion",
+        title="Float Erosion Tracker",
+        description="Tracks how total float is consumed across revisions — per "
+                    "window, how many activities lost or gained float and the "
+                    "median change; an early-warning signal before slippage.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="At least two dated .xer revisions",
+            missing_message="Float erosion tracking requires at least two "
+                            "dated XER revisions.",
+        )],
+        output_schema="per-window erosion table + eroded-count bar chart",
+        positive_triggers=[
+            r"float erosion",
+            r"(total )?float (consum\w+|eros\w+|track\w+|trend)",
+            r"(losing|loss of) float",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
+    "programme.resources": ToolSpec(
+        tool_id="programme.resources",
+        title="Planned Resource Histogram",
+        description="Monthly planned resource loading (labour/equipment/"
+                    "material) from a resourced programme's target quantities.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="A resourced programme .xer",
+            missing_message="Resource loading needs a programme XER.",
+        )],
+        output_schema="resource summary table + monthly loading line chart",
+        positive_triggers=[
+            r"resource (loading|histogram|profile|hist\w*)",
+            r"(planned )?(manpower|labou?r|equipment) (loading|histogram|curve|profile)",
+            r"resource[- ]?loaded (programme|schedule)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=1,
+    ),
+    "programme.asbuilt_path": ToolSpec(
+        tool_id="programme.asbuilt_path",
+        title="As-Built Critical Path",
+        description="Reconstructs the as-built critical path contemporaneously "
+                    "across revisions, with a criticality-persistence index — "
+                    "the basis of a collapsed/observational as-built analysis.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="Successive dated .xer revisions (three or more ideal)",
+            missing_message="An as-built critical path needs at least two "
+                            "dated XER revisions.",
+        )],
+        output_schema="criticality-persistence table",
+        positive_triggers=[
+            r"as[- ]?built (critical path|longest path|path)",
+            r"(collapsed|observational) as[- ]?built",
+            r"criticality persistence",
+            r"contemporaneous .*(critical path|as[- ]?built)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
 }
 
 WORKFLOW_ID = "report.preliminary_programme_analysis_pack"
