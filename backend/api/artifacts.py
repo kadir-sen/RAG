@@ -1,7 +1,8 @@
-"""Download endpoint for generated analysis artifacts (xlsx reports etc.).
+"""Download endpoint for generated analysis artifacts (xlsx/pdf/docx reports).
 
-Artifacts are written by src/programme_tools/executor.py under
-storage/artifacts/<run_id>/<filename>; this router serves them read-only.
+Artifacts are written under storage/artifacts/<run_id>/<filename> by
+src/export/artifacts.py (used by programme tools and report exports alike);
+this router serves them read-only.
 Auth is enforced at include_router level (auth_dep in backend/main.py).
 """
 
@@ -14,6 +15,9 @@ router = APIRouter()
 
 _MEDIA_TYPES = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".docx": "application/vnd.openxmlformats-officedocument."
+             "wordprocessingml.document",
+    ".pdf": "application/pdf",
     ".png": "image/png",
     ".csv": "text/csv",
 }

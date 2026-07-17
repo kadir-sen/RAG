@@ -119,9 +119,11 @@ WORKFLOWS: Dict[WorkflowId, WorkflowSpec] = {
                _step("table", "delay.chronology", "Build chronology table"),
                _step("narrative", "narrative.guarded",
                      "Guarded narrative (if LLM available)", requires_llm=True,
-                     required=False)],
+                     required=False),
+               _step("export", "export.section", "PDF/DOCX downloads",
+                     required=False, expected_outputs=["artifact_link"])],
         expected_blocks=["markdown_text", "data_table", "html_report_section",
-                         "caveats", "validation_status"],
+                         "artifact_link", "caveats", "validation_status"],
         risk="high",
         analyst_review_required=True,
         target="adapter:delay_chronology",  # html mode overrides in executor

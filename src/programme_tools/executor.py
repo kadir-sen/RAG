@@ -8,7 +8,6 @@ The LLM can neither name a Python function nor bypass the guards.
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
@@ -18,8 +17,6 @@ from .guards import computation_guard
 from .schemas import AdapterOutput, ArtifactBlob, ToolResult, failed_result
 
 logger = logging.getLogger(__name__)
-
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 # Whitelist: tool_id → adapter entry point. Nothing outside this dict runs.
 _ADAPTERS: Dict[str, Callable[..., AdapterOutput]] = {
@@ -78,18 +75,8 @@ def _persist_artifacts(result: ToolResult, blobs: List[ArtifactBlob],
     if not blobs:
         return
     try:
-        from .config_paths import artifacts_dir
-        run_dir = artifacts_dir() / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        for blob in blobs:
-            safe = _SAFE_NAME_RE.sub("_", blob.filename)[:100] or "artifact.bin"
-            (run_dir / safe).write_bytes(blob.data)
-            result.artifacts.append({
-                "artifact_id": f"{run_id}/{safe}",
-                "kind": blob.kind,
-                "filename": safe,
-                "url": f"/api/artifacts/{run_id}/{safe}",
-            })
+        from src.export.artifacts import persist_blobs
+        result.artifacts.extend(persist_blobs(blobs, run_id))
     except Exception as e:
         logger.warning(f"[ProgrammeTools] artifact persist failed: {e}")
         result.warnings = list(result.warnings) + [
