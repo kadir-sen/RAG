@@ -30,19 +30,26 @@ def _clarify(wid: WorkflowId, msg: str) -> WorkflowResult:
 
 
 def _chart_block(chart: dict) -> Optional[dict]:
-    """Map a programme ToolResult bar chart to a ChartBlock (values copied)."""
-    if chart.get("type") != "bar":
-        return None
-    cats = chart.get("categories") or []
-    vals = chart.get("values") or []
-    if not cats or len(cats) != len(vals):
-        return None
-    return {"type": "chart", "block_id": chart.get("chart_id", "chart"),
-            "chart_type": "bar", "title": chart.get("title", ""),
+    """Map a programme ToolResult chart (bar or line) to a ChartBlock. Values
+    are copied from the deterministic engine, never authored by an LLM."""
+    base = {"type": "chart", "block_id": chart.get("chart_id", "chart"),
+            "title": chart.get("title", ""),
             "x_label": chart.get("x_label", ""),
-            "y_label": chart.get("y_label", ""),
-            "categories": [str(c) for c in cats],
-            "values": [float(v) for v in vals]}
+            "y_label": chart.get("y_label", "")}
+    if chart.get("type") == "bar":
+        cats = chart.get("categories") or []
+        vals = chart.get("values") or []
+        if not cats or len(cats) != len(vals):
+            return None
+        return {**base, "chart_type": "bar",
+                "categories": [str(c) for c in cats],
+                "values": [float(v) for v in vals]}
+    if chart.get("type") == "line":
+        series = [s for s in (chart.get("series") or []) if s.get("points")]
+        if not series:
+            return None
+        return {**base, "chart_type": "line", "series": series}
+    return None
 
 
 def run_programme_tool_workflow(

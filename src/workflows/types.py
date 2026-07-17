@@ -23,6 +23,7 @@ class WorkflowId(str, Enum):
     PROGRAMME_VARIANCE = "programme_variance"
     PROGRAMME_CRITICAL_PATH = "programme_critical_path"
     PROGRAMME_COMPARISON = "programme_comparison"
+    PROGRAMME_PROGRESS = "programme_progress"
     PRELIMINARY_PROGRAMME_PACK = "preliminary_programme_pack"
     DELAY_CHRONOLOGY_SECTION = "delay_chronology_section"
     SQL_METRIC_CHART = "sql_metric_chart"

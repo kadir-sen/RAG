@@ -185,6 +185,27 @@ REGISTRY: Dict[str, ToolSpec] = {
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=2,
     ),
+    "programme.progress": ToolSpec(
+        tool_id="programme.progress",
+        title="Progress S-curve",
+        description="Planned vs as-recorded cumulative progress; slippage is "
+                    "the horizontal offset between the curves.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="A baseline and at least one later update",
+            missing_message="A progress curve needs a baseline and a later "
+                            "update (two dated XER revisions).",
+        )],
+        output_schema="planned/recorded S-curve line chart + summary table",
+        positive_triggers=[
+            r"(progress|s)[- ]?curve",
+            r"planned (vs\.?|versus) (actual|recorded) progress",
+            r"cumulative progress",
+            r"how far (behind|ahead) .*(plan|programme|schedule)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
 }
 
 WORKFLOW_ID = "report.preliminary_programme_analysis_pack"

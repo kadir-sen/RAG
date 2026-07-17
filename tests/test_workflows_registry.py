@@ -9,7 +9,7 @@ def test_all_workflow_ids_registered():
     # The set equality is the real integrity check (every enum has a spec and
     # vice-versa); the count is a snapshot, bump it when adding a workflow.
     assert set(WORKFLOWS.keys()) == set(WorkflowId)
-    assert len(WORKFLOWS) == 20
+    assert len(WORKFLOWS) == 21
 
 
 def test_available_have_delegation_target():
