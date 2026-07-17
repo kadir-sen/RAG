@@ -238,6 +238,13 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
             doc_ids, min_files=2,
             need_message="Windows analysis needs at least two dated .xer "
                          "revisions.")
+    elif target == "adapter:programme_float_erosion":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_FLOAT_EROSION, "programme.float_erosion",
+            router, doc_ids, min_files=2,
+            need_message="Float erosion tracking needs at least two dated "
+                         ".xer revisions.")
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

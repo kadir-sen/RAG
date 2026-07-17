@@ -228,6 +228,27 @@ REGISTRY: Dict[str, ToolSpec] = {
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=2,
     ),
+    "programme.float_erosion": ToolSpec(
+        tool_id="programme.float_erosion",
+        title="Float Erosion Tracker",
+        description="Tracks how total float is consumed across revisions — per "
+                    "window, how many activities lost or gained float and the "
+                    "median change; an early-warning signal before slippage.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="At least two dated .xer revisions",
+            missing_message="Float erosion tracking requires at least two "
+                            "dated XER revisions.",
+        )],
+        output_schema="per-window erosion table + eroded-count bar chart",
+        positive_triggers=[
+            r"float erosion",
+            r"(total )?float (consum\w+|eros\w+|track\w+|trend)",
+            r"(losing|loss of) float",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
 }
 
 WORKFLOW_ID = "report.preliminary_programme_analysis_pack"

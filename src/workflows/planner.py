@@ -134,6 +134,9 @@ def plan(query: str) -> Optional[WorkflowPlan]:
         if pm.get("id") == "programme.windows":
             return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_WINDOWS],
                                    query)
+        if pm.get("id") == "programme.float_erosion":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_FLOAT_EROSION],
+                                   query)
         # Plain dcma / milestone programme-tool queries stay on the legacy
         # PROGRAMME route (reached as workflows via composite triggers only).
         return None
