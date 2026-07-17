@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .adapters import (
     comparison_adapter, critical_path_adapter, dcma_adapter, inventory_adapter,
-    milestone_adapter, progress_adapter, variance_adapter,
+    milestone_adapter, progress_adapter, variance_adapter, windows_adapter,
 )
 from .adapters.xer_loader import XerLoadError
 from .guards import computation_guard
@@ -30,6 +30,7 @@ _ADAPTERS: Dict[str, Callable[..., AdapterOutput]] = {
     critical_path_adapter.TOOL_ID: critical_path_adapter.run,
     comparison_adapter.TOOL_ID: comparison_adapter.run,
     progress_adapter.TOOL_ID: progress_adapter.run,
+    windows_adapter.TOOL_ID: windows_adapter.run,
 }
 
 

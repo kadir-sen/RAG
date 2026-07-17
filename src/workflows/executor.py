@@ -231,6 +231,13 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
             doc_ids, min_files=2,
             need_message="A progress curve needs a baseline and a later "
                          "dated .xer update.")
+    elif target == "adapter:programme_windows":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_WINDOWS, "programme.windows", router,
+            doc_ids, min_files=2,
+            need_message="Windows analysis needs at least two dated .xer "
+                         "revisions.")
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

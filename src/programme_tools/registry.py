@@ -206,6 +206,28 @@ REGISTRY: Dict[str, ToolSpec] = {
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=2,
     ),
+    "programme.windows": ToolSpec(
+        tool_id="programme.windows",
+        title="Windows / Period Movement",
+        description="Window-by-window completion-date movement and critical-"
+                    "path turnover across consecutive data dates — the "
+                    "SCL-preferred contemporaneous method.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="At least two dated .xer revisions",
+            missing_message="Windows analysis requires at least two dated XER "
+                            "revisions.",
+        )],
+        output_schema="per-window movement table + movement bar chart",
+        positive_triggers=[
+            r"windows? (analysis|method)",
+            r"period movement",
+            r"(time )?slice analysis",
+            r"window[- ]by[- ]window",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
 }
 
 WORKFLOW_ID = "report.preliminary_programme_analysis_pack"
