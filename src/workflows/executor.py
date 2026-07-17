@@ -218,6 +218,12 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
             WorkflowId.PROGRAMME_CRITICAL_PATH, "programme.critical_path",
             router, doc_ids, min_files=1,
             need_message="Critical path analysis needs a programme .xer file.")
+    elif target == "adapter:programme_comparison":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_COMPARISON, "programme.comparison", router,
+            doc_ids, min_files=2,
+            need_message="Revision comparison needs two dated .xer revisions.")
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

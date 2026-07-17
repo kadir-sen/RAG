@@ -161,6 +161,30 @@ REGISTRY: Dict[str, ToolSpec] = {
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=1,
     ),
+    "programme.comparison": ToolSpec(
+        tool_id="programme.comparison",
+        title="Revision Comparison / Change Log",
+        description="Diffs two programme revisions like a Claim Digger — "
+                    "added/deleted/renamed activities, duration/logic/lag/"
+                    "constraint/calendar changes, and retrospective actual-date "
+                    "changes.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="Two .xer revisions to diff",
+            missing_message="Revision comparison requires two programme XER "
+                            "revisions.",
+        )],
+        output_schema="change-category summary + detail tables",
+        positive_triggers=[
+            r"(compare|diff|comparison of) .*(revisions?|programmes?|schedules?|updates?)",
+            r"change log",
+            r"claim digg\w+",
+            r"what changed between (the )?(two )?(programmes?|revisions?|updates?)",
+            r"retrospective (changes?|actual)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
 }
 
 WORKFLOW_ID = "report.preliminary_programme_analysis_pack"

@@ -25,6 +25,8 @@ from src.workflows.types import WorkflowId, WorkflowStatus
      WorkflowId.PRELIMINARY_PROGRAMME_PACK),
     ("As-planned vs as-recorded variance.", WorkflowId.PROGRAMME_VARIANCE),
     ("Show slippage by activity code.", WorkflowId.PROGRAMME_VARIANCE),
+    ("Show the baseline critical path.", WorkflowId.PROGRAMME_CRITICAL_PATH),
+    ("What changed between the updates?", WorkflowId.PROGRAMME_COMPARISON),
     ("Generate the monthly progress report.",
      WorkflowId.MONTHLY_PROGRESS_REPORT),
     ("Monthly progress report for June 2025.",

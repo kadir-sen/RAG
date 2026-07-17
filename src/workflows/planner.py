@@ -125,6 +125,9 @@ def plan(query: str) -> Optional[WorkflowPlan]:
         if pm.get("id") == "programme.critical_path":
             return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_CRITICAL_PATH],
                                    query)
+        if pm.get("id") == "programme.comparison":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_COMPARISON],
+                                   query)
         # Plain dcma / milestone programme-tool queries stay on the legacy
         # PROGRAMME route (reached as workflows via composite triggers only).
         return None
