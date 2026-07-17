@@ -31,6 +31,7 @@ from src.workflows.types import WorkflowId, WorkflowStatus
     ("Run a windows analysis.", WorkflowId.PROGRAMME_WINDOWS),
     ("Track float erosion.", WorkflowId.PROGRAMME_FLOAT_EROSION),
     ("Show the resource histogram.", WorkflowId.PROGRAMME_RESOURCES),
+    ("Reconstruct the as-built critical path.", WorkflowId.PROGRAMME_ASBUILT_PATH),
     ("Generate the monthly progress report.",
      WorkflowId.MONTHLY_PROGRESS_REPORT),
     ("Monthly progress report for June 2025.",

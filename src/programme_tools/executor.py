@@ -12,8 +12,8 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from .adapters import (
-    comparison_adapter, critical_path_adapter, dcma_adapter,
-    float_erosion_adapter, inventory_adapter, milestone_adapter,
+    asbuilt_path_adapter, comparison_adapter, critical_path_adapter,
+    dcma_adapter, float_erosion_adapter, inventory_adapter, milestone_adapter,
     progress_adapter, resources_adapter, variance_adapter, windows_adapter,
 )
 from .adapters.xer_loader import XerLoadError
@@ -34,6 +34,7 @@ _ADAPTERS: Dict[str, Callable[..., AdapterOutput]] = {
     windows_adapter.TOOL_ID: windows_adapter.run,
     float_erosion_adapter.TOOL_ID: float_erosion_adapter.run,
     resources_adapter.TOOL_ID: resources_adapter.run,
+    asbuilt_path_adapter.TOOL_ID: asbuilt_path_adapter.run,
 }
 
 

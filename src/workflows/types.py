@@ -27,6 +27,7 @@ class WorkflowId(str, Enum):
     PROGRAMME_WINDOWS = "programme_windows"
     PROGRAMME_FLOAT_EROSION = "programme_float_erosion"
     PROGRAMME_RESOURCES = "programme_resources"
+    PROGRAMME_ASBUILT_PATH = "programme_asbuilt_path"
     PRELIMINARY_PROGRAMME_PACK = "preliminary_programme_pack"
     DELAY_CHRONOLOGY_SECTION = "delay_chronology_section"
     SQL_METRIC_CHART = "sql_metric_chart"

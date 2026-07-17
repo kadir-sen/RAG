@@ -251,6 +251,13 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
             WorkflowId.PROGRAMME_RESOURCES, "programme.resources", router,
             doc_ids, min_files=1,
             need_message="Resource loading needs a resourced programme .xer.")
+    elif target == "adapter:programme_asbuilt_path":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_ASBUILT_PATH, "programme.asbuilt_path", router,
+            doc_ids, min_files=2,
+            need_message="An as-built critical path needs at least two dated "
+                         ".xer revisions.")
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

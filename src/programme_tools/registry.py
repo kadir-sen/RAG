@@ -158,7 +158,8 @@ REGISTRY: Dict[str, ToolSpec] = {
             r"driving (path|logic|activities)",
             r"what('?s| is) (on|driving) the critical path",
         ],
-        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        # "as-built critical path" belongs to programme.asbuilt_path, not here.
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS + [r"as[- ]?built"],
         min_xer_files=1,
     ),
     "programme.comparison": ToolSpec(
@@ -267,6 +268,28 @@ REGISTRY: Dict[str, ToolSpec] = {
         ],
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=1,
+    ),
+    "programme.asbuilt_path": ToolSpec(
+        tool_id="programme.asbuilt_path",
+        title="As-Built Critical Path",
+        description="Reconstructs the as-built critical path contemporaneously "
+                    "across revisions, with a criticality-persistence index — "
+                    "the basis of a collapsed/observational as-built analysis.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="Successive dated .xer revisions (three or more ideal)",
+            missing_message="An as-built critical path needs at least two "
+                            "dated XER revisions.",
+        )],
+        output_schema="criticality-persistence table",
+        positive_triggers=[
+            r"as[- ]?built (critical path|longest path|path)",
+            r"(collapsed|observational) as[- ]?built",
+            r"criticality persistence",
+            r"contemporaneous .*(critical path|as[- ]?built)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
     ),
 }
 
