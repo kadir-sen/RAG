@@ -206,8 +206,18 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
         from .adapters import delay_briefing as _adp_briefing
         wr = _adp_briefing.run(query, router, doc_ids)
     elif target == "adapter:programme_variance":
-        from .adapters import programme_variance as _adp_variance
-        wr = _adp_variance.run(query, router, doc_ids)
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_VARIANCE, "programme.variance", router,
+            doc_ids, min_files=2,
+            need_message="As-planned vs as-recorded variance needs a baseline "
+                         "and a later dated .xer revision (at least two).")
+    elif target == "adapter:programme_critical_path":
+        from .adapters.programme_tool_workflow import run_programme_tool_workflow
+        wr = run_programme_tool_workflow(
+            WorkflowId.PROGRAMME_CRITICAL_PATH, "programme.critical_path",
+            router, doc_ids, min_files=1,
+            need_message="Critical path analysis needs a programme .xer file.")
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

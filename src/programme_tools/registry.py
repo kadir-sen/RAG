@@ -141,6 +141,26 @@ REGISTRY: Dict[str, ToolSpec] = {
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=2,
     ),
+    "programme.critical_path": ToolSpec(
+        tool_id="programme.critical_path",
+        title="Baseline Critical Path",
+        description="Traces the planned critical (longest) path of a programme "
+                    "by backward driving-logic, with a float-based fallback.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="At least one .xer programme (the baseline)",
+            missing_message="Critical path analysis requires a programme XER.",
+        )],
+        output_schema="critical-path activity table + xlsx",
+        positive_triggers=[
+            r"(baseline |planned )?critical path",
+            r"longest path",
+            r"driving (path|logic|activities)",
+            r"what('?s| is) (on|driving) the critical path",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=1,
+    ),
 }
 
 WORKFLOW_ID = "report.preliminary_programme_analysis_pack"

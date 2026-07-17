@@ -12,7 +12,8 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from .adapters import (
-    dcma_adapter, inventory_adapter, milestone_adapter, variance_adapter,
+    critical_path_adapter, dcma_adapter, inventory_adapter, milestone_adapter,
+    variance_adapter,
 )
 from .adapters.xer_loader import XerLoadError
 from .guards import computation_guard
@@ -26,6 +27,7 @@ _ADAPTERS: Dict[str, Callable[..., AdapterOutput]] = {
     dcma_adapter.TOOL_ID: dcma_adapter.run,
     milestone_adapter.TOOL_ID: milestone_adapter.run,
     variance_adapter.TOOL_ID: variance_adapter.run,
+    critical_path_adapter.TOOL_ID: critical_path_adapter.run,
 }
 
 
