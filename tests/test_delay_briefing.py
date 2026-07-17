@@ -5,7 +5,12 @@ these tests are about what gets included, what gets left out, and what the
 briefing says about the difference.
 """
 
+import sys
+from pathlib import Path
+
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.models.blocks import validate_blocks
 from src.workflows.adapters import delay_briefing as db

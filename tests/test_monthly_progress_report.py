@@ -5,9 +5,14 @@ are exercised for real; only the analyzer singleton and the corpus lookup are
 substituted.
 """
 
+import sys
+from pathlib import Path
+
 import duckdb
 import pandas as pd
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.models.blocks import validate_blocks
 from src.workflows import metrics
