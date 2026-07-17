@@ -119,6 +119,28 @@ REGISTRY: Dict[str, ToolSpec] = {
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=2,
     ),
+    "programme.variance": ToolSpec(
+        tool_id="programme.variance",
+        title="As-Planned vs As-Recorded Variance",
+        description="Compares a baseline programme against the latest recorded "
+                    "one, grouped by a P6 activity-code dimension, reporting "
+                    "each group's start/finish slippage.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="A baseline and at least one later .xer revision",
+            missing_message="Variance analysis requires a baseline and a later "
+                            "recorded XER revision (at least two).",
+        )],
+        output_schema="variance table + finish-slip bar chart + xlsx",
+        positive_triggers=[
+            r"as[- ]?planned (vs\.?|versus|against) as[- ]?(recorded|built)",
+            r"\bvariance\b.*(analysis|programme|schedule|activity|wbs)",
+            r"planned (vs\.?|versus) (recorded|actual|as[- ]?built)",
+            r"(slippage|slip) by (activity|code|wbs|zone|area|trade)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=2,
+    ),
 }
 
 WORKFLOW_ID = "report.preliminary_programme_analysis_pack"

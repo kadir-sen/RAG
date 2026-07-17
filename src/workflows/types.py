@@ -20,6 +20,7 @@ class WorkflowId(str, Enum):
     PROGRAMME_INVENTORY = "programme_inventory"
     DCMA_LATEST = "dcma_latest"
     MILESTONE_SHIFT_CHART = "milestone_shift_chart"
+    PROGRAMME_VARIANCE = "programme_variance"
     PRELIMINARY_PROGRAMME_PACK = "preliminary_programme_pack"
     DELAY_CHRONOLOGY_SECTION = "delay_chronology_section"
     SQL_METRIC_CHART = "sql_metric_chart"

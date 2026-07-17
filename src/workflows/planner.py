@@ -119,6 +119,9 @@ def plan(query: str) -> Optional[WorkflowPlan]:
         if pm.get("id") == "programme.inventory":
             return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_INVENTORY],
                                    query)
+        if pm.get("id") == "programme.variance":
+            return _plan_from_spec(WORKFLOWS[WorkflowId.PROGRAMME_VARIANCE],
+                                   query)
         # Plain dcma / milestone programme-tool queries stay on the legacy
         # PROGRAMME route (reached as workflows via composite triggers only).
         return None

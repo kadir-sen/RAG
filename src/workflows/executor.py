@@ -205,6 +205,9 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
     elif target == "adapter:delay_briefing":
         from .adapters import delay_briefing as _adp_briefing
         wr = _adp_briefing.run(query, router, doc_ids)
+    elif target == "adapter:programme_variance":
+        from .adapters import programme_variance as _adp_variance
+        wr = _adp_variance.run(query, router, doc_ids)
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

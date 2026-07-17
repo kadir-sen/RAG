@@ -11,7 +11,9 @@ import logging
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from .adapters import dcma_adapter, inventory_adapter, milestone_adapter
+from .adapters import (
+    dcma_adapter, inventory_adapter, milestone_adapter, variance_adapter,
+)
 from .adapters.xer_loader import XerLoadError
 from .guards import computation_guard
 from .schemas import AdapterOutput, ArtifactBlob, ToolResult, failed_result
@@ -23,6 +25,7 @@ _ADAPTERS: Dict[str, Callable[..., AdapterOutput]] = {
     inventory_adapter.TOOL_ID: inventory_adapter.run,
     dcma_adapter.TOOL_ID: dcma_adapter.run,
     milestone_adapter.TOOL_ID: milestone_adapter.run,
+    variance_adapter.TOOL_ID: variance_adapter.run,
 }
 
 

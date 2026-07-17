@@ -23,6 +23,8 @@ from src.workflows.types import WorkflowId, WorkflowStatus
     ("Make this into a report section.", WorkflowId.CONTEXT_TO_REPORT_SECTION),
     ("Generate a preliminary programme analysis pack.",
      WorkflowId.PRELIMINARY_PROGRAMME_PACK),
+    ("As-planned vs as-recorded variance.", WorkflowId.PROGRAMME_VARIANCE),
+    ("Show slippage by activity code.", WorkflowId.PROGRAMME_VARIANCE),
     ("Generate the monthly progress report.",
      WorkflowId.MONTHLY_PROGRESS_REPORT),
     ("Monthly progress report for June 2025.",
