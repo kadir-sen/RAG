@@ -112,6 +112,9 @@ def test_sql_validation():
     valid, err = validate_sql('UPDATE test SET x=1')
     assert valid == False, 'Should reject UPDATE'
 
+    # Full guard matrix (file reads, literal/identifier handling, CTEs) lives
+    # in tests/test_sql_security.py — that one gates the deploy.
+
 run_test('SQL validation - dangerous patterns', test_sql_validation)
 
 
@@ -249,9 +252,12 @@ run_test('Prompt security - system prompt builder', test_system_prompt_builder)
 def test_sql_table_validation():
     from src.prompt_security import validate_sql_tables
 
-    assert validate_sql_tables('SELECT * FROM sales', ['sales', 'orders']) == True
-    assert validate_sql_tables('SELECT * FROM sales JOIN orders ON 1=1', ['sales', 'orders']) == True
-    assert validate_sql_tables('SELECT * FROM secret_table', ['sales', 'orders']) == False
+    # Returns (is_valid, reason); the full matrix is in test_sql_security.py.
+    assert validate_sql_tables('SELECT * FROM sales', ['sales', 'orders'])[0] == True
+    assert validate_sql_tables('SELECT * FROM sales JOIN orders ON 1=1',
+                               ['sales', 'orders'])[0] == True
+    assert validate_sql_tables('SELECT * FROM secret_table',
+                               ['sales', 'orders'])[0] == False
 
 run_test('Prompt security - SQL table validation', test_sql_table_validation)
 

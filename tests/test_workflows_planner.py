@@ -23,6 +23,13 @@ from src.workflows.types import WorkflowId, WorkflowStatus
     ("Make this into a report section.", WorkflowId.CONTEXT_TO_REPORT_SECTION),
     ("Generate a preliminary programme analysis pack.",
      WorkflowId.PRELIMINARY_PROGRAMME_PACK),
+    ("Generate the monthly progress report.",
+     WorkflowId.MONTHLY_PROGRESS_REPORT),
+    ("Monthly progress report for June 2025.",
+     WorkflowId.MONTHLY_PROGRESS_REPORT),
+    # Wording the registry advertises as a trigger example must actually route.
+    ("Monthly progress summary.", WorkflowId.MONTHLY_PROGRESS_REPORT),
+    ("Prepare a delay briefing.", WorkflowId.DELAY_BRIEFING),
 ])
 def test_available_triggers(q, expected):
     wp = plan(q.lower())
@@ -33,14 +40,21 @@ def test_available_triggers(q, expected):
 
 @pytest.mark.parametrize("q,expected", [
     ("Create internal EOT claim roadmap.", WorkflowId.INTERNAL_EOT_ROADMAP),
-    ("Prepare a delay briefing.", WorkflowId.DELAY_BRIEFING),
-    ("Generate the monthly progress report.", WorkflowId.MONTHLY_PROGRESS_REPORT),
 ])
 def test_planned_triggers(q, expected):
     wp = plan(q.lower())
     assert wp is not None, q
     assert wp.workflow_id == expected
     assert wp.status == WorkflowStatus.PLANNED
+
+
+def test_monthly_and_delay_briefing_are_not_confused():
+    """The demo prompt names both 'progress' and 'delay briefing'; it must
+    reach the briefing, and the delay-report registry must not swallow it
+    into a plain 6.1 chronology on the way."""
+    wp = plan("generate a monthly progress and delay briefing for this project.")
+    assert wp is not None
+    assert wp.workflow_id == WorkflowId.DELAY_BRIEFING
 
 
 @pytest.mark.parametrize("q", [

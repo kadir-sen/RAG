@@ -8,7 +8,9 @@ from backend.models.blocks import validate_blocks
 from src.orchestration import match_composite
 from src.orchestration.retry import execute_step
 from src.orchestration.schemas import RetryPolicy
-from src.orchestration.viz import bar_chart_from_table, chart_guard, line_chart_from_series
+from src.orchestration.viz import (bar_chart_from_table, chart_guard,
+                                   line_chart_from_series,
+                                   line_chart_from_table)
 
 
 class TestCompositeRoutingMatrix:
@@ -175,3 +177,59 @@ class TestChartGuard:
             "T")
         v = chart_guard(blk, {"series": src}, "T")
         assert any("invented series" in x for x in v)
+
+
+class TestLineChartFromTable:
+    """Table-derived lines are verified like bars: the guard re-derives the
+    points from the source data rather than trusting the builder's output."""
+
+    TABLE = {"title": "t", "columns": ["date_key", "Workers"],
+             "rows": [["2025-01", 10], ["2025-02", 20], ["2025-03", 5]]}
+    SRC = {"table": TABLE, "x_col": "date_key", "y_col": "Workers"}
+
+    def _block(self, cumulative=False):
+        b, _ = line_chart_from_table(self.TABLE, "date_key", "Workers",
+                                     "Manpower by month", cumulative=cumulative)
+        return b
+
+    def test_points_copied_from_table(self):
+        pts = self._block()["series"][0]["points"]
+        assert [(p["x"], p["y"]) for p in pts] == [
+            ("2025-01", 10.0), ("2025-02", 20.0), ("2025-03", 5.0)]
+        assert chart_guard(self._block(), self.SRC, "Manpower by month") == []
+
+    def test_cumulative_running_total(self):
+        pts = self._block(cumulative=True)["series"][0]["points"]
+        assert [p["y"] for p in pts] == [10.0, 30.0, 35.0]
+        src = dict(self.SRC, cumulative=True)
+        assert chart_guard(self._block(cumulative=True), src,
+                           "Manpower by month") == []
+
+    def test_cumulative_block_fails_a_non_cumulative_source(self):
+        v = chart_guard(self._block(cumulative=True), self.SRC,
+                        "Manpower by month")
+        assert any("diverge" in x for x in v)
+
+    def test_mutated_value_rejected(self):
+        b = self._block(); b["series"][0]["points"][1]["y"] = 999
+        assert any("diverge" in x for x in
+                   chart_guard(b, self.SRC, "Manpower by month"))
+
+    def test_mutated_label_rejected(self):
+        b = self._block(); b["series"][0]["points"][0]["x"] = "2099-01"
+        assert any("labels/order" in x for x in
+                   chart_guard(b, self.SRC, "Manpower by month"))
+
+    def test_appended_point_rejected(self):
+        b = self._block(); b["series"][0]["points"].append({"x": "2025-04", "y": 1})
+        assert any("points do not match" in x for x in
+                   chart_guard(b, self.SRC, "Manpower by month"))
+
+    def test_extra_series_rejected(self):
+        b = self._block(); b["series"].append({"name": "Ghost", "points": []})
+        assert any("exactly one series" in x for x in
+                   chart_guard(b, self.SRC, "Manpower by month"))
+
+    def test_missing_columns_reported(self):
+        b, reason = line_chart_from_table(self.TABLE, "nope", "Workers", "T")
+        assert b is None and "not in table" in reason

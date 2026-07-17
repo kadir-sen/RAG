@@ -14,29 +14,12 @@ from typing import Any, List, Optional
 from src.orchestration.helpers import md_block
 
 from .. import caveats as CV
+from ..blocks import content_blocks as _content_blocks
+from ..blocks import corpus_id as _corpus
 from ..blocks import finalize_blocks
 from ..types import (
     RESULT_PARTIAL, RESULT_UNAVAILABLE, WorkflowId, WorkflowResult,
 )
-
-_CONTENT_TYPES = {"markdown_text", "data_table", "chart", "artifact_link",
-                  "html_report_section"}
-
-
-def _corpus() -> str:
-    try:
-        from src.document_rag import _current_user_corpus
-        return _current_user_corpus() or "demo"
-    except Exception:
-        return "demo"
-
-
-def _content_blocks(wr: WorkflowResult) -> List[dict]:
-    """Content blocks of a sub-result (drop its input-summary/caveats/validation
-    — the pack aggregates those once)."""
-    return [b for b in wr.blocks
-            if b.get("type") in _CONTENT_TYPES
-            and b.get("block_id") != "input_resolution"]
 
 
 def run(query: str, router: Any, doc_ids: Optional[List[str]] = None

@@ -33,6 +33,12 @@ SQL_UNAVAILABLE_MSG = ("SQL analysis is temporarily unavailable; please narrow "
                        "the question or try again shortly.")
 
 
+class UnsafeSqlError(Exception):
+    """Generated SQL failed a safety guard. Never self-corrected, never
+    retried — a query that reaches for an unknown table or a file-reading
+    table function is not a syntax slip to fix, it is a request to refuse."""
+
+
 def _reraise_budget(exc: Exception) -> None:
     """Budget/quota exceptions must reach the FastAPI 402 handler — never get
     swallowed into an answer string. Call this first in every SQL except."""
@@ -53,11 +59,14 @@ class SqlFailureReason:
     DUCKDB_EXECUTION_ERROR = "DUCKDB_EXECUTION_ERROR"
     NO_ROWS = "NO_ROWS"
     DATE_ANOMALY = "DATE_ANOMALY"
+    UNSAFE_SQL = "UNSAFE_SQL"
     UNKNOWN = "UNKNOWN"
 
 
 def classify_sql_failure(exc: Exception) -> str:
     """Map a raw SQL-path exception to a SqlFailureReason (never surfaced raw)."""
+    if isinstance(exc, UnsafeSqlError):
+        return SqlFailureReason.UNSAFE_SQL
     msg = str(exc).lower()
     if any(t in msg for t in ("429", "quota", "resource_exhausted", "rate limit",
                               "billing", "generativelanguage.googleapis.com",
@@ -77,12 +86,21 @@ def _log_sql_failure(reason: str, table_name: Optional[str] = None,
                    f"detail={(detail or '')[:200]}")
 
 
-# SQL validation patterns
+# SQL validation patterns. Scanned against literal-stripped SQL (see
+# validate_sql) so a column named "Progress Update" is never read as an UPDATE.
 DANGEROUS_PATTERNS = [
+    # Mutation / DDL / privileges.
     r'\bDROP\b', r'\bDELETE\b', r'\bINSERT\b', r'\bUPDATE\b',
     r'\bCREATE\b', r'\bALTER\b', r'\bTRUNCATE\b', r'\bGRANT\b',
     r'\bREVOKE\b', r'\bEXEC\b', r'\bEXECUTE\b', r'\bCALL\b',
     r'\bATTACH\b', r'\bDETACH\b', r'\bCOPY\b', r'\bEXPORT\b',
+    # File/network reads. DuckDB serves these as table functions, so they are
+    # reachable from a bare SELECT and would otherwise be arbitrary file read
+    # (validate_sql_tables rejects them too — this is the second layer).
+    r'\bREAD_CSV\w*\b', r'\bREAD_PARQUET\b', r'\bREAD_JSON\w*\b',
+    r'\bREAD_TEXT\b', r'\bREAD_BLOB\b', r'\bGLOB\b',
+    # Extension loading — the escape hatch that would re-enable the above.
+    r'\bINSTALL\b', r'\bLOAD\b',
 ]
 
 MAX_UI_ROWS = MAX_UI_DISPLAY_ROWS  # For UI payload only, never injected into SQL
@@ -116,22 +134,32 @@ def validate_sql(sql: str) -> Tuple[bool, str]:
     Validate SQL query for safety.
     Only SELECT queries (including WITH/CTE) are allowed.
     Returns (is_valid, error_message).
+
+    Keyword scanning runs against a literal-stripped copy: string literals,
+    comments and double-quoted identifiers are blanked first. Construction data
+    is full of words like "Progress Update" and "Load Date" — scanning raw SQL
+    would reject valid SELECTs over those columns.
     """
-    sql_upper = sql.upper().strip()
+    from .prompt_security import strip_sql_literals
+
+    # Structure only — no data, no identifiers.
+    scrubbed = strip_sql_literals(sql, mask_identifiers=True)
+    scrubbed_upper = scrubbed.upper().strip()
 
     # Allow SELECT and WITH...SELECT (CTEs)
-    if not (sql_upper.startswith('SELECT') or sql_upper.startswith('WITH')):
+    if not (scrubbed_upper.startswith('SELECT') or scrubbed_upper.startswith('WITH')):
         return False, "Only SELECT queries are allowed"
 
     # WITH must contain a SELECT
-    if sql_upper.startswith('WITH') and 'SELECT' not in sql_upper:
+    if scrubbed_upper.startswith('WITH') and 'SELECT' not in scrubbed_upper:
         return False, "Only SELECT queries are allowed"
 
     for pattern in DANGEROUS_PATTERNS:
-        if re.search(pattern, sql_upper):
+        if re.search(pattern, scrubbed_upper):
             return False, f"Dangerous SQL pattern detected: {pattern}"
 
-    if ';' in sql[:-1]:  # Allow trailing semicolon
+    # Statement separator in the stripped copy — a ';' inside a literal is data.
+    if ';' in scrubbed.strip()[:-1]:
         return False, "Multiple SQL statements not allowed"
 
     return True, ""
@@ -460,6 +488,36 @@ class DataAnalyzerSQL:
         self.file_paths: Dict[str, str] = {}
         self._jargon = None
         logger.info("SQL Data Analyzer initialized (DuckDB)")
+
+    def _execute_checked(self, sql: str, allowed_tables: Optional[List[str]] = None):
+        """Run generated SQL behind the table-reference guard.
+
+        Every execution of LLM-generated SQL goes through here — including
+        self-corrected retries and post-validation column rewrites — so the
+        guard cannot be bypassed by a path that mutates `sql` after
+        validate_sql() has already run.
+
+        Two violation kinds, deliberately handled differently:
+          * a table function (read_csv_auto('/etc/passwd')) is an attack —
+            UnsafeSqlError, refused, never retried;
+          * an unknown table name is almost always a hallucinated name — raise
+            a plain error so the existing self-correction retry can fix it,
+            exactly as a DuckDB catalog error used to.
+
+        Ingest (load_csv / register_parquet_view) deliberately does NOT use
+        this: that SQL is ours, not the model's, and legitimately calls
+        read_csv_auto/read_parquet.
+        """
+        from .prompt_security import TABLE_FUNCTION, find_table_violation
+        allowed = allowed_tables if allowed_tables is not None \
+            else list(self.tables.keys())
+        violation = find_table_violation(sql, allowed)
+        if violation is not None:
+            kind, detail = violation
+            if kind == TABLE_FUNCTION:
+                raise UnsafeSqlError(detail)
+            raise ValueError(f"SQL references an {detail}")
+        return self.conn.execute(sql).fetchdf()
 
     @property
     def jargon(self):
@@ -2264,11 +2322,8 @@ class DataAnalyzerSQL:
                         "failure_reason": SqlFailureReason.SQL_PARSE_ERROR,
                     }
 
-            # Also validate table references (include normalized views)
-            from .prompt_security import validate_sql_tables
-            all_known = list(self.tables.keys())
-            if not validate_sql_tables(sql, all_known):
-                logger.warning("   SQL references unknown tables")
+            # Table references are checked inside _execute_checked, below —
+            # after the column rewrite that can still mutate `sql`.
 
             # Validate column references against actual table columns
             actual_cols = set(self.tables.get(table_name, {}).get("columns", []))
@@ -2285,7 +2340,9 @@ class DataAnalyzerSQL:
             logger.info("   Executing SQL...")
             start_time = time.time()
             try:
-                result_df = self.conn.execute(sql).fetchdf()
+                result_df = self._execute_checked(sql)
+            except UnsafeSqlError:
+                raise            # never self-correct an unsafe query
             except Exception as exec_err:
                 # Self-correct on execution error
                 logger.warning(f"   SQL execution failed: {exec_err}, attempting self-correction...")
@@ -2295,7 +2352,7 @@ class DataAnalyzerSQL:
                     is_valid, error = validate_sql(corrected)
                     if is_valid:
                         sql = corrected
-                        result_df = self.conn.execute(sql).fetchdf()
+                        result_df = self._execute_checked(sql)
                         logger.info(f"   Self-corrected SQL executed OK: {sql[:100]}...")
                     else:
                         logger.warning(f"   [SQL] Self-correction validation failed: {error}")
@@ -2355,6 +2412,18 @@ class DataAnalyzerSQL:
                 "result_columns": list(result_df.columns),
             }
 
+        except UnsafeSqlError as unsafe:
+            # Guard tripped: log the exact reason, tell the user nothing that
+            # would help shape the next attempt.
+            _log_sql_failure(SqlFailureReason.UNSAFE_SQL, table_name, str(unsafe))
+            return {
+                "answer": SQL_UNAVAILABLE_MSG,
+                "sources": [],
+                "sql": sql,
+                "result_data": None,
+                "failure_reason": SqlFailureReason.UNSAFE_SQL,
+            }
+
         except Exception as e:
             _reraise_budget(e)   # budget/quota → 402, never an answer string
             reason = classify_sql_failure(e)
@@ -2412,12 +2481,11 @@ class DataAnalyzerSQL:
                         "sources": [{"error": error}], "sql": sql, "result_data": None,
                     }
 
-            from .prompt_security import validate_sql_tables
-            if not validate_sql_tables(sql, list(self.tables.keys())):
-                logger.warning(f"   [{provider}] SQL references unknown tables")
-
+            # Table references are checked inside _execute_checked.
             try:
-                result_df = self.conn.execute(sql).fetchdf()
+                result_df = self._execute_checked(sql)
+            except UnsafeSqlError:
+                raise            # never self-correct an unsafe query
             except Exception as exec_err:
                 corrected = self._retry_sql_generation(sql, str(exec_err), table_name, provider=provider)
                 if corrected:
@@ -2425,7 +2493,7 @@ class DataAnalyzerSQL:
                     is_valid, error = validate_sql(corrected)
                     if is_valid:
                         sql = corrected
-                        result_df = self.conn.execute(sql).fetchdf()
+                        result_df = self._execute_checked(sql)
                     else:
                         raise exec_err
                 else:

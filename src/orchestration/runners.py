@@ -302,7 +302,7 @@ def chronology_html(ctx: RunContext) -> CompositeResult:
     title = (tr.get("summary") or "Delay Event Chronology").split(":")[0] \
         .replace("Chronology for ", "").strip("'\" ") or "Delay Event Chronology"
 
-    block = build_html_block(
+    section = dict(
         title=title,
         narrative_markdown=out.get("answer", ""),
         tables=(tr.get("tables") or [])[:1],
@@ -311,6 +311,7 @@ def chronology_html(ctx: RunContext) -> CompositeResult:
         validation=tr.get("validation") or {},
         section_number="6.1",
     )
+    block = build_html_block(**section)
     if block["type"] == "markdown_text":
         guards["html_guard"] = "failed"
         fallbacks.append("html→markdown")
@@ -318,6 +319,14 @@ def chronology_html(ctx: RunContext) -> CompositeResult:
         guards["html_guard"] = "passed"
 
     blocks = [block]
+    # Downloads only for a section that passed the html guard: if the guard
+    # just declared this markup unsafe, we do not hand out a PDF of it.
+    if block["type"] == "html_report_section":
+        from src.export import section_artifacts
+        arts = section_artifacts(run_id=ctx.run_id, **section)
+        if arts:
+            blocks.extend(artifact_blocks({"artifacts": arts}))
+
     return _finish(intent, blocks, "Chronology report section:", guards,
                    tr.get("requires_analyst_review", False), fallbacks,
                    tr.get("caveats") or [], tr.get("warnings"),
