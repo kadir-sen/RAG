@@ -30,6 +30,7 @@ from src.workflows.types import WorkflowId, WorkflowStatus
     ("Show the progress S-curve.", WorkflowId.PROGRAMME_PROGRESS),
     ("Run a windows analysis.", WorkflowId.PROGRAMME_WINDOWS),
     ("Track float erosion.", WorkflowId.PROGRAMME_FLOAT_EROSION),
+    ("Show the resource histogram.", WorkflowId.PROGRAMME_RESOURCES),
     ("Generate the monthly progress report.",
      WorkflowId.MONTHLY_PROGRESS_REPORT),
     ("Monthly progress report for June 2025.",

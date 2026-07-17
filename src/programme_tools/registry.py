@@ -249,6 +249,25 @@ REGISTRY: Dict[str, ToolSpec] = {
         negative_triggers=SHARED_NEGATIVE_TRIGGERS,
         min_xer_files=2,
     ),
+    "programme.resources": ToolSpec(
+        tool_id="programme.resources",
+        title="Planned Resource Histogram",
+        description="Monthly planned resource loading (labour/equipment/"
+                    "material) from a resourced programme's target quantities.",
+        inputs=[ToolInput(
+            name="xer_files", type="xer_files", required=True,
+            description="A resourced programme .xer",
+            missing_message="Resource loading needs a programme XER.",
+        )],
+        output_schema="resource summary table + monthly loading line chart",
+        positive_triggers=[
+            r"resource (loading|histogram|profile|hist\w*)",
+            r"(planned )?(manpower|labou?r|equipment) (loading|histogram|curve|profile)",
+            r"resource[- ]?loaded (programme|schedule)",
+        ],
+        negative_triggers=SHARED_NEGATIVE_TRIGGERS,
+        min_xer_files=1,
+    ),
 }
 
 WORKFLOW_ID = "report.preliminary_programme_analysis_pack"

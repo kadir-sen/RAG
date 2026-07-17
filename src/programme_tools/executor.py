@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .adapters import (
     comparison_adapter, critical_path_adapter, dcma_adapter,
     float_erosion_adapter, inventory_adapter, milestone_adapter,
-    progress_adapter, variance_adapter, windows_adapter,
+    progress_adapter, resources_adapter, variance_adapter, windows_adapter,
 )
 from .adapters.xer_loader import XerLoadError
 from .guards import computation_guard
@@ -33,6 +33,7 @@ _ADAPTERS: Dict[str, Callable[..., AdapterOutput]] = {
     progress_adapter.TOOL_ID: progress_adapter.run,
     windows_adapter.TOOL_ID: windows_adapter.run,
     float_erosion_adapter.TOOL_ID: float_erosion_adapter.run,
+    resources_adapter.TOOL_ID: resources_adapter.run,
 }
 
 
