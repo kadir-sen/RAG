@@ -29,6 +29,7 @@ from src.workflows.types import WorkflowId, WorkflowStatus
      WorkflowId.MONTHLY_PROGRESS_REPORT),
     # Wording the registry advertises as a trigger example must actually route.
     ("Monthly progress summary.", WorkflowId.MONTHLY_PROGRESS_REPORT),
+    ("Prepare a delay briefing.", WorkflowId.DELAY_BRIEFING),
 ])
 def test_available_triggers(q, expected):
     wp = plan(q.lower())
@@ -39,7 +40,6 @@ def test_available_triggers(q, expected):
 
 @pytest.mark.parametrize("q,expected", [
     ("Create internal EOT claim roadmap.", WorkflowId.INTERNAL_EOT_ROADMAP),
-    ("Prepare a delay briefing.", WorkflowId.DELAY_BRIEFING),
 ])
 def test_planned_triggers(q, expected):
     wp = plan(q.lower())
