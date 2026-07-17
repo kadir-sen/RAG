@@ -41,7 +41,8 @@ _PLANNED_TRIGGERS = [
     (WorkflowId.DELAY_BRIEFING,
      [r"delay\s+briefing"]),
     (WorkflowId.MONTHLY_PROGRESS_REPORT,
-     [r"monthly\s+progress\s+report"]),
+     [r"monthly\s+progress\s+(report|summary|update)",
+      r"progress\s+report\s+for\s+(the\s+)?month"]),
 ]
 
 # Light negative guard for the SQL metric data-gate — keep document/contract
@@ -149,8 +150,9 @@ def plan(query: str) -> Optional[WorkflowPlan]:
         return _plan_from_spec(WORKFLOWS[WorkflowId.DELAY_CHRONOLOGY_SECTION],
                                query, mode="plain")
 
-    # 5) Planned / unavailable workflows — clean structured response, never a
-    #    generic RAG/document error.
+    # 5) Registry-triggered workflows. Available/partial ones dispatch to their
+    #    adapter; planned ones return a clean structured "not built yet, here's
+    #    the substitute" — never a generic RAG/document error.
     for wid, pats in _PLANNED_TRIGGERS:
         if any(re.search(p, q) for p in pats):
             return _plan_from_spec(WORKFLOWS[wid], query)

@@ -215,6 +215,48 @@ def detect_schema(query: str) -> Optional[str]:
     return None
 
 
+def resolve_schema_tables(schema_id: str, corpus: str = "") -> ResolveOutcome:
+    """Base tables carrying a canonical schema, independent of any query.
+
+    Never asks for confirmation: an absent schema is reported via `missing` and
+    an empty table list. A multi-section report needs to drop one section to a
+    caveat, not stop and ask — and a clarification block would be worse than
+    stopping, since it is exclusive and would delete the rest of the report
+    (backend.models.blocks.validate_blocks).
+
+    The schema verdict itself is read, not computed: schema_profiler assigned
+    header_metadata.target_schema at ingest and left it unset when it was not
+    confident enough to map the headers.
+    """
+    o = ResolveOutcome()
+    o.resolved["schema"] = schema_id
+    try:
+        from src.data_analyzer_sql import get_data_analyzer
+        analyzer = get_data_analyzer()
+        allowed = analyzer.get_tables_for_corpus(corpus or None)
+        tables = []
+        for name, info in analyzer.tables.items():
+            if allowed is not None and name not in allowed:
+                continue
+            if info.get("is_grouped") or info.get("is_combined"):
+                continue
+            if name.endswith("_clean") or name.endswith("_raw") or \
+                    name.startswith("_unified_"):
+                continue
+            hm = info.get("header_metadata") or {}
+            if hm.get("target_schema") == schema_id:
+                tables.append(name)
+    except Exception as e:
+        logger.warning(f"[Resolver] analyzer unavailable: {e}")
+        tables = []
+
+    if tables:
+        o.resolved["tables"] = tables
+    else:
+        o.missing.append(schema_id)
+    return o
+
+
 def resolve_table_period(query: str, corpus: str = "") -> ResolveOutcome:
     """Find the base tables for the schema implied by the query + a period."""
     o = ResolveOutcome()
@@ -230,26 +272,8 @@ def resolve_table_period(query: str, corpus: str = "") -> ResolveOutcome:
         return o
     o.resolved["schema"] = schema
 
-    try:
-        from src.data_analyzer_sql import get_data_analyzer
-        analyzer = get_data_analyzer()
-        allowed = analyzer.get_tables_for_corpus(corpus or None)
-        tables = []
-        for name, info in analyzer.tables.items():
-            if allowed is not None and name not in allowed:
-                continue
-            if info.get("is_grouped") or info.get("is_combined"):
-                continue
-            if name.endswith("_clean") or name.endswith("_raw") or \
-                    name.startswith("_unified_"):
-                continue
-            hm = info.get("header_metadata") or {}
-            if hm.get("target_schema") == schema:
-                tables.append(name)
-    except Exception as e:
-        logger.warning(f"[Resolver] analyzer unavailable: {e}")
-        tables = []
-
+    found = resolve_schema_tables(schema, corpus)
+    tables = found.resolved.get("tables") or []
     if not tables:
         o.missing.append(schema)
         o.needs_confirmation = True

@@ -199,6 +199,9 @@ def _run_available(spec: WorkflowSpec, plan: WorkflowPlan, query: str,
     elif target == "adapter:delay_claim_pack":
         from .adapters import delay_claim_pack as _adp_pack2
         wr = _adp_pack2.run(query, router, doc_ids)
+    elif target == "adapter:monthly_progress_report":
+        from .adapters import monthly_progress_report as _adp_monthly
+        wr = _adp_monthly.run(query, router, doc_ids)
     else:
         return WorkflowResult(workflow_id=wid, status=RESULT_FAILED,
                               answer="No handler for this workflow.")

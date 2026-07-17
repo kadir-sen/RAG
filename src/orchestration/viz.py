@@ -72,6 +72,52 @@ def line_chart_from_series(series: List[Dict[str, Any]], title: str,
     }
 
 
+def _derive_line_points(table: Dict[str, Any], x_col: str, y_col: str,
+                        cumulative: bool = False
+                        ) -> Tuple[List[Dict[str, Any]], str]:
+    """Points for a line chart, derived from a data_table. Single definition,
+    called once to build the chart and again by the guard to check it."""
+    cols = table.get("columns") or []
+    if x_col not in cols or y_col not in cols:
+        return [], f"columns '{x_col}'/'{y_col}' not in table"
+    xi, yi = cols.index(x_col), cols.index(y_col)
+    points: List[Dict[str, Any]] = []
+    running = 0.0
+    for row in table.get("rows") or []:
+        v = _num(row[yi])
+        if v is None or row[xi] is None:
+            continue
+        if cumulative:
+            running += v
+            v = running
+        points.append({"x": str(row[xi]), "y": v})
+    return points, ("" if points else "no numeric rows to chart")
+
+
+def line_chart_from_table(table: Dict[str, Any], x_col: str, y_col: str,
+                          title: str, series_name: str = "",
+                          cumulative: bool = False
+                          ) -> Tuple[Optional[dict], str]:
+    """Build a line ChartBlock dict from a data_table-shaped dict.
+
+    Returns (block|None, reason). Verify it with chart_guard using the TABLE as
+    the source — {"table": t, "x_col": .., "y_col": .., "cumulative": ..} — so
+    the guard re-derives the points from the data rather than comparing the
+    block against a series built by this same call. With cumulative=True the
+    running total is computed deterministically in Python and re-computed by
+    the guard the same way.
+    """
+    points, reason = _derive_line_points(table, x_col, y_col, cumulative)
+    if not points:
+        return None, reason
+    block = {
+        "type": "chart", "block_id": "", "chart_type": "line",
+        "title": title, "x_label": x_col, "y_label": y_col,
+        "series": [{"name": series_name or y_col, "points": points}],
+    }
+    return block, ""
+
+
 # ── Chart Guard ──────────────────────────────────────────────
 
 def chart_guard(block: dict, source: Dict[str, Any],
@@ -79,7 +125,9 @@ def chart_guard(block: dict, source: Dict[str, Any],
     """Deterministically verify a chart block against its source.
 
     source: {"table": data_table dict, "category_col","value_col"} for bar,
-            {"series": [...]} for line.
+            {"series": [...]} for a line built from ready-made series, or
+            {"table": .., "x_col": .., "y_col": .., "cumulative": bool} for a
+            line built from a table (points are re-derived from the data).
     Returns violation strings; empty = passed.
     """
     violations: List[str] = []
@@ -115,8 +163,33 @@ def chart_guard(block: dict, source: Dict[str, Any],
             violations.append("chart contains categories beyond the source")
 
     elif block.get("chart_type") == "line":
-        src_series = source.get("series") or []
         blk_series = block.get("series") or []
+        if source.get("table") is not None:
+            # Table-derived line: re-derive the points from the source data,
+            # exactly as bar charts are verified.
+            src_points, reason = _derive_line_points(
+                source["table"], source.get("x_col"), source.get("y_col"),
+                bool(source.get("cumulative")))
+            if not src_points:
+                return violations + [f"source unusable for verification: {reason}"]
+            if len(blk_series) != 1:
+                violations.append("table-derived line must carry exactly one series")
+                return violations
+            blk_points = blk_series[0].get("points") or []
+            if len(blk_points) != len(src_points):
+                violations.append("chart points do not match the source rows")
+            elif [str(p.get("x")) for p in blk_points] != \
+                    [str(p.get("x")) for p in src_points]:
+                violations.append("chart labels/order diverge from source data")
+            else:
+                for bp, sp in zip(blk_points, src_points):
+                    bv, sv = _num(bp.get("y")), _num(sp.get("y"))
+                    if bv is None or sv is None or abs(bv - sv) > _FLOAT_TOL:
+                        violations.append("chart values diverge from source data")
+                        break
+            return violations
+
+        src_series = source.get("series") or []
         src_by_name = {s.get("name"): s for s in src_series}
         for s in blk_series:
             src = src_by_name.get(s.get("name"))
