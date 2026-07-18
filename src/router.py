@@ -4310,13 +4310,29 @@ class QueryRouter:
         Returns a result dict when it owns the query, or None to fall through to
         the existing routing. Feature-flagged (ENABLE_COMPOUND_PLANNER) and fully
         guarded — the planner never breaks normal routing."""
+        return self._run_compound_planner(query, doc_ids, trace)
+
+    def _wants_compound(self, query: str) -> bool:
+        """Cheap, LLM-free check: is this a multi-ask prompt the compound planner
+        should try even ahead of a matched delay/programme fast route? Guarded by
+        the flag so disabling the planner restores the exact old precedence."""
+        try:
+            from .config import ENABLE_COMPOUND_PLANNER
+            if not ENABLE_COMPOUND_PLANNER:
+                return False
+            from .planning import is_multi_ask
+            return is_multi_ask(query)
+        except Exception:
+            return False
+
+    def _run_compound_planner(self, query: str, doc_ids, trace):
         try:
             from .config import ENABLE_COMPOUND_PLANNER
             if not ENABLE_COMPOUND_PLANNER:
                 return None
             from .config import ENABLE_LLM_DECOMPOSER
-            from .planning import decompose, is_compound
-            if not is_compound(query):
+            from .planning import decompose, is_multi_ask
+            if not is_multi_ask(query):
                 return None
             plan = decompose(query, enable_llm=ENABLE_LLM_DECOMPOSER)
             if plan.plan_type == "single_skill" or not plan.subtasks:
@@ -4403,12 +4419,17 @@ class QueryRouter:
                                  or self._classify_programme(_cq_lower)
                                  or self._classify_delay_report(_cq_lower))
 
-            # Compound multi-record prompt → skill-graph planner (Sprint C).
-            # Sits ABOVE the complex-query gate but is far more selective: it only
-            # fires for genuinely compound (multi-record / multi-step) prompts and
-            # otherwise declines, so simple prompts and registered workflows keep
-            # the fast route. Feature-flagged; any failure falls through.
-            if _programme_intent is None:
+            # Compound multi-record prompt → skill-graph planner.
+            # Precedence (Smart Planner v2): a genuinely MULTI-ASK prompt gets the
+            # planner FIRST even when a delay/programme cue matched — otherwise
+            # "prepare a delay report for Block A AND compare cost as a table"
+            # would be swallowed whole by the fixed delay route, dropping the data
+            # half. The planner is highly selective and declines (→ None) on a
+            # single-ask prompt, so a plain delay/programme request still takes the
+            # fixed fast route unchanged. Feature-flagged; any failure falls through.
+            _compound_first = (_programme_intent is None
+                               or self._wants_compound(query))
+            if _compound_first:
                 compound = self._try_compound_planner(query, doc_ids, trace)
                 if compound is not None:
                     return compound

@@ -15,6 +15,42 @@ from typing import Any, Dict, List, Optional
 PLAN_TYPES = ("single_skill", "registered_workflow", "compound_analysis",
               "report_generation")
 RISK_LEVELS = ("normal", "forensic", "legal_sensitive")
+# Output kinds a subtask may render. bar_chart/line_chart are built
+# deterministically from the source table (values verbatim, chart_guard-verified).
+OUTPUT_KINDS = ("data_table", "bar_chart", "line_chart", "html_report_section",
+                "pdf", "docx", "markdown")
+
+
+@dataclass
+class OutputSpec:
+    """How a subtask should render its result. The LLM sets this from the user's
+    exact request ('as a line chart with the date on x'); the executor honours it
+    deterministically — it never lets the model produce the numbers."""
+    kind: str = "data_table"                     # ∈ OUTPUT_KINDS
+    x: Optional[str] = None                       # x-axis / category column (chart)
+    series: List[str] = field(default_factory=list)  # value column(s) (chart)
+    title: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"kind": self.kind, "x": self.x, "series": self.series,
+                "title": self.title}
+
+    @classmethod
+    def from_any(cls, v: Any) -> Optional["OutputSpec"]:
+        if v is None:
+            return None
+        if isinstance(v, OutputSpec):
+            return v
+        if isinstance(v, str):
+            return cls(kind=v)
+        if isinstance(v, dict):
+            series = v.get("series") or []
+            if isinstance(series, str):
+                series = [series]
+            return cls(kind=str(v.get("kind") or "data_table"),
+                       x=v.get("x"), series=list(series),
+                       title=str(v.get("title") or ""))
+        return None
 
 
 @dataclass
@@ -26,12 +62,14 @@ class SubTask:
     outputs: List[str] = field(default_factory=list)
     depends_on: List[str] = field(default_factory=list)
     requires_rerank: bool = False
+    output: Optional[OutputSpec] = None          # how to render this step's result
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id, "skill": self.skill, "record": self.record,
             "inputs": self.inputs, "outputs": self.outputs,
             "depends_on": self.depends_on, "requires_rerank": self.requires_rerank,
+            "output": self.output.to_dict() if self.output else None,
         }
 
 

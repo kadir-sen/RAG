@@ -115,7 +115,7 @@ class TestLLMDecomposerValidation:
 
         good = AdvancedPlan(subtasks=[
             SubTask(id="t1", skill="programme.inventory", inputs={"query": "x"})])
-        monkeypatch.setattr(td, "_llm_decompose", lambda q: good)
+        monkeypatch.setattr(td, "_llm_decompose", lambda q, **kw: good)
         # a compound-looking but cue-thin prompt → deterministic yields nothing
         monkeypatch.setattr(td, "is_compound", lambda q: True)
         monkeypatch.setattr(td, "_deterministic_plan",
@@ -129,7 +129,7 @@ class TestLLMDecomposerValidation:
 
         bad = AdvancedPlan(subtasks=[
             SubTask(id="t1", skill="rag.exfiltrate_everything")])
-        monkeypatch.setattr(td, "_llm_decompose", lambda q: bad)
+        monkeypatch.setattr(td, "_llm_decompose", lambda q, **kw: bad)
         monkeypatch.setattr(td, "is_compound", lambda q: True)
         monkeypatch.setattr(td, "_deterministic_plan",
                             lambda q, nq: AdvancedPlan(subtasks=[]))

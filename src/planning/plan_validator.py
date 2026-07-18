@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import List, Tuple
 
 from .intent_graph import validate_edges
-from .schemas import AdvancedPlan
+from .schemas import AdvancedPlan, OUTPUT_KINDS
 from .skill_registry import all_skill_ids, get_skill
 
 _FORENSIC = {"forensic", "legal_sensitive"}
@@ -42,6 +42,19 @@ def validate_plan(plan: AdvancedPlan) -> Tuple[AdvancedPlan, List[str]]:
 
     # 2. DAG integrity.
     errors.extend(validate_edges(plan.subtasks))
+
+    # 2b. Output directive: kind must be renderable; a chart needs an x column.
+    for st in plan.subtasks:
+        if st.output is None:
+            continue
+        if st.output.kind not in OUTPUT_KINDS:
+            errors.append(f"subtask '{st.id}' has unknown output kind "
+                          f"'{st.output.kind}'")
+        if st.output.kind in ("bar_chart", "line_chart") and not st.output.x:
+            # not fatal — the executor degrades to positional columns — but flag
+            # a chart with no series at all as suspicious
+            if not st.output.series:
+                errors.append(f"subtask '{st.id}' requests a chart with no x/series")
 
     # 3. Input availability: each declared input must be ambient or produced by
     #    a (transitive) dependency's output_contract.
