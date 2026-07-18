@@ -11,8 +11,9 @@ Locks in the decomposition → validation → DAG-execution pipeline:
 
 import pytest
 
-from src.planning import (AdvancedPlan, SubTask, SkillContext, SkillResult,
-                          decompose, execute_plan, is_compound, validate_plan,
+from src.planning import (AdvancedPlan, SubTask, OutputSpec, SkillContext,
+                          SkillResult, decompose, execute_plan, is_compound,
+                          is_multi_ask, validate_plan, get_skill,
                           budget_for, tier_for_complexity)
 from src.planning.intent_graph import PlanGraphError, topo_order
 
@@ -245,6 +246,99 @@ class TestRouterIntegration:
         types = {b["type"] for b in res["blocks"]}
         assert "data_table" in types and "validation_status" in types
         assert res["sources"]
+
+
+class TestSmartPlannerV2:
+    """LLM-first planning, multi-ask precedence, the real delay skill, and
+    output-format binding."""
+
+    DELAY_PLUS_DATA = ("prepare a delay report for Block A and compare cost and "
+                       "progress as a line chart")
+
+    def test_multi_ask_trigger(self):
+        assert is_multi_ask(self.DELAY_PLUS_DATA) is True
+        # a plain single-ask delay report must NOT be pulled into the planner
+        assert is_multi_ask("prepare a delay report for Block A") is False
+        assert is_multi_ask("manpower by trade as a table") is False
+
+    def test_delay_chronology_is_a_registered_skill(self):
+        s = get_skill("claim.delay_chronology")
+        assert s is not None
+        assert s.risk_level == "forensic"
+
+    def test_llm_first_plan_accepted_with_output_binding(self, monkeypatch):
+        import src.llm_client as llm
+
+        class _R:
+            raw = {"subtasks": [
+                {"id": "t1", "skill": "claim.delay_chronology", "record": "document",
+                 "inputs": {"query": "delay Block A"}, "outputs": ["chronology"],
+                 "depends_on": []},
+                {"id": "t2", "skill": "data.resolve_tables", "record": "data",
+                 "inputs": {"concepts": ["cost", "progress", "date"]},
+                 "outputs": ["tables"], "depends_on": []},
+                {"id": "t3", "skill": "data.compare_metrics", "record": "data",
+                 "inputs": {"query": "compare cost and progress"},
+                 "outputs": ["comparison_table"], "depends_on": ["t2"],
+                 "output": {"kind": "line_chart", "x": "date",
+                            "series": ["cost", "progress"]}}]}
+        monkeypatch.setattr(llm, "generate_json", lambda *a, **k: _R())
+        p = decompose(self.DELAY_PLUS_DATA, enable_llm=True)
+        skills = [s.skill for s in p.subtasks]
+        assert "claim.delay_chronology" in skills          # real forensic engine node
+        cmp = next(s for s in p.subtasks if s.skill == "data.compare_metrics")
+        assert cmp.output is not None
+        assert cmp.output.kind == "line_chart" and cmp.output.x == "date"
+        assert cmp.output.series == ["cost", "progress"]
+
+    def test_llm_invalid_skill_repaired_or_fallback(self, monkeypatch):
+        import src.llm_client as llm
+
+        class _Bad:
+            raw = {"subtasks": [{"id": "t1", "skill": "rag.exfiltrate"}]}
+        monkeypatch.setattr(llm, "generate_json", lambda *a, **k: _Bad())
+        p = decompose(self.DELAY_PLUS_DATA, enable_llm=True)
+        # invented skill rejected; repair also invalid → deterministic fallback,
+        # and every skill in the final plan is real.
+        assert p.subtasks
+        assert all(get_skill(s.skill) is not None for s in p.subtasks)
+
+    def test_llm_outage_falls_back_no_crash(self, monkeypatch):
+        import src.llm_client as llm
+
+        def _boom(*a, **k):
+            raise RuntimeError("429 quota exceeded")
+        monkeypatch.setattr(llm, "generate_json", _boom)
+        p = decompose(self.DELAY_PLUS_DATA, enable_llm=True)
+        assert p.subtasks                                   # deterministic fallback
+        assert all(get_skill(s.skill) is not None for s in p.subtasks)
+
+    def test_delay_chronology_handler_delegates(self, monkeypatch):
+        import src.delay_reports as dr
+        monkeypatch.setattr(
+            dr, "run_event_chronology",
+            lambda q, router, doc_ids: {
+                "answer": "Chronology of Block A delay…",
+                "sources": [{"file_name": "L1.pdf", "page_number": 1}],
+                "caveats": ["analyst review required"]},
+            raising=False)
+        from src.planning.handlers import build_handlers
+        h = build_handlers(router=object())["claim.delay_chronology"]
+        res = h(SubTask(id="t", skill="claim.delay_chronology",
+                        inputs={"query": "delay Block A"}),
+                {}, SkillContext(extra={"query": "x"}))
+        assert res.sources and "trust_guard" in res.guards
+        assert any(b["type"] == "markdown_text" for b in res.blocks)
+
+    def test_router_precedence_delay_plus_data(self, monkeypatch):
+        # The router must try the compound planner for a multi-ask prompt even
+        # though _classify_delay_report would match "delay report".
+        import src.config as cfg
+        monkeypatch.setattr(cfg, "ENABLE_COMPOUND_PLANNER", True)
+        from src.router import QueryRouter
+        r = QueryRouter.__new__(QueryRouter)
+        assert r._wants_compound(self.DELAY_PLUS_DATA) is True
+        assert r._wants_compound("prepare a delay report for Block A") is False
 
 
 class TestBudget:

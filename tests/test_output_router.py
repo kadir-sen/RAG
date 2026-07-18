@@ -93,32 +93,48 @@ class TestForensicAppendices:
 
 
 class TestReportHandlerIntegration:
-    """The compound planner's report step honours the output intent: a chart
-    request turns a produced table into a chart block; a PPTX request degrades
-    gracefully with the unavailable note."""
+    """The report step honours an OutputSpec: a chart directive turns the
+    produced {columns, rows} table into a chart block (values verbatim); a PPTX
+    request degrades gracefully with the unavailable note; no directive → no
+    chart (the data step already rendered the table)."""
 
-    def _run(self, query):
+    def _run(self, query, output=None):
         from src.planning.handlers import build_handlers
         from src.planning import SkillContext
         from src.planning.schemas import SubTask
         handlers = build_handlers(router=None)
         h = handlers["report.table_pack"]
-        store = {"comparison_table": {"rows": [["P1", 10], ["P2", 7]]}}
+        # New-shape table dict (as the data handlers now store it).
+        store = {"comparison_table":
+                 {"columns": ["proj", "cost"], "rows": [["P1", 10], ["P2", 7]]}}
         ctx = SkillContext(extra={"query": query})
-        return h(SubTask(id="t", skill="report.table_pack"), store, ctx)
+        return h(SubTask(id="t", skill="report.table_pack", output=output),
+                 store, ctx)
 
-    def test_chart_request_emits_chart_block(self):
-        res = self._run("compare projects and draw a bar chart")
+    def test_chart_directive_emits_chart_block(self):
+        from src.planning.schemas import OutputSpec
+        res = self._run("compare projects and draw a bar chart",
+                        output=OutputSpec(kind="bar_chart", x="proj",
+                                          series=["cost"]))
         types = {b["type"] for b in res.blocks}
         assert "chart" in types
         chart = next(b for b in res.blocks if b["type"] == "chart")
         assert chart["values"] == [10.0, 7.0]      # copied verbatim from table
         assert chart["categories"] == ["P1", "P2"]
 
+    def test_line_chart_directive(self):
+        from src.planning.schemas import OutputSpec
+        res = self._run("cost over time as a line chart",
+                        output=OutputSpec(kind="line_chart", x="proj",
+                                          series=["cost"]))
+        chart = next(b for b in res.blocks if b["type"] == "chart")
+        assert chart["chart_type"] == "line"
+        assert chart["series"][0]["points"][0] == {"x": "P1", "y": 10.0}
+
     def test_pptx_request_adds_graceful_caveat(self):
         res = self._run("compare projects and prepare a presentation deck")
         assert any("planned" in c.lower() for c in res.caveats)
 
-    def test_plain_table_request_no_chart(self):
+    def test_no_directive_no_chart(self):
         res = self._run("compare projects in a table")
         assert all(b["type"] != "chart" for b in res.blocks)

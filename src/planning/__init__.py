@@ -17,14 +17,15 @@ from .budget import Budget, budget_for, tier_for_complexity
 from .output_planner import (OutputPlan, plan_output, is_export_available)
 from .plan_executor import (Handler, SkillContext, SkillResult, execute_plan)
 from .plan_validator import validate_plan
-from .schemas import AdvancedPlan, SubTask
-from .skill_registry import SKILLS, SkillSpec, get_skill, all_skill_ids
-from .task_decomposer import decompose, is_compound
+from .schemas import AdvancedPlan, OutputSpec, SubTask
+from .skill_registry import (SKILLS, SkillSpec, get_skill, all_skill_ids,
+                             catalog_for_prompt)
+from .task_decomposer import decompose, is_compound, is_multi_ask
 
 __all__ = [
-    "is_compound", "decompose", "validate_plan", "execute_plan",
-    "AdvancedPlan", "SubTask", "SkillContext", "SkillResult", "Handler",
-    "SKILLS", "SkillSpec", "get_skill", "all_skill_ids",
-    "Budget", "budget_for", "tier_for_complexity",
+    "is_compound", "is_multi_ask", "decompose", "validate_plan", "execute_plan",
+    "AdvancedPlan", "SubTask", "OutputSpec", "SkillContext", "SkillResult",
+    "Handler", "SKILLS", "SkillSpec", "get_skill", "all_skill_ids",
+    "catalog_for_prompt", "Budget", "budget_for", "tier_for_complexity",
     "OutputPlan", "plan_output", "is_export_available",
 ]

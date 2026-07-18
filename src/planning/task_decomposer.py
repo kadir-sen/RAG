@@ -1,17 +1,14 @@
-"""Task decomposer (Sprint C) — turn a compound prompt into a subtask DAG.
+"""Task decomposer — turn a compound prompt into a validated subtask DAG.
 
-Two paths, deterministic-first:
-  * a rule-based decomposer detects record-type + step cues (Turkish and
-    English) and emits a wired DAG — free, offline, reproducible, and the one
-    the tests pin;
-  * an optional LLM path proposes a plan when the deterministic cues are thin.
-    The LLM only *proposes*; the plan_validator then rejects any invented skill,
-    so an LLM can never widen the tool set.
+LLM-first (Smart Planner v2): when enabled, an LLM proposes the DAG (which skills,
+in what order, and the output format) from the full skill catalog; the
+plan_validator gates it (invented skills / bad DAG rejected) with one repair
+retry. A deterministic cue-based decomposer remains as the resilience fallback
+(LLM unavailable / quota outage) and as the offline default for tests.
 
-The decomposer decides *whether* a prompt is compound at all: a simple, single-
-record prompt returns a single_skill plan (the caller then falls through to the
-existing fast route). It commits to compound_analysis only when the prompt spans
-multiple records or explicit multi-step work.
+The LLM only proposes STRUCTURE — numbers are produced downstream by deterministic
+code (SQL + chart_guard + the forensic engine), so an LLM can neither widen the
+tool set nor fabricate values. English-only (the product is English-only).
 """
 
 from __future__ import annotations
@@ -21,7 +18,7 @@ import re
 from typing import List, Optional
 
 from .budget import tier_for_complexity
-from .schemas import AdvancedPlan, SubTask
+from .schemas import AdvancedPlan, OutputSpec, SubTask
 
 logger = logging.getLogger(__name__)
 
@@ -76,35 +73,71 @@ def is_compound(query: str) -> bool:
                             (_has(nq, _COMPARE_CUES) or _has(nq, _TABLE_OUT_CUES)))
 
 
-def decompose(query: str, enable_llm: bool = False) -> AdvancedPlan:
-    """Return an AdvancedPlan. Deterministic cues first; optional LLM fallback."""
+_CONJUNCTIONS = [" and ", " also ", " plus ", " as well as ", " then ",
+                 "; ", " additionally "]
+
+
+def is_multi_ask(query: str) -> bool:
+    """Cheap, LLM-free trigger for the router: should this prompt be tried by the
+    compound planner BEFORE the single-route fast path?
+
+    True when the prompt is compound, OR when it pairs a forensic/programme ask
+    (delay, missing reporting) with an explicit data/chart/table request joined by
+    a conjunction — the exact 'delay report for X AND compare Y as a table' shape
+    that the fixed delay route would otherwise swallow whole. A single-ask prompt
+    (even 'manpower by trade as a table') stays False → fast route."""
+    if is_compound(query):
+        return True
     nq = _norm(query)
-    if not is_compound(query):
+    forensic = _has(nq, _DELAY_CUES) or _has(nq, _MISSING_REPORT_CUES)
+    prog = _has(nq, _INVENTORY_CUES)
+    data_or_fmt = (_has(nq, _DATA_METRIC_CUES) or _has(nq, _CHART_OUT_CUES)
+                   or _has(nq, _TABLE_OUT_CUES))
+    conj = _has(nq, _CONJUNCTIONS)
+    return (forensic or prog) and data_or_fmt and conj
+
+
+def decompose(query: str, enable_llm: bool = False) -> AdvancedPlan:
+    """Return an AdvancedPlan for a compound prompt.
+
+    LLM-first when enable_llm: an LLM proposes the subtask DAG (structure + output
+    format), the validator gates it (rejects invented skills / bad DAG), and one
+    repair retry is attempted on validation errors. The deterministic cue plan is
+    the resilience fallback (LLM unavailable / quota outage / repair failed), NOT
+    the primary. enable_llm defaults False so offline callers/tests get the
+    deterministic path unchanged; the router passes ENABLE_LLM_DECOMPOSER."""
+    nq = _norm(query)
+    if not is_multi_ask(query):
         return AdvancedPlan(plan_type="single_skill", complexity="low",
                             thinking_budget="small", subtasks=[],
                             reason="not a compound prompt")
 
+    if enable_llm:
+        from .plan_validator import validate_plan
+        llm_plan = _llm_decompose(query)
+        if llm_plan is not None and llm_plan.subtasks:
+            plan, errs = validate_plan(llm_plan)
+            if not errs:
+                return plan
+            logger.info(f"[decomposer] LLM plan invalid, repairing: {errs}")
+            repaired = _llm_decompose(query, repair_errors=errs, prior=llm_plan)
+            if repaired is not None and repaired.subtasks:
+                plan2, errs2 = validate_plan(repaired)
+                if not errs2:
+                    return plan2
+                logger.info(f"[decomposer] repair still invalid: {errs2}")
+
+    # Deterministic fallback (also the primary when enable_llm is False).
     plan = _deterministic_plan(query, nq)
     if plan.subtasks:
         return plan
 
-    if enable_llm:
-        llm_plan = _llm_decompose(query)
-        # The LLM only proposes — never trust it unvalidated. Accept only a plan
-        # that passes the same gate (no invented skills, valid DAG); otherwise
-        # fall through to clarification.
-        if llm_plan is not None and llm_plan.subtasks:
-            from .plan_validator import validate_plan
-            _, errs = validate_plan(llm_plan)
-            if not errs:
-                return llm_plan
-            logger.info(f"[decomposer] LLM plan rejected by validator: {errs}")
-
-    # Compound-looking but no concrete cues matched → ask for clarification.
+    # Compound-looking but nothing concrete → clarify rather than guess.
     return AdvancedPlan(plan_type="compound_analysis", complexity="medium",
                         thinking_budget="medium", subtasks=[],
                         clarifications=["Could you specify which records to "
-                                        "analyse (documents, programme, or data)?"],
+                                        "analyse (documents, programme, or data) "
+                                        "and the output format (table or chart)?"],
                         reason="compound but under-specified")
 
 
@@ -198,31 +231,78 @@ def _detected_concepts(nq: str) -> List[str]:
     return concepts or ["manpower"]
 
 
-def _llm_decompose(query: str) -> Optional[AdvancedPlan]:  # pragma: no cover
-    """Optional LLM proposer. Constrained to registry skills in the prompt; the
-    validator is the real enforcer. Disabled by default; returns None on any
-    failure so the caller degrades to clarification."""
+# Few-shot: the one shape that used to break (a forensic ask + a formatted data
+# comparison) — shows the real delay skill + a chart output directive.
+_FEWSHOT = '''EXAMPLE
+USER PROMPT: prepare a delay report for Block A and compare cost and progress as a line chart
+PLAN:
+{"subtasks":[
+  {"id":"t1","skill":"claim.delay_chronology","record":"document","inputs":{"query":"delay report for Block A"},"outputs":["chronology","evidence","citations"],"depends_on":[]},
+  {"id":"t2","skill":"data.resolve_tables","record":"data","inputs":{"concepts":["cost","progress","date"]},"outputs":["tables"],"depends_on":[]},
+  {"id":"t3","skill":"data.compare_metrics","record":"data","inputs":{"query":"compare cost and progress over time"},"outputs":["comparison_table"],"depends_on":["t2"],"output":{"kind":"line_chart","x":"date","series":["cost","progress"]}},
+  {"id":"t4","skill":"report.table_pack","record":"report","inputs":{"comparison_table":""},"outputs":["blocks"],"depends_on":["t3"],"output":{"kind":"line_chart","x":"date","series":["cost","progress"]}}
+]}'''
+
+
+def _llm_decompose(query: str, repair_errors: Optional[List[str]] = None,
+                   prior: Optional[AdvancedPlan] = None
+                   ) -> Optional[AdvancedPlan]:  # pragma: no cover
+    """LLM proposer. Given the full skill catalog (contracts + when-to-use +
+    examples) and the output-format vocabulary, propose a subtask DAG. The
+    validator is the real enforcer — this only proposes. Uses the cheap lite model
+    with a cache key. Returns None on any failure (caller falls back)."""
     try:
         from .. import llm_client
-        from .skill_registry import SKILLS
-        catalog = "\n".join(f"- {sid}: {s.name} (record={s.record_type})"
-                            for sid, s in SKILLS.items())
+        from ..config import GEMINI_MODEL_LITE, ENABLE_LITE_TIER
+        from .skill_registry import catalog_for_prompt
+
+        repair_block = ""
+        if repair_errors and prior is not None:
+            import json
+            repair_block = (
+                "\nYour previous plan was REJECTED for these reasons — fix them "
+                "(use only listed skills, valid dependencies, obtainable inputs):\n"
+                + "\n".join(f"- {e}" for e in repair_errors)
+                + "\nPrevious plan:\n"
+                + json.dumps({"subtasks": [s.to_dict() for s in prior.subtasks]})
+                + "\n")
+
         prompt = (
-            "Decompose the USER PROMPT into a subtask DAG. Use ONLY these skills "
-            "(never invent one):\n" + catalog + "\n\n"
-            f"USER PROMPT: {query}\n\n"
-            'Return JSON {"subtasks":[{"id","skill","record","inputs",'
-            '"outputs","depends_on"}]}.')
+            "Decompose the USER PROMPT into a subtask DAG over the SKILLS below. "
+            "Rules:\n"
+            "- Use ONLY these skill ids (never invent one).\n"
+            "- Each subtask: id, skill, record, inputs, outputs, depends_on, and "
+            "optionally output.\n"
+            "- 'output' binds the render format to the user's request: "
+            '{"kind":"data_table|bar_chart|line_chart|html_report_section|pdf|docx",'
+            '"x":"<x column>","series":["<value column>"...]}. Set it on the '
+            "step(s) that produce the shown result (the data/report steps).\n"
+            "- To PREPARE a delay report/chronology use claim.delay_chronology "
+            "(the real forensic engine), not rag.extract_delay_mentions.\n"
+            "- Only reference an input that is ambient (query/concepts/project) or "
+            "produced by a dependency's outputs.\n\n"
+            "SKILLS:\n" + catalog_for_prompt() + "\n\n"
+            + _FEWSHOT + "\n\n"
+            + repair_block
+            + f"USER PROMPT: {query}\n\n"
+            'Return ONLY JSON: {"subtasks":[...]}.')
+
         resp = llm_client.generate_json(
-            prompt, system="You are a planning decomposer. JSON only.")
+            prompt, system="You are a precise planning decomposer. JSON only.",
+            model=GEMINI_MODEL_LITE if ENABLE_LITE_TIER else "",
+            cache_key="decompose:" + _norm(query)[:120])
         raw = resp.raw if isinstance(resp.raw, dict) else {}
         subs = []
         for s in raw.get("subtasks", []) or []:
+            if not isinstance(s, dict) or not s.get("skill"):
+                continue
             subs.append(SubTask(
-                id=str(s.get("id")), skill=str(s.get("skill")),
+                id=str(s.get("id") or f"t{len(subs) + 1}"),
+                skill=str(s.get("skill")),
                 record=str(s.get("record", "mixed")),
                 inputs=s.get("inputs") or {}, outputs=s.get("outputs") or [],
-                depends_on=s.get("depends_on") or []))
+                depends_on=s.get("depends_on") or [],
+                output=OutputSpec.from_any(s.get("output"))))
         if not subs:
             return None
         n = len(subs)
