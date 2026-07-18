@@ -52,7 +52,13 @@ jobs:
             tests/test_workflows_planner.py \
             tests/test_workflows_executor.py \
             tests/test_programme_guards.py \
-            tests/test_assembled_report.py
+            tests/test_assembled_report.py \
+            tests/test_data_catalog.py \
+            tests/test_plan_to_execution.py \
+            tests/test_reranker.py \
+            tests/test_compound_planner.py \
+            tests/test_output_router.py \
+            tests/test_followups.py
 
   # ── 2. Build the Docker image and push it to GHCR ────────────────────────
   build-and-push:

@@ -124,6 +124,27 @@ class SchemaCatalog:
         return [m for m in self.list_tables(corpus_id=corpus_id)
                 if m.has_concept(concept)]
 
+    def duckdb_names_for(self, table_ids: List[str],
+                         corpus_id: Optional[str] = None) -> List[str]:
+        """Resolve schema-catalog table_ids → physical DuckDB table names.
+
+        The SQL planner works in table_id space; the DuckDB executor / corpus
+        allow-list work in duckdb_table_name space. This is the bridge that lets
+        a plan's compatible-table verdict actually bias execution. Order is
+        preserved to keep the planner's richest-coverage-first ranking.
+        """
+        ids = list(table_ids or [])
+        if not ids:
+            return []
+        by_id = {m.table_id: m.duckdb_table_name
+                 for m in self.list_tables(corpus_id=corpus_id)}
+        out: List[str] = []
+        for tid in ids:
+            name = by_id.get(tid)
+            if name and name not in out:
+                out.append(name)
+        return out
+
     def get_low_confidence_mappings(self, corpus_id: Optional[str] = None
                                     ) -> List[Dict[str, Any]]:
         out = []

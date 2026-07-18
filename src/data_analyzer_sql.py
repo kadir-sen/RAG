@@ -1797,8 +1797,14 @@ class DataAnalyzerSQL:
 
     # ── SQL generation via llm_client ─────────────────────────
 
-    def _generate_sql(self, question: str, table_name: str, provider: str = "gemini") -> str:
-        """Use llm_client to generate SQL query with jargon context."""
+    def _generate_sql(self, question: str, table_name: str, provider: str = "gemini",
+                      concept_columns: Optional[Dict[str, str]] = None) -> str:
+        """Use llm_client to generate SQL query with jargon context.
+
+        concept_columns (concept→raw column) is a planner hint pinning the real
+        columns that answer the query's concepts; it is folded into the table
+        context so the model uses the confirmed column rather than guessing.
+        """
         from . import llm_client
         from .prompt_security import safe_render_prompt, build_system_prompt
 
@@ -1851,6 +1857,23 @@ class DataAnalyzerSQL:
 
         # Build table context from insight
         table_context = self._build_table_context(table_name)
+
+        # Planner concept→column hint: pin the real columns that answer the
+        # query's concepts. Only include mappings whose column actually exists in
+        # this table (the planner picks the best table, but we self-generate for
+        # the selected one) so we never point the model at a non-existent column.
+        if concept_columns:
+            hint_lines = []
+            for concept, raw_col in concept_columns.items():
+                if raw_col in columns:
+                    quoted = f'"{raw_col}"' if ' ' in raw_col else raw_col
+                    hint_lines.append(
+                        f"  - {concept.replace('_', ' ')} → use column {quoted}")
+            if hint_lines:
+                table_context += (
+                    "\n\nCONFIRMED CONCEPT→COLUMN MAPPING "
+                    "(use these exact columns for these concepts; do not invent "
+                    "or substitute columns):\n" + "\n".join(hint_lines))
 
         # Schema-specific hints for known formats
         target_schema = info.get("header_metadata", {}).get("target_schema", "")
@@ -2206,12 +2229,16 @@ class DataAnalyzerSQL:
     # ── Main query entry point ────────────────────────────────
 
     def query(self, question: str, table_name: Optional[str] = None,
-              allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
+              allowed_tables: Optional[List[str]] = None,
+              concept_columns: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         Query data using safe SQL execution.
         Self-corrects once on SQL errors.
         Uses lazy summary for small results.
         If allowed_tables is provided, only consider those tables.
+        concept_columns (concept→raw physical column) is an optional planner hint
+        that pins which real columns answer the query's concepts, so the LLM uses
+        the confirmed column instead of guessing (never invents columns).
         """
         log_separator("SQL Data Query")
         logger.info(f"Question: {question[:100]}...")
@@ -2292,7 +2319,8 @@ class DataAnalyzerSQL:
             # Step 1: Generate SQL
             logger.info("   Generating SQL query...")
             start_time = time.time()
-            sql = self._generate_sql(question, table_name)
+            sql = self._generate_sql(question, table_name,
+                                     concept_columns=concept_columns)
             gen_time = time.time() - start_time
             logger.info(f"   Generated SQL ({gen_time:.2f}s): {sql[:100]}...")
 

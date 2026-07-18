@@ -61,6 +61,15 @@ def retrieve_evidence(scope: ScopeResult, corpus: str,
     try:
         from src.document_rag import get_document_rag
         rag = get_document_rag()
+        # Rerank hints: promote the event's topic entities and, when the scope is
+        # date-bounded, penalize out-of-window pages — precision that matters most
+        # for a dated chronology. Payload dates are still never trusted as event
+        # dates (that guard is downstream); this only reorders retrieval.
+        rerank_hints: dict = {}
+        if scope.topic_terms:
+            rerank_hints["entities"] = scope.topic_terms
+        if scope.date_from and scope.date_to:
+            rerank_hints["date_range"] = (scope.date_from, scope.date_to)
         queries = [title]
         if scope.topic_terms:
             queries.append(" ".join(scope.topic_terms) +
@@ -69,7 +78,8 @@ def retrieve_evidence(scope: ScopeResult, corpus: str,
             if not q.strip() or len(items) >= _MAX_ITEMS:
                 continue
             res = rag.query(q, top_k=_RAG_TOP_K, doc_ids=doc_ids,
-                            synthesize=False) or {}
+                            synthesize=False,
+                            rerank_hints=rerank_hints or None) or {}
             for s in res.get("sources") or []:
                 if not isinstance(s, dict):
                     continue
