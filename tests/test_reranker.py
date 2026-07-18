@@ -14,6 +14,14 @@ from src.rag import rerank_candidates, to_evidence_packet
 from src.rag.reranker import _norm_date, _in_range
 
 
+@pytest.fixture(autouse=True)
+def _no_real_cross_encoder(monkeypatch):
+    """Keep every reranker test offline — never let a test download/load a real
+    cross-encoder model. The CE-specific tests re-patch this with a stub."""
+    import src.rag.reranker as rr
+    monkeypatch.setattr(rr, "_get_cross_encoder", lambda: None)
+
+
 def _c(key, text, **kw):
     d = {"key": key, "file_name": kw.pop("file_name", f"{key}.pdf"),
          "doc_id": kw.pop("doc_id", key), "page_number": kw.pop("page", 1),
@@ -146,6 +154,40 @@ class TestEvidencePacket:
         assert pkt.date == "2024-03-01"
         assert pkt.rerank_score == out[0]["rerank_score"]
         assert pkt.why_selected == out[0]["why_selected"]
+
+
+class TestCrossEncoderBlend:
+    """Tier-2 cross-encoder blends on top of Tier-1 when enabled; it is offline-
+    stubbed here (no model download) and must degrade to Tier-1 when absent."""
+
+    def _stub(self, scores):
+        class _M:
+            def score(self, query, docs):
+                return [scores.get(d[:12], 0.0) for d in docs]
+        return _M()
+
+    def test_cross_encoder_reorders_when_enabled(self, monkeypatch):
+        import src.rag.reranker as rr
+        monkeypatch.setattr("src.config.ENABLE_CROSS_ENCODER", True, raising=False)
+        # CE strongly prefers 'b' though Tier-1 base is equal
+        monkeypatch.setattr(rr, "_get_cross_encoder",
+                            lambda: self._stub({"about topic": 0.1,
+                                                "the answer ": 0.9}))
+        cands = [_c("a", "about topic generalities", dense_score=0.8),
+                 _c("b", "the answer to the exact question", dense_score=0.8)]
+        out = rr.rerank_candidates("question", cands, top_k=2, strategy="hybrid")
+        assert out[0]["key"] == "b"
+        assert any("cross-encoder" in w for w in out[0]["why_selected"])
+
+    def test_absent_model_degrades_to_tier1(self, monkeypatch):
+        import src.rag.reranker as rr
+        monkeypatch.setattr("src.config.ENABLE_CROSS_ENCODER", True, raising=False)
+        monkeypatch.setattr(rr, "_get_cross_encoder", lambda: None)
+        cands = [_c("a", "crane delay event on block B", dense_score=0.6),
+                 _c("b", "unrelated safety induction", dense_score=0.9)]
+        # no CE → Tier-1 still ranks the on-topic 'a' first via coverage
+        out = rr.rerank_candidates("crane delay block B", cands, top_k=2)
+        assert out[0]["key"] == "a"
 
 
 class TestDateHelpers:

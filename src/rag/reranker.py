@@ -331,21 +331,43 @@ def _blend_cross_encoder(query: str,
     """Blend a cross-encoder relevance score into the deterministic score.
 
     Pluggable and fully optional: if the model can't be loaded (missing dep,
-    RAM), we log once and return the deterministic scores unchanged."""
+    RAM), we log once and return the deterministic scores unchanged. Scores are
+    min-max normalized across the set before blending so a raw logit scale
+    doesn't swamp the deterministic signal."""
     try:
         model = _get_cross_encoder()
         if model is None:
             return scored
-        pairs = [(query, c.get("text") or c.get("snippet") or "")
-                 for _, c, _ in scored]
-        ce_scores = model.predict(pairs)
+        docs = [c.get("text") or c.get("snippet") or "" for _, c, _ in scored]
+        ce_scores = model.score(query, docs)
+        if not ce_scores or len(ce_scores) != len(scored):
+            return scored
+        lo, hi = min(ce_scores), max(ce_scores)
+        span = hi - lo
         blended = []
         for (s, c, why), ce in zip(scored, ce_scores):
-            blended.append((s + 0.5 * float(ce), c, why + ["cross-encoder"]))
+            norm = 0.5 if span <= 0 else (float(ce) - lo) / span
+            blended.append((s + 0.5 * norm, c, why + ["cross-encoder"]))
         return blended
     except Exception as e:  # pragma: no cover - optional path
         logger.warning(f"[reranker] cross-encoder skipped: {e}")
         return scored
+
+
+class _CrossEncoderWrapper:
+    """Uniform score(query, docs)->list[float] over fastembed (ONNX, no torch)
+    or, as a fallback, sentence-transformers."""
+
+    def __init__(self, backend, kind):
+        self._backend = backend
+        self._kind = kind
+
+    def score(self, query: str, docs: List[str]) -> List[float]:
+        if self._kind == "fastembed":
+            return [float(s) for s in self._backend.rerank(query, docs)]
+        # sentence-transformers CrossEncoder
+        return [float(s) for s in
+                self._backend.predict([(query, d) for d in docs])]
 
 
 _CE_MODEL = None
@@ -353,16 +375,28 @@ _CE_TRIED = False
 
 
 def _get_cross_encoder():  # pragma: no cover - optional heavy path
-    """Lazy singleton cross-encoder. Returns None if unavailable."""
+    """Lazy singleton cross-encoder. fastembed (ONNX, no torch) first — it fits
+    the 2 GB box and is already a dependency; sentence-transformers as fallback.
+    Returns None if neither is available."""
     global _CE_MODEL, _CE_TRIED
     if _CE_TRIED:
         return _CE_MODEL
     _CE_TRIED = True
+    from ..config import CROSS_ENCODER_MODEL
     try:
-        from ..config import CROSS_ENCODER_MODEL
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+        _CE_MODEL = _CrossEncoderWrapper(
+            TextCrossEncoder(model_name=CROSS_ENCODER_MODEL), "fastembed")
+        logger.info(f"[reranker] cross-encoder (fastembed): {CROSS_ENCODER_MODEL}")
+        return _CE_MODEL
+    except Exception as e:
+        logger.info(f"[reranker] fastembed cross-encoder unavailable ({e}); "
+                    f"trying sentence-transformers")
+    try:
         from sentence_transformers import CrossEncoder
-        _CE_MODEL = CrossEncoder(CROSS_ENCODER_MODEL)
-        logger.info(f"[reranker] cross-encoder loaded: {CROSS_ENCODER_MODEL}")
+        _CE_MODEL = _CrossEncoderWrapper(CrossEncoder(CROSS_ENCODER_MODEL), "st")
+        logger.info(f"[reranker] cross-encoder (sentence-transformers): "
+                    f"{CROSS_ENCODER_MODEL}")
     except Exception as e:
         logger.info(f"[reranker] cross-encoder unavailable ({e}); Tier 1 only")
         _CE_MODEL = None
