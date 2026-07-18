@@ -1895,29 +1895,63 @@ class QueryRouter:
                     "confidence": 0.5,
                 }
 
-        # Existence-gate: before running SQL, ask the schema catalog whether a
-        # compatible table actually exists for the concepts in this query. This
-        # stops "equipment utilization by block" from picking an unrelated cost
-        # table and collapsing into a generic "SQL unavailable". Fail-open.
+        # Existence-gate + plan-driven execution: ask the schema catalog whether a
+        # compatible table actually exists for the concepts in this query, and —
+        # when it does — bias execution toward the planner-confirmed table(s) and
+        # pin the concept→column mapping. This stops "equipment utilization by
+        # block" from picking an unrelated cost table and collapsing into a
+        # generic "SQL unavailable". Fail-open: any error leaves the legacy
+        # heuristic path (unrestricted allow-list, no concept hint) intact.
+        plan_concept_columns: Optional[Dict[str, Any]] = None
         try:
             from .document_rag import _current_user_corpus
-            from .data_catalog import plan_sql
-            plan = plan_sql(query, corpus_id=_current_user_corpus())
-            if plan.execution_mode == "no_data" and plan.required_concepts:
-                logger.info(f"   [existence-gate] no compatible table for "
-                            f"{plan.required_concepts} → clarification")
+            from .data_catalog import plan_sql, get_schema_catalog
+            _corpus = _current_user_corpus()
+            plan = plan_sql(query, corpus_id=_corpus)
+            if plan.required_concepts and plan.execution_mode in (
+                    "no_data", "ask_clarification"):
                 concept_txt = ", ".join(plan.required_concepts)
-                return {
-                    "query": query,
-                    "query_type": QueryType.DATA.value,
-                    "answer": (
+                logger.info(f"   [existence-gate] {plan.execution_mode} for "
+                            f"{plan.required_concepts} → clarification "
+                            f"({plan.reason})")
+                if plan.execution_mode == "ask_clarification":
+                    answer = (
+                        "I read this as a data-analysis request, but the closest "
+                        f"table only partially covers {concept_txt}. "
+                        f"{plan.reason}. I can show the available tables or help "
+                        "map your uploaded Excel columns.")
+                else:
+                    answer = (
                         "I read this as a data-analysis request, but I don't see "
                         f"a compatible table for {concept_txt} in the current "
                         "project. I can show the available tables or help map "
-                        "your uploaded Excel columns."),
+                        "your uploaded Excel columns.")
+                return {
+                    "query": query,
+                    "query_type": QueryType.DATA.value,
+                    "answer": answer,
                     "sources": [], "sql": None, "confidence": 0.6,
                     "failure_reason": "NO_COMPATIBLE_TABLE",
                 }
+            # Confident/likely compatible tables → narrow the allow-list so table
+            # selection can only choose among tables the planner verified cover
+            # the query's concepts, and carry the concept→column mapping into
+            # SQL generation. Only when confidence is real and the intersection
+            # with the corpus allow-list is non-empty (else fail-open).
+            if (plan.candidate_table_ids
+                    and plan.mapping_confidence in ("high", "medium")
+                    and plan.execution_mode in ("deterministic_template",
+                                                "generated_sql")):
+                cand = get_schema_catalog().duckdb_names_for(
+                    plan.candidate_table_ids, corpus_id=_corpus)
+                if cand:
+                    narrowed = ([t for t in cand if t in allowed_tables]
+                                if allowed_tables else cand)
+                    if narrowed:
+                        logger.info(f"   [plan→exec] narrowed tables to {narrowed} "
+                                    f"(confidence={plan.mapping_confidence})")
+                        allowed_tables = narrowed
+                        plan_concept_columns = plan.candidate_columns or None
         except Exception as e:
             logger.debug(f"   [existence-gate] skipped: {e}")
 
@@ -1927,7 +1961,8 @@ class QueryRouter:
             logger.info(f"   Multi-table query detected ({len(relevant)} tables)")
             result = self.hybrid_executor.execute_multi_table(query, allowed_tables=allowed_tables)
         else:
-            result = self.data_analyzer.query(query, allowed_tables=allowed_tables)
+            result = self.data_analyzer.query(query, allowed_tables=allowed_tables,
+                                              concept_columns=plan_concept_columns)
 
         # Enrich with related documents (best-effort, non-blocking)
         all_sources = list(result.get("sources", []))
@@ -4268,6 +4303,44 @@ class QueryRouter:
             for a in valid_answers
         )
 
+    def _try_compound_planner(self, query: str, doc_ids: Optional[List[str]],
+                              trace) -> Optional[Dict[str, Any]]:
+        """Decompose a compound prompt into a validated skill-graph and execute.
+
+        Returns a result dict when it owns the query, or None to fall through to
+        the existing routing. Feature-flagged (ENABLE_COMPOUND_PLANNER) and fully
+        guarded — the planner never breaks normal routing."""
+        try:
+            from .config import ENABLE_COMPOUND_PLANNER
+            if not ENABLE_COMPOUND_PLANNER:
+                return None
+            from .config import ENABLE_LLM_DECOMPOSER
+            from .planning import decompose, is_compound
+            if not is_compound(query):
+                return None
+            plan = decompose(query, enable_llm=ENABLE_LLM_DECOMPOSER)
+            if plan.plan_type == "single_skill" or not plan.subtasks:
+                return None
+            from .planning import execute_plan, SkillContext
+            from .planning.handlers import build_handlers
+            handlers = build_handlers(self)
+            ctx = SkillContext(router=self, doc_ids=doc_ids,
+                               extra={"query": query})
+            logger.info(f"   [compound-planner] {plan.plan_type} / "
+                        f"{len(plan.subtasks)} subtasks / budget={plan.thinking_budget}")
+            if trace is not None:
+                trace.route = "COMPOUND_PLANNER"
+            result = execute_plan(plan, handlers, ctx)
+            if result.get("plan_refused"):
+                logger.info(f"   [compound-planner] plan refused → fall through: "
+                            f"{result.get('errors')}")
+                return None
+            result.setdefault("query", query)
+            return result
+        except Exception as e:
+            logger.warning(f"   [compound-planner] skipped: {e}")
+            return None
+
     # ── Main entry point ──────────────────────────────────────
 
     def route_and_execute(self, query: str, doc_ids: Optional[List[str]] = None, mode: str | None = None, email_ids: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -4329,6 +4402,16 @@ class QueryRouter:
                                  or self._classify_composite(_cq_lower)
                                  or self._classify_programme(_cq_lower)
                                  or self._classify_delay_report(_cq_lower))
+
+            # Compound multi-record prompt → skill-graph planner (Sprint C).
+            # Sits ABOVE the complex-query gate but is far more selective: it only
+            # fires for genuinely compound (multi-record / multi-step) prompts and
+            # otherwise declines, so simple prompts and registered workflows keep
+            # the fast route. Feature-flagged; any failure falls through.
+            if _programme_intent is None:
+                compound = self._try_compound_planner(query, doc_ids, trace)
+                if compound is not None:
+                    return compound
 
             # Check if this is a complex multi-step query → ReAct agent (if on),
             # else the fixed hybrid executor. The agent failing falls through here.

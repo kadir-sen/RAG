@@ -82,6 +82,23 @@ RAG_CANDIDATE_K = int(os.getenv("RAG_CANDIDATE_K", "30"))   # per-retriever cand
 RAG_RERANK_K = int(os.getenv("RAG_RERANK_K", "15"))         # candidates sent to the reranker
 RAG_FINAL_K = int(os.getenv("RAG_FINAL_K", "6"))            # chunks kept for synthesis
 RRF_K = int(os.getenv("RRF_K", "60"))                       # RRF damping constant
+# ── Deterministic reranker (Sprint B) ──────────────────────
+# Tier 1 = deterministic entity/date/doc-type reranking + MMR (no model, ~0 RAM);
+# always on. Tier 2 = optional cross-encoder (bge-reranker ONNX), off by default
+# for the 2GB box. Tier 3 = the existing LLM reranker (ENABLE_RERANK), kept for
+# forensic paths. Reranking degrades gracefully to the fused order on any error.
+# ── Compound planner (Sprint C) ────────────────────────────
+# The multi-step skill-graph planner sits ABOVE the single-route fast path and
+# only activates for genuinely compound (multi-record) prompts. Off by default:
+# the fast route and registered-workflow behaviour are unchanged until enabled.
+ENABLE_COMPOUND_PLANNER = os.getenv("ENABLE_COMPOUND_PLANNER", "false").lower() in ("1", "true", "yes")
+# When deterministic cues are thin, let an LLM PROPOSE a subtask plan — always
+# re-validated (invented skills rejected). Off by default; deterministic-first.
+ENABLE_LLM_DECOMPOSER = os.getenv("ENABLE_LLM_DECOMPOSER", "false").lower() in ("1", "true", "yes")
+ENABLE_DETERMINISTIC_RERANK = os.getenv("ENABLE_DETERMINISTIC_RERANK", "true").lower() in ("1", "true", "yes")
+ENABLE_CROSS_ENCODER = os.getenv("ENABLE_CROSS_ENCODER", "false").lower() in ("1", "true", "yes")
+CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "BAAI/bge-reranker-base")
+RERANK_MMR_LAMBDA = float(os.getenv("RERANK_MMR_LAMBDA", "0.7"))  # relevance↔diversity
 
 # Pinecone settings
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "hybrid-rag")
