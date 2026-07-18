@@ -97,11 +97,13 @@ ENABLE_COMPOUND_PLANNER = os.getenv("ENABLE_COMPOUND_PLANNER", "true").lower() i
 # the gap. Enabled by default (env can turn it off).
 ENABLE_LLM_DECOMPOSER = os.getenv("ENABLE_LLM_DECOMPOSER", "true").lower() in ("1", "true", "yes")
 ENABLE_DETERMINISTIC_RERANK = os.getenv("ENABLE_DETERMINISTIC_RERANK", "true").lower() in ("1", "true", "yes")
-# Tier-2 cross-encoder via fastembed (ONNX, no torch — fits the 2 GB box). Enabled
-# by default; degrades to Tier-1 if the model can't load. Default model is the
-# small MiniLM-L-6 (~90 MB ONNX) for memory safety; bge-reranker-base is available
-# via CROSS_ENCODER_MODEL for higher quality on a larger host.
-ENABLE_CROSS_ENCODER = os.getenv("ENABLE_CROSS_ENCODER", "true").lower() in ("1", "true", "yes")
+# Tier-2 cross-encoder via fastembed (ONNX, no torch). OFF by default: enabling
+# it on the 2 GB Lightsail box was verified in production to saturate memory —
+# loading the ONNX model on top of the app + qdrant + embeddings left the box
+# swap-thrashing and /api/health unresponsive for minutes on the first query.
+# Turn on (ENABLE_CROSS_ENCODER=true) ONLY on a larger host (>=4 GB). When off,
+# the reranker still runs the deterministic Tier-1 (entity/date/MMR) + LLM Tier-3.
+ENABLE_CROSS_ENCODER = os.getenv("ENABLE_CROSS_ENCODER", "false").lower() in ("1", "true", "yes")
 CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2")
 RERANK_MMR_LAMBDA = float(os.getenv("RERANK_MMR_LAMBDA", "0.7"))  # relevance↔diversity
 
