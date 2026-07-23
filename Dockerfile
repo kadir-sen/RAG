@@ -53,5 +53,13 @@ ENV PORT=8080
 ENV APP_MODE=api
 EXPOSE 8080
 
+# Build provenance, surfaced by GET /api/version so "which build is live?" is a
+# single request. Declared LAST on purpose: these change every commit, so an
+# earlier ARG would invalidate the whole layer cache on every build.
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV GIT_SHA=${GIT_SHA}
+ENV BUILD_TIME=${BUILD_TIME}
+
 # Use entrypoint script to select app based on APP_MODE
 CMD ["./entrypoint.sh"]
