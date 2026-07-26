@@ -96,7 +96,7 @@ export default function KnowledgeModal({
   return (
     <>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+        className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay)]"
         onClick={onClose}
       >
         <div
@@ -136,7 +136,7 @@ export default function KnowledgeModal({
                       onChange={(e) => setNewName(e.target.value)}
                       placeholder="Collection name"
                       autoFocus
-                      className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[var(--accent)]"
+                      className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-2 py-1.5 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') handleCreate();
                         if (e.key === 'Escape') setCreating(false);
@@ -146,7 +146,7 @@ export default function KnowledgeModal({
                       value={newDesc}
                       onChange={(e) => setNewDesc(e.target.value)}
                       placeholder="Description (optional)"
-                      className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[var(--accent)]"
+                      className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-2 py-1.5 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') handleCreate();
                         if (e.key === 'Escape') setCreating(false);
@@ -156,13 +156,13 @@ export default function KnowledgeModal({
                       <button
                         onClick={handleCreate}
                         disabled={!newName.trim()}
-                        className="flex-1 text-[11px] px-2 py-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded disabled:opacity-40"
+                        className="flex-1 text-[11px] px-2 py-1 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-ink)] rounded disabled:opacity-40"
                       >
                         Create
                       </button>
                       <button
                         onClick={() => setCreating(false)}
-                        className="text-[11px] px-2 py-1 text-[var(--text-muted)] hover:text-white"
+                        className="text-[11px] px-2 py-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                       >
                         Cancel
                       </button>
@@ -197,8 +197,8 @@ export default function KnowledgeModal({
                         key={c.collection_id}
                         className={`group flex items-center gap-1 px-2 py-1.5 rounded-md cursor-pointer text-xs transition-colors ${
                           isActive
-                            ? 'bg-[var(--bg-hover)] text-white'
-                            : 'text-[var(--text-secondary)] hover:bg-[rgba(255,255,255,0.04)] hover:text-white'
+                            ? 'bg-[var(--bg-hover)] text-[var(--text-primary)]'
+                            : 'text-[var(--text-secondary)] hover:bg-[var(--wash)] hover:text-[var(--text-primary)]'
                         }`}
                         onClick={() => {
                           if (!isEditing && !isPending) setSelectedId(c.collection_id);
@@ -215,7 +215,7 @@ export default function KnowledgeModal({
                               if (e.key === 'Escape') setEditingId(null);
                             }}
                             onClick={(e) => e.stopPropagation()}
-                            className="flex-1 bg-transparent text-xs text-white outline-none border-b border-[var(--accent)]"
+                            className="flex-1 bg-transparent text-xs text-[var(--text-primary)] outline-none border-b border-[var(--accent)]"
                           />
                         ) : isPending ? (
                           <div className="flex items-center gap-1 flex-1">
@@ -225,7 +225,7 @@ export default function KnowledgeModal({
                                 e.stopPropagation();
                                 handleDelete(c.collection_id);
                               }}
-                              className="text-[9px] px-1.5 py-0.5 bg-[var(--danger)] text-white rounded"
+                              className="text-[9px] px-1.5 py-0.5 bg-[var(--danger)] text-[var(--accent-ink)] rounded"
                             >
                               Yes
                             </button>
@@ -254,7 +254,7 @@ export default function KnowledgeModal({
                                   setEditingId(c.collection_id);
                                   setEditName(c.name);
                                 }}
-                                className="p-0.5 text-[var(--text-muted)] hover:text-white"
+                                className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                                 title="Rename"
                               >
                                 <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -315,7 +315,7 @@ export default function KnowledgeModal({
                         !detail.data ||
                         detail.data.document_ids.length === 0
                       }
-                      className="shrink-0 text-[11px] px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white rounded disabled:opacity-40"
+                      className="shrink-0 text-[11px] px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-ink)] rounded disabled:opacity-40"
                       title="Apply this collection's documents to the active chat"
                     >
                       Apply to chat

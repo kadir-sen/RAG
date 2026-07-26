@@ -32,7 +32,7 @@ export default function RelatedDocsList({ docs, onDocClick }: Props) {
               onClick={() => d.doc_id && onDocClick({ docId: d.doc_id, fileName: d.doc_name })}
               disabled={!d.doc_id}
               title={d.doc_name}
-              className={`group inline-flex items-center gap-2 max-w-full pl-1.5 pr-3 py-1.5 rounded-full border transition-colors text-left ${
+              className={`group inline-flex items-center gap-2 max-w-full pl-1.5 pr-3 py-1.5 rounded-[2px] border transition-colors text-left ${
                 d.doc_id
                   ? 'border-[var(--border)] bg-[var(--bg-surface)] hover:border-[var(--accent)] hover:bg-[var(--bg-hover)] cursor-pointer'
                   : 'border-[var(--border)] bg-[var(--bg-surface)] opacity-50 cursor-not-allowed'

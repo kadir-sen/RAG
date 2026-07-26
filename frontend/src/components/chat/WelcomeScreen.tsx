@@ -76,15 +76,15 @@ export default function WelcomeScreen({ onSend }: Props) {
         {/* Engineering mark */}
         <div className="flex items-center gap-4">
           <div
-            className="w-14 h-14 grid place-items-center border border-[var(--border)] bg-[rgba(255,255,255,0.04)] rounded"
+            className="w-14 h-14 grid place-items-center border border-[var(--border)] bg-[var(--wash)] rounded"
             aria-hidden="true"
           >
-            <span className="font-mono font-bold text-white tracking-wider text-lg">CO</span>
+            <span className="font-mono font-bold text-[var(--text-primary)] tracking-wider text-lg">CO</span>
           </div>
           <div>
-            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-white">
+            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
               <span>CO</span>
-              <span className="text-[var(--accent)]">Air</span>
+              <span className="text-[var(--brand)]">Air</span>
             </h1>
             <p className="text-xs md:text-sm text-[var(--text-secondary)] font-mono mt-1 tracking-wide">
               chat · cite · verify — your project data, on demand
@@ -100,7 +100,7 @@ export default function WelcomeScreen({ onSend }: Props) {
               <button
                 key={s.label}
                 onClick={() => onSend?.(s.prompt)}
-                className="group flex items-center gap-3 bg-[rgba(255,255,255,0.03)] border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[rgba(59,111,182,0.06)] rounded-md px-4 py-3.5 text-left transition-colors"
+                className="group flex items-center gap-3 bg-[var(--wash)] border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--wash-firm)] rounded-md px-4 py-3.5 text-left transition-colors"
               >
                 <span className="font-mono text-lg text-[var(--text-primary)] w-6 text-center">{s.symbol}</span>
                 <span className="text-[13px] md:text-sm text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] flex-1">{s.label}</span>
@@ -120,9 +120,9 @@ export default function WelcomeScreen({ onSend }: Props) {
               {kpis.map(([n, l]) => (
                 <div
                   key={l}
-                  className="px-3 py-3 rounded bg-[rgba(255,255,255,0.03)] border border-[var(--border)]"
+                  className="px-3 py-3 rounded bg-[var(--wash)] border border-[var(--border)]"
                 >
-                  <div className="font-mono text-2xl text-white tabular-nums leading-none">{n}</div>
+                  <div className="font-mono text-2xl text-[var(--text-primary)] tabular-nums leading-none">{n}</div>
                   <div className="font-mono text-[10px] text-[var(--text-secondary)] tracking-[0.12em] uppercase mt-1.5">
                     {l}
                   </div>
@@ -133,9 +133,9 @@ export default function WelcomeScreen({ onSend }: Props) {
               {Object.entries(summary.by_doc_type).map(([type, count]) => (
                 <span
                   key={type}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded font-mono text-[11px] bg-[rgba(255,255,255,0.03)] border border-[var(--border)] text-[var(--text-secondary)]"
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded font-mono text-[11px] bg-[var(--wash)] border border-[var(--border)] text-[var(--text-secondary)]"
                 >
-                  <span className="text-white">{count}</span>
+                  <span className="text-[var(--text-primary)]">{count}</span>
                   <span className="lowercase">{LIBRARY_KPI_LABELS[type] || DOC_TYPE_LABELS[type] || type}</span>
                 </span>
               ))}

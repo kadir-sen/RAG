@@ -27,7 +27,7 @@ export default function BrandMark({ size = 'sm', className = '', showFeather = f
     >
       <span className="leading-none">
         <span className="text-[var(--text-primary)]">CO</span>
-        <span className="text-[var(--accent)]">Air</span>
+        <span className="text-[var(--brand)]">Air</span>
       </span>
       {showFeather && <FeatherIcon size={cfg.feather} />}
     </div>
@@ -48,11 +48,11 @@ export function FeatherIcon({ size = 18 }: { size?: number }) {
       aria-hidden="true"
     >
       {/* Stylised quill vane */}
-      <path d="M20 4c-9 1-13 7-15 14L7 20l3-1c7-2 12-7 10-15z" fill="var(--text-primary)" stroke="none" />
+      <path d="M20 4c-9 1-13 7-15 14L7 20l3-1c7-2 12-7 10-15z" fill="var(--ink)" stroke="none" />
       {/* Orange quill spine */}
-      <path d="M20 4 L 7 17" stroke="var(--accent)" />
-      <path d="M11 13 L 14 15" stroke="var(--accent)" />
-      <path d="M14 9 L 18 11" stroke="var(--accent)" />
+      <path d="M20 4 L 7 17" stroke="var(--brand)" />
+      <path d="M11 13 L 14 15" stroke="var(--brand)" />
+      <path d="M14 9 L 18 11" stroke="var(--brand)" />
     </svg>
   );
 }

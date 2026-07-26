@@ -207,7 +207,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
             {failedText && onRetry && (
               <button
                 onClick={() => onRetry(failedText)}
-                className="mt-2 px-3 py-1.5 text-xs bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors"
+                className="mt-2 px-3 py-1.5 text-xs bg-[var(--accent)] text-[var(--accent-ink)] rounded-lg hover:bg-[var(--accent-hover)] transition-colors"
               >
                 Retry
               </button>

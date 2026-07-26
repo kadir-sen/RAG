@@ -21,7 +21,7 @@ export default function SqlArtifact({ artifact, onSourceClick }: Props) {
           })}
           className="w-full flex items-center gap-2 px-3 py-2 bg-[var(--accent)]/10 border-b border-[var(--accent)]/20 text-sm text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors text-left cursor-pointer"
         >
-          <span className="w-2 h-2 rounded-full bg-[var(--accent)] flex-shrink-0 animate-pulse" />
+          <span className="w-2 h-2 bg-[var(--accent)] flex-shrink-0 animate-pulse" />
           <span className="underline decoration-dotted underline-offset-2">Source: {artifact.source_file_name}</span>
           <span className="text-[10px] ml-auto opacity-60">Click to view</span>
         </button>
@@ -46,7 +46,7 @@ export default function SqlArtifact({ artifact, onSourceClick }: Props) {
           {/* SQL */}
           <div>
             <p className="text-xs text-[var(--text-secondary)] mb-1">SQL</p>
-            <pre className="p-2 rounded bg-[var(--bg-secondary)] text-xs text-green-400 overflow-x-auto">
+            <pre className="p-2 rounded bg-[var(--bg-secondary)] text-xs text-[var(--green)] overflow-x-auto">
               {artifact.generated_sql}
             </pre>
           </div>

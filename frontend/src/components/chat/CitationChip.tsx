@@ -30,7 +30,7 @@ function CitationChip({ citation, onClick }: Props) {
     <button
       onClick={onClick}
       title={`${citation.doc_name} — ${citation.anchor}`}
-      className="inline-flex items-center gap-1.5 align-baseline ml-2 px-2 py-0.5 rounded-md font-mono text-[11px] leading-tight border border-[var(--border)] bg-[rgba(255,255,255,0.02)] text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+      className="inline-flex items-center gap-1.5 align-baseline ml-2 px-2 py-0.5 rounded-md font-mono text-[11px] leading-tight border border-[var(--border)] bg-[var(--wash)] text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
     >
       <span aria-hidden="true" className="text-[var(--text-muted)]">{iconForExt(citation.doc_name)}</span>
       <span className="truncate max-w-[18rem]">{name}</span>

@@ -190,7 +190,7 @@ export default function LeftDrawer() {
             </button>
             <button
               onClick={() => setKnowledgeOpen(true)}
-              className="w-full py-1.5 text-[11px] font-medium text-[var(--text-secondary)] hover:text-white border border-[var(--border)] rounded-lg hover:bg-[var(--bg-hover)] transition-all flex items-center justify-center gap-1.5"
+              className="w-full py-1.5 text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border)] rounded-lg hover:bg-[var(--bg-hover)] transition-all flex items-center justify-center gap-1.5"
               title="Manage knowledge collections"
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

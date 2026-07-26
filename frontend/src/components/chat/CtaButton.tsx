@@ -42,13 +42,13 @@ export default function CtaButton({ cta }: Props) {
         <button
           onClick={handleClick}
           disabled={busy}
-          className="px-3 py-1.5 text-xs rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-colors"
+          className="px-3 py-1.5 text-xs rounded-lg bg-[var(--accent)] text-[var(--accent-ink)] hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-colors"
         >
           {busy ? 'Scheduling…' : cta.label || 'Reindex'}
         </button>
       </div>
-      {done && <div className="mt-2 text-[11px] text-emerald-400">{done}</div>}
-      {error && <div className="mt-2 text-[11px] text-red-400">{error}</div>}
+      {done && <div className="mt-2 text-[11px] text-[var(--green)]">{done}</div>}
+      {error && <div className="mt-2 text-[11px] text-[var(--danger)]">{error}</div>}
     </div>
   );
 }

@@ -351,7 +351,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   return (
     <>
       {sidebarOpen && (
-        <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={toggleSidebar} />
+        <div className="fixed inset-0 bg-[var(--overlay)] z-30 md:hidden" onClick={toggleSidebar} />
       )}
       <aside
         aria-label="Sidebar"
@@ -453,7 +453,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                     <div
                       key={doc.doc_id}
                       className={`flex items-start gap-2 p-1.5 rounded transition-colors ${
-                        isSelected ? 'bg-[var(--accent-glow)]' : 'hover:bg-[rgba(255,255,255,0.04)]'
+                        isSelected ? 'bg-[var(--accent-glow)]' : 'hover:bg-[var(--wash)]'
                       }`}
                     >
                       <input
@@ -523,7 +523,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                 key={qp.label}
                 onClick={() => handleEmailAction(qp.prompt)}
                 disabled={emailActionLoading}
-                className="w-full text-left px-2 py-1.5 rounded text-[10px] text-[var(--text-secondary)] hover:text-white hover:bg-[rgba(255,255,255,0.04)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                className="w-full text-left px-2 py-1.5 rounded text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--wash)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 {emailActionLoading ? 'Loading…' : `${qp.label} (${selectedEmailIds.length})`}
               </button>
@@ -628,13 +628,13 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                       <span className="text-xs text-[var(--danger)]">Delete?</span>
                       <button
                         onClick={(e) => { e.stopPropagation(); confirmDelete(); }}
-                        className="text-[10px] px-1.5 py-0.5 bg-[var(--danger)] text-white rounded"
+                        className="text-[10px] px-1.5 py-0.5 bg-[var(--danger)] text-[var(--accent-ink)] rounded"
                       >
                         Yes
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); cancelDelete(); }}
-                        className="text-[10px] px-1.5 py-0.5 text-[var(--text-muted)] hover:text-white"
+                        className="text-[10px] px-1.5 py-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                       >
                         No
                       </button>
@@ -665,7 +665,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                         <>
                           <button
                             onClick={(e) => { e.stopPropagation(); pinConversation({ id: c.conversation_id, pinned: !c.pinned }); }}
-                            className={`p-0.5 hover:text-white ${c.pinned ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}
+                            className={`p-0.5 hover:text-[var(--text-primary)] ${c.pinned ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}
                             title={c.pinned ? 'Unpin' : 'Pin'}
                           >
                             <svg width="10" height="10" viewBox="0 0 24 24" fill={c.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -674,7 +674,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); startRename(c); }}
-                            className="p-0.5 text-[var(--text-muted)] hover:text-white"
+                            className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                             title="Rename"
                           >
                             <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -683,7 +683,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); archiveConversation({ id: c.conversation_id, archived: true }); }}
-                            className="p-0.5 text-[var(--text-muted)] hover:text-white"
+                            className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                             title="Archive"
                           >
                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -697,7 +697,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
                       {viewingArchived && (
                         <button
                           onClick={(e) => { e.stopPropagation(); archiveConversation({ id: c.conversation_id, archived: false }); }}
-                          className="p-0.5 text-[var(--text-muted)] hover:text-white"
+                          className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                           title="Unarchive"
                         >
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -731,7 +731,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
             {uploading.map((u) => (
               <div key={u.name} className="flex items-center gap-2 text-[10px]">
                 <span className="truncate flex-1 text-[var(--text-secondary)]">{u.name}</span>
-                <span className={u.status === 'completed' ? 'text-green-400' : u.status === 'error' ? 'text-red-400' : 'text-[var(--text-muted)]'}>
+                <span className={u.status === 'completed' ? 'text-[var(--accent-green)]' : u.status === 'error' ? 'text-[var(--danger)]' : 'text-[var(--text-muted)]'}>
                   {u.status === 'completed' ? '✓' : u.status === 'error' ? '✗' : `${u.progress}%`}
                 </span>
               </div>

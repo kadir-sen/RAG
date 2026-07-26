@@ -12,10 +12,10 @@ interface Props {
 }
 
 const TONE_CLASSES: Record<Tone, string> = {
-  default: 'text-[var(--text-primary)] border-[var(--border)] bg-[rgba(255,255,255,0.03)]',
+  default: 'text-[var(--text-primary)] border-[var(--border)] bg-[var(--wash)]',
   accent:  'text-[var(--accent)] border-[var(--accent)] bg-[var(--accent-glow)]',
   muted:   'text-[var(--text-secondary)] border-[var(--border)] bg-transparent',
-  warning: 'text-[var(--warning)] border-[var(--warning)] bg-[rgba(199,125,44,0.12)]',
+  warning: 'text-[var(--warning)] border-[var(--warning)] bg-[var(--wash)]',
 };
 
 // Bracketed monospace chip used everywhere in the engineering-blueprint design:

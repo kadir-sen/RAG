@@ -8,7 +8,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         Skip to main content
       </a>
       <TopNav />
-      <main id="main-content" className="flex-1 flex overflow-hidden min-h-0">
+      {/* The app ground is a drawing sheet: the blue-line grid runs under
+          everything, and cards drawn on it let it faintly show through. */}
+      <main id="main-content" className="sheet-grid flex-1 flex overflow-hidden min-h-0">
         {children}
       </main>
     </div>

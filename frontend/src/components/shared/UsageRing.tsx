@@ -47,8 +47,8 @@ export default function UsageRing({ size = 18, showLabel = false, showTokens = f
     strokeColor = 'var(--danger)';
     textClass = 'text-[var(--danger)]';
   } else if (remaining < 30) {
-    strokeColor = '#fbbf24';
-    textClass = 'text-amber-300';
+    strokeColor = 'var(--warning)';
+    textClass = 'text-[var(--warning)]';
   }
 
   const strokeWidth = Math.max(2, Math.round(size / 9));
@@ -82,7 +82,7 @@ export default function UsageRing({ size = 18, showLabel = false, showTokens = f
           cy={center}
           r={radius}
           fill="none"
-          stroke="var(--bg-surface)"
+          stroke="var(--border)"
           strokeWidth={strokeWidth}
         />
         <circle
@@ -92,7 +92,7 @@ export default function UsageRing({ size = 18, showLabel = false, showTokens = f
           fill="none"
           stroke={strokeColor}
           strokeWidth={strokeWidth}
-          strokeLinecap="round"
+          strokeLinecap="butt"
           strokeDasharray={circumference}
           strokeDashoffset={dashOffset}
           transform={`rotate(-90 ${center} ${center})`}

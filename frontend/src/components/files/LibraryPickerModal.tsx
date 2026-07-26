@@ -91,7 +91,7 @@ export default function LibraryPickerModal({ open, onClose, existingDocIds, onAd
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay)]" onClick={onClose}>
       <div
         ref={dialogRef}
         role="dialog"
@@ -166,7 +166,7 @@ export default function LibraryPickerModal({ open, onClose, existingDocIds, onAd
           <button
             onClick={handleAdd}
             disabled={selected.size === 0}
-            className="px-3 py-1.5 text-sm bg-[var(--accent)] text-white rounded disabled:opacity-40"
+            className="px-3 py-1.5 text-sm bg-[var(--accent)] text-[var(--accent-ink)] rounded disabled:opacity-40"
           >
             Add {selected.size > 0 ? `(${selected.size})` : ''}
           </button>

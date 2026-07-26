@@ -22,9 +22,9 @@ export default function FileTypeBadge({
   return (
     <span
       aria-label={`${badge.label} file`}
-      className={`inline-flex items-center gap-1 shrink-0 ${padding} rounded font-mono ${text} font-semibold tracking-wider text-[var(--text-primary)] border border-[var(--border)] bg-[rgba(255,255,255,0.04)] ${className}`}
+      className={`inline-flex items-center gap-1 shrink-0 ${padding} rounded font-mono ${text} font-semibold tracking-wider text-[var(--text-primary)] border border-[var(--border)] bg-[var(--wash)] ${className}`}
     >
-      <span aria-hidden="true" className={`${dotSize} rounded-full`} style={{ background: badge.dot }} />
+      <span aria-hidden="true" className={`${dotSize}`} style={{ background: badge.dot }} />
       {badge.label}
     </span>
   );

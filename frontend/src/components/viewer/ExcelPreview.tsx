@@ -95,7 +95,7 @@ export default function ExcelPreview({ content }: Props) {
               key={i}
               className={
                 i % 2
-                  ? 'bg-[rgba(255,255,255,0.02)]'
+                  ? 'bg-[var(--wash)]'
                   : 'bg-transparent'
               }
             >
