@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="COAir — AI-powered assistant for documents, correspondence, and project intelligence." />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#FCFCFA" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0C1E2E" media="(prefers-color-scheme: dark)" />
+    <meta property="og:title" content="COAir" />
+    <meta property="og:description" content="AI-powered assistant for documents, emails, and project data." />
+    <meta property="og:type" content="website" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!--
+      Only the four weights the UI actually uses: 400 body, 500 chips/mono,
+      600 semibold labels, 700 strong. Dropping 300/800/900 cuts the font
+      CSS payload roughly in half and the woff2 fetches by ~40%.
+    -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <title>COAir</title>
+    <!--
+      Sets the sheet mode before first paint so the app never flashes the
+      wrong ground. Reads the same `platform.sheet` key the portal writes,
+      so the mode carries across the platform. Kept as a separate file so
+      the deployed CSP can refuse inline scripts.
+    --><script src="/boot.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <p style="padding:2rem;color:#14324A;font-family:sans-serif;">
+        JavaScript is required to run COAir. Please enable JavaScript in your browser settings.
+      </p>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

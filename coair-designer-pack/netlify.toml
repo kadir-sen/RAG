@@ -1,0 +1,45 @@
+[build]
+  publish = "dist"
+  command = "npm run build"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "no-referrer"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=(), payment=()"
+    # Same policy as the platform portal, widened only for the two Google
+    # Fonts origins the app loads Inter and JetBrains Mono from. Self-host
+    # those two families and this collapses back to 'self' everywhere.
+    # connect-src is 'self' because the designer pack answers every API call
+    # from local fixtures; pointing VITE_API_URL at a real backend means
+    # adding that origin here.
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+# Unlike the portal, this is a Vite build: everything under /assets is
+# content-hashed, so it can be cached forever. Netlify header rules are
+# cumulative, so only one rule may set Cache-Control on a given path.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# The shell and the pre-paint boot script are not hashed — always revalidate,
+# or a redeploy would never reach returning visitors.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/boot.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# Client-side routing: /login and every other route are served by the SPA
+# shell, so a direct hit or a refresh does not 404. Must be the last rule.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

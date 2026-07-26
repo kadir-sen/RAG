@@ -1,0 +1,496 @@
+@import "tailwindcss";
+
+/* ==================================================================== *
+ * COAIr — DRAWING SHEET
+ *
+ * The visual language of an issued-for-construction drawing: drafting
+ * paper, a faint blue-line grid, hairline rules, uppercase tracked
+ * labels, tabular figures and square corners. The palette is carried
+ * over verbatim from the Delay Analysis Toolkit and the platform portal
+ * (Web Page/assets/css/styles.css) so COAIr and the tools it sits
+ * beside read as one document set.
+ *
+ *   Light = drawing sheet (paper, ink lines)        — primary identity
+ *   Dark  = blueprint     (ink ground, white lines) — its counterpart
+ *
+ * The mode follows the OS by default and can be flipped from the top
+ * bar. The choice is stored under the same `platform.sheet` key the
+ * portal uses, so switching in one place switches the whole platform.
+ *
+ * HOW TO RETHEME: every colour in the app resolves back to the nine
+ * palette entries in §1. Change those and the whole UI moves with them.
+ * The tokens below them (§2) are semantic aliases — components only ever
+ * reference those, never a raw hex.
+ * ==================================================================== */
+
+/* -------------------------------------------------------------- *
+ * 1. PALETTE — drawing sheet (light)
+ *
+ * Delay Analysis Toolkit palette — do not drift from these.
+ * -------------------------------------------------------------- */
+:root {
+  --ink:        #14324A;   /* drafting ink            */
+  --ink-soft:   #5B7994;   /* annotation / secondary  */
+  --red:        #9B3227;   /* revision red (slip)     */
+  --green:      #3F6B4F;   /* gain / on-programme     */
+  --amber:      #B07A24;   /* caution / in review     */
+  --line:       #C6D4E0;   /* hairline                */
+  --grid:       #EBF2F7;   /* blue-line grid (faint)  */
+  --paper:      #FCFCFA;   /* paper                   */
+  --panel:      #F1F5F9;   /* panel / sidebar         */
+
+  /* Tints derived from ink — kept as rgba so they sit on the grid */
+  --wash:       rgba(20, 50, 74, .05);
+  --wash-firm:  rgba(20, 50, 74, .085);
+  --overlay:    rgba(20, 50, 74, .55);
+
+  /* Ink as channels, for one-off rgba() tints in components */
+  --ink-rgb:    20, 50, 74;
+
+  /* COAIr keeps its own brand mark colour — the amber of the logo.
+     It is a *brand* accent, not a UI accent: the wordmark, the mark
+     and "in review" states only. Interactive emphasis is ink. */
+  --coair-orange: #B07A24;   /* brand amber, ink-compatible */
+}
+
+/* -------------------------------------------------------------- *
+ * 1b. PALETTE — blueprint (dark)
+ *
+ * The same drawing, reversed out.
+ * -------------------------------------------------------------- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-sheet="light"]) {
+    --ink:       #E6EFF6;
+    --ink-soft:  #8FAEC6;
+    --red:       #E4796A;
+    --green:     #74AE88;
+    --amber:     #D9A551;
+    --line:      #2E5171;
+    --grid:      #14304A;
+    --paper:     #0C1E2E;
+    --panel:     #12293C;
+    --wash:      rgba(230, 239, 246, .06);
+    --wash-firm: rgba(230, 239, 246, .1);
+    --overlay:   rgba(6, 16, 25, .72);
+    --ink-rgb:   230, 239, 246;
+
+    --coair-orange: #D9A551;
+  }
+}
+
+:root[data-sheet="dark"] {
+  --ink:       #E6EFF6;
+  --ink-soft:  #8FAEC6;
+  --red:       #E4796A;
+  --green:     #74AE88;
+  --amber:     #D9A551;
+  --line:      #2E5171;
+  --grid:      #14304A;
+  --paper:     #0C1E2E;
+  --panel:     #12293C;
+  --wash:      rgba(230, 239, 246, .06);
+  --wash-firm: rgba(230, 239, 246, .1);
+  --overlay:   rgba(6, 16, 25, .72);
+  --ink-rgb:   230, 239, 246;
+
+  --coair-orange: #D9A551;
+}
+
+/* -------------------------------------------------------------- *
+ * 2. SEMANTIC TOKENS
+ *
+ * Everything the components actually reference. Each one resolves
+ * to a palette entry above, so both sheet modes are covered by a
+ * single definition.
+ * -------------------------------------------------------------- */
+:root {
+  /* ── Grounds ── */
+  --bg-primary:   var(--paper);   /* the sheet — carries the grid   */
+  --bg-secondary: var(--panel);   /* sidebar / drawer / toolbar     */
+  /* Cards are drawn *on* the sheet, so the grid stays faintly visible
+     through them — exactly as panels sit on the toolkit's sheets. */
+  --bg-surface:   color-mix(in srgb, var(--paper) 88%, transparent);
+  --bg-hover:     var(--wash);
+  --bg-input:     var(--paper);
+
+  /* ── Rules ── */
+  --border:       var(--line);
+  --border-light: var(--ink-soft);   /* the hairline thickened to ink */
+
+  /* ── Ink ── */
+  --text-primary:   var(--ink);
+  --text-secondary: var(--ink-soft);
+  --text-muted:     color-mix(in srgb, var(--ink-soft) 76%, var(--paper));
+
+  /* ── Interactive emphasis ──
+     On a drawing, emphasis is ink: the hairline thickens, the soft
+     annotation darkens to full ink. There is no separate UI hue. */
+  --accent:       var(--ink);
+  --accent-hover: color-mix(in srgb, var(--ink) 82%, var(--paper));
+  --accent-ink:   var(--paper);      /* text/marks on an ink fill */
+  --accent-rgb:   var(--ink-rgb);
+  --accent-glow:  var(--wash-firm);
+
+  /* ── Status (the toolkit's three annotation colours) ── */
+  --accent-green: var(--green);
+  --warning:      var(--amber);
+  --danger:       var(--red);
+
+  /* ── Brand ── */
+  --brand: var(--coair-orange);
+
+  /* ── Layout tokens (chat shell) ── */
+  --bubble-radius: 2px;    /* drawings have no rounded corners */
+  --avatar-size: 30px;
+  --topnav-height: 48px;
+  --grid-size: 24px;
+
+  /* ── File-type indicator dots ──
+     Read as drafting annotations: ink for the record itself, gain green
+     for data, caution amber for correspondence. Revision red is left
+     out on purpose — it means a slip, and colouring every PDF red made
+     the whole library read as a problem. */
+  --type-pdf: var(--ink);
+  --type-xls: var(--green);
+  --type-eml: var(--amber);
+
+  /* ── LLM provider chip dots (legacy; names no longer rendered) ── */
+  --provider-gemini:   var(--amber);
+  --provider-openai:   var(--green);
+  --provider-claude:   var(--ink-soft);
+  --provider-fallback: var(--text-muted);
+
+  /* ── Effects ──
+     Kept as tokens for compatibility, but drawn flat: nothing on a
+     drawing fades between two inks. */
+  --gradient-accent:  var(--ink);
+  --gradient-warning: var(--amber);
+
+  /* ── Platform-frontend compatibility ──
+     Nothing in this pack references these, but the full COAIr frontend
+     may. They are kept so this stylesheet can be dropped into the
+     platform wholesale; each resolves to the drafting palette, and the
+     color-mix pairs lean on mode-aware primitives so they adapt to both
+     grounds without a second definition. */
+  --coair-orange-bright: color-mix(in srgb, var(--coair-orange) 75%, var(--text-primary));
+  --coair-orange-dim:    color-mix(in srgb, var(--coair-orange) 60%, var(--paper));
+  --coair-cream:         var(--paper);
+  --warning-strong:      var(--red);
+  --user-bubble:         var(--wash);
+  --rule:                1px solid var(--line);
+  --glass-bg:            var(--wash);
+  --glass-border:        var(--line);
+  --shadow-lg:  0 10px 0 -6px var(--wash-firm), 0 18px 36px -20px var(--ink);
+  --shadow-glow: 0 0 0 1px var(--ink);
+
+  /* ── Typography ── */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* -------------------------------------------------------------- *
+ * 3. TAILWIND THEME OVERRIDES
+ *
+ * Square the corner radii at the source so every `rounded-*`
+ * utility already in the components lands on a drafting corner —
+ * no need to hunt them down one by one.
+ * -------------------------------------------------------------- */
+@theme {
+  --radius-xs:   1px;
+  --radius-sm:   2px;
+  --radius-md:   2px;
+  --radius-lg:   2px;
+  --radius-xl:   3px;
+  --radius-2xl:  3px;
+  --radius-3xl:  3px;
+  --radius-4xl:  3px;
+}
+
+/* -------------------------------------------------------------- *
+ * 4. RESET
+ *
+ * These live in `@layer base` deliberately. Unlayered CSS outranks
+ * everything inside a cascade layer, so a bare `* { margin: 0;
+ * padding: 0 }` silently beats every Tailwind `p-*` / `m-*` utility
+ * in the app — which is why the pack used to render with no padding
+ * anywhere. Inside the base layer the reset still beats browser
+ * defaults, and the utilities win where a component asks for them.
+ * -------------------------------------------------------------- */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html {
+    height: 100%;
+    overflow: clip;
+  }
+
+  body {
+    height: 100%;
+    overflow: clip;
+    background-color: var(--paper);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Apply JetBrains Mono everywhere the existing Tailwind utility `font-mono`
+   is used (citation chips, timestamps, action labels, etc.) — the
+   annotation voice of the sheet. */
+.font-mono,
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--font-mono);
+}
+
+/* Figures on a drawing line up in columns. */
+.font-mono {
+  font-variant-numeric: tabular-nums;
+}
+
+#root {
+  height: 100%;
+  overflow: clip;
+}
+
+/* ── The drafting grid ──
+   The one motif every ground inherits. `.welcome-blueprint` is kept as
+   the historical class name (login + welcome + doc analysis), and the
+   same grid is laid on the app's primary ground so cards and rules read
+   as drawn on a sheet. */
+
+.welcome-blueprint,
+.sheet-grid {
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  background-position: 0 0;
+}
+
+/* ── Panels drawn on the sheet ── */
+
+/* Was a blurred glass card; now a hairlined panel. Same class names so
+   existing components keep working — `.glass-card` is unused in this
+   pack but kept for the full platform frontend. */
+.glass-card,
+.glass {
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+}
+
+/* Hover on a hairlined panel strikes the rule in to ink. */
+.glass:hover {
+  border-color: var(--ink-soft);
+}
+
+/* Platform-frontend compatibility — unused in this pack, kept so the
+   stylesheet ports wholesale. Drawn in drafting terms: glow is a struck
+   rule, gradient text is plain ink. */
+.glow-accent {
+  box-shadow: var(--shadow-glow);
+}
+
+.gradient-text {
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  color: var(--ink);
+  -webkit-text-fill-color: currentColor;
+}
+
+.gradient-border-bottom {
+  border-bottom: 1px solid var(--line);
+}
+
+/* ── Chat message surfaces ──
+   Assistant answers are the issued sheet: paper, hairline, square.
+   The user's question is a marked-up note: ink rule down the left. */
+
+.assistant-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--bubble-radius);
+  box-shadow: none;
+}
+
+.user-bubble {
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ink);
+  border-radius: var(--bubble-radius);
+}
+
+/* Search hit inside the document viewer — a drafting highlighter: an
+   amber wash under the text with a rule beneath it, never neon. */
+.mark-hit {
+  background: color-mix(in srgb, var(--amber) 22%, transparent);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--amber);
+  border-radius: 0;
+  padding: 0 .1em;
+}
+
+/* ── Focus visible (keyboard-only focus indicators) ──
+   In `@layer base` so a component that draws its own focus treatment —
+   the composer marks focus on its surrounding box, not on the textarea —
+   can still turn this off with `focus:outline-none`. */
+
+@layer base {
+  :focus {
+    outline: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+
+  ::placeholder {
+    color: var(--text-muted);
+  }
+
+  ::selection {
+    background: var(--wash-firm);
+  }
+}
+
+/* ── Visually hidden (screen reader only) ── */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Skip link ── */
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: 9999;
+}
+
+.skip-link:focus {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  width: auto;
+  height: auto;
+  padding: 0.6rem 1rem;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  z-index: 9999;
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* ── Sheet toggle (drawing sheet <-> blueprint) ── */
+
+.sheet-toggle {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: .6rem;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  padding: .25rem .5rem;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+
+.sheet-toggle:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: var(--wash);
+}
+
+/* ── Animations ── */
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.3s ease-out;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* ── Reduced motion preference ── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Scrollbar — a hairline, squared off ── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--line);
+  border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--ink-soft);
+}
+
+/* ── Print: the sheet is already a document ── */
+
+@media print {
+  body { background-image: none; }
+  .sheet-toggle { display: none; }
+}
