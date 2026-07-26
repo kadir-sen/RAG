@@ -99,3 +99,13 @@ qdrant_storage/
 # Design asset bundles (large binaries — share out-of-band, not in git)
 designer-pack/
 designer-pack.zip
+
+# The platform portal is deliberately NOT tracked here. Its
+# assets/js/config.js ships a live COAir username and password in plain text
+# (its own README says so), so committing it as-is would put working
+# credentials in the history. Strip them — set signIn:'none' and drop the
+# credentials block — before deciding to version it.
+delay-disputes-portal/
+
+# Stray screenshots from local UI runs.
+/*.png
