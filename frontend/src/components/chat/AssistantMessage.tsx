@@ -59,18 +59,27 @@ function StepTrail({ steps }: { steps: ActivityStep[] }) {
   if (!steps.length) return null;
   return (
     <details className="mb-2 group/steps">
-      <summary className="cursor-pointer list-none text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-secondary)] select-none">
-        steps ({steps.length})
+      {/* Mono tag in the sheet's label convention (MODE.01, ACCESS · 01), and
+          the same numbered revision column the live ActivityFeed draws — the
+          trail is that feed, settled. */}
+      <summary className="cursor-pointer list-none inline-block px-1.5 py-0.5 border border-[var(--border)] rounded-[2px] text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-light)] select-none transition-colors">
+        steps · {steps.length}
       </summary>
-      <ul className="mt-1.5 flex flex-col gap-1 border-l border-[var(--border)] pl-3">
-        {steps.map((s) => (
-          <li key={s.seq} className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
-            <span className="font-mono text-[var(--accent)]">✓</span>
+      <ol className="mt-1.5 flex flex-col border-l border-[var(--border)]">
+        {steps.map((s, i) => (
+          <li
+            key={s.seq}
+            className="flex items-baseline gap-2.5 pl-3 py-[2px] text-[11px] text-[var(--text-muted)]"
+          >
+            <span className="font-mono text-[10px] tabular-nums w-4 shrink-0" aria-hidden="true">
+              {String(i + 1).padStart(2, '0')}
+            </span>
+            <span className="font-mono w-3 shrink-0 text-center text-[var(--accent)]" aria-hidden="true">✓</span>
             <span className="truncate">{s.label}</span>
             {s.detail && <span className="font-mono text-[10px] opacity-70 truncate">{s.detail}</span>}
           </li>
         ))}
-      </ul>
+      </ol>
     </details>
   );
 }
