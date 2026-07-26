@@ -7,7 +7,6 @@ const TONE_BY_LABEL: Record<string, 'accent' | 'success' | 'warning' | 'danger' 
   doc_list: 'accent',
   email_trace: 'accent',
   sql_result: 'success',
-  timeline: 'accent',
   // indexing status
   completed: 'success',
   indexing: 'accent',

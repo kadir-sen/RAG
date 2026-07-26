@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Tuple, Dict, Any, List, Optional
 
 from .config import (
-    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE, ENABLE_TIMELINE,
+    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE,
     ENABLE_THINKING, THINKING_BUDGET_SYNTHESIS, ENABLE_LITE_TIER,
     ENABLE_PARALLEL_RETRIEVAL,
 )
@@ -65,21 +65,6 @@ DOCUMENT_KEYWORDS = {
     "tell me about", "give me an overview", "describe the project",
 }
 
-TIMELINE_KEYWORDS = {
-    "timeline", "chronology", "sequence", "history", "chain", "trace",
-    "what happened", "when did", "order of events", "between dates",
-    "who replied", "who responded", "who sent", "who received",
-    "all notices", "list notices", "show notices", "list of notices",
-    "notice timeline", "notice history",
-    "all correspondence", "correspondence history", "correspondence flow",
-    "letters sent", "letters received",
-    "delay notices", "extension notices", "claim notices",
-    "delay notice", "extension notice", "claim notice",
-    "communication flow", "parties involved", "document trail",
-    # Clustering keywords
-    "cluster", "categorize", "document group",
-}
-
 _KW_BOUNDARY_RE_CACHE: Dict[str, "re.Pattern[str]"] = {}
 
 
@@ -100,7 +85,7 @@ def _kw_match(kw: str, query_lower: str) -> bool:
     return pat.search(query_lower) is not None
 
 
-# Patterns that strongly indicate DOCUMENT intent even when timeline keywords match
+# Patterns that strongly indicate DOCUMENT intent — the user wants to READ
 # (user wants to READ content, not trace chronology)
 _DOCUMENT_INTENT_PATTERNS = [
     "what does", "what did", "explain", "describe", "content of",
@@ -177,12 +162,6 @@ _ANCHOR_TEXTS = {
         "Explain the terms and conditions in section 5",
         "According to the agreement what are the obligations",
         "Summarize the policy document regarding requirements",
-    ],
-    QueryType.TIMELINE: [
-        "Show the timeline of notices sent between parties",
-        "Who sent the delay notice and when was it received",
-        "What is the chronological sequence of correspondence",
-        "List all notices related to contract claims",
     ],
     QueryType.HYBRID: [
         "Compare the contract terms with the actual data values",
@@ -269,8 +248,6 @@ class QueryRouter:
         "policies, specifications, scope definitions. The answer is TEXT from a document, not numbers.\n"
         "  Examples: \"what does clause 5 say\", \"explain liability terms\", \"summarize the contract\", "
         "\"what are the payment conditions\", \"scope of work definition\"\n\n"
-        "- TIMELINE: Chronology, correspondence flow, notice sequences, who sent what when.\n"
-        "  Examples: \"timeline of notices\", \"letters from contractor\", \"communication history\"\n\n"
         "- HYBRID: BOTH document prose AND table data needed in the SAME answer. Rare.\n"
         "  Examples: \"compare contract BOQ quantities with actual progress\", "
         "\"does production match the contractual requirements\"\n\n"
@@ -289,20 +266,20 @@ class QueryRouter:
         "correspondence, payment issues, scope changes). FILE_LIST is ONLY for 'what files exist' "
         "or 'how many files uploaded' — NOT for searching within documents.\n"
         "11. Words like 'memory', 'system', 'database', 'records' mean the user wants to SEARCH "
-        "stored documents — route to DOCUMENT or TIMELINE, NOT FILE_LIST.\n"
+        "stored documents — route to DOCUMENT, NOT FILE_LIST.\n"
         "12. General/conceptual questions ('what is this project about', 'project overview', "
         "'describe the project', 'give me an overview') = DOCUMENT — these need narrative context, not SQL.\n\n"
         "FEW-SHOT EXAMPLES:\n"
         "Q: \"How many steel fixers were on Block A in January?\" -> DATA\n"
         "Q: \"What does clause 12.3 say about liquidated damages?\" -> DOCUMENT\n"
-        "Q: \"List all delay notices sent by the contractor\" -> TIMELINE\n"
+        "Q: \"List all delay notices sent by the contractor\" -> DOCUMENT\n"
         "Q: \"How many files have been uploaded?\" -> FILE_LIST\n"
         "Q: \"Fasta related documents\" -> FILE_LIST\n"
         "Q: \"Show me the documents related to the fire alarm system\" -> FILE_LIST\n"
         "Q: \"Compare BOQ quantities with actual IPC progress\" -> HYBRID\n"
         "Q: \"Show the daily manpower trend for February\" -> DATA\n"
         "Q: \"What are the payment conditions in the contract?\" -> DOCUMENT\n"
-        "Q: \"Who sent the most recent notice about extension of time?\" -> TIMELINE\n"
+        "Q: \"Who sent the most recent notice about extension of time?\" -> DOCUMENT\n"
         "Q: \"Total crane hours across all blocks\" -> DATA\n"
         "Q: \"What is the overall project progress percentage?\" -> DATA\n"
         "Q: \"What is this project about?\" -> DOCUMENT\n"
@@ -323,7 +300,7 @@ class QueryRouter:
         "{learned_examples}"
         "{mode_hint}"
         "User query: {user_query}\n\n"
-        "Respond with exactly ONE word: FILE_LIST, DATA, DOCUMENT, TIMELINE, or HYBRID."
+        "Respond with exactly ONE word: FILE_LIST, DATA, DOCUMENT, or HYBRID."
     )
 
     HYBRID_SYNTHESIS_PROMPT = (
@@ -567,7 +544,7 @@ class QueryRouter:
         """Compact, memoized block of the document topics the corpus covers.
 
         Feeds the LLM router so it can confidently send content questions to
-        DOCUMENT/TIMELINE vs DATA. Reuses the document clusterer's labels (and the
+        DOCUMENT vs DATA. Reuses the document clusterer's labels (and the
         per-doc llm_topics from upload-time enrichment when present). Memoized for a
         short TTL since labels rarely change at query time.
         """
@@ -624,9 +601,9 @@ class QueryRouter:
     # classification toward the expected query types for that mode.
     _MODE_BIAS = {
         "document_analysis": {
-            # Document Analysis mode: bias toward FILE_LIST and TIMELINE
+            # Document Analysis mode: bias toward browsing the library
             # (listing/organizing documents chronologically)
-            "prefer": [QueryType.FILE_LIST, QueryType.TIMELINE],
+            "prefer": [QueryType.FILE_LIST, QueryType.DOCUMENT],
             "reclassify": {
                 # If heuristic/embedding says DOCUMENT with low confidence, switch to FILE_LIST
                 QueryType.DOCUMENT: (QueryType.FILE_LIST, 0.70),
@@ -807,9 +784,9 @@ class QueryRouter:
             )
         if mode == "correspondence":
             return RouterDecision(
-                query_type=QueryType.TIMELINE,
+                query_type=QueryType.THREAD,
                 confidence=0.65,
-                reasons=["Mode default: correspondence -> TIMELINE"],
+                reasons=["Mode default: correspondence -> THREAD"],
             )
         return None
 
@@ -944,7 +921,6 @@ class QueryRouter:
         weak_data_hits = sum(1 for kw in WEAK_DATA_KEYWORDS if _kw_match(kw, query_lower))
         data_score += weak_data_hits * 0.5
         doc_score = sum(1 for kw in DOCUMENT_KEYWORDS if _kw_match(kw, query_lower))
-        timeline_score = sum(1 for kw in TIMELINE_KEYWORDS if _kw_match(kw, query_lower))
 
         # Document-intent signal — explicit content-seeking patterns
         # ("what does", "explain", "describe", "according to", "stated in", ...)
@@ -957,28 +933,18 @@ class QueryRouter:
         schema_boost = self._schema_data_boost(query_lower)
         data_score += schema_boost
 
-        # Document-intent boost goes to DOCUMENT and suppresses TIMELINE
+        # Document-intent signal reinforces DOCUMENT
         if doc_intent_boost > 0:
             doc_score += doc_intent_boost
-            timeline_score = max(0, timeline_score - doc_intent_boost)
 
         scores = {
             QueryType.DATA: data_score,
             QueryType.DOCUMENT: doc_score,
-            QueryType.TIMELINE: timeline_score,
         }
 
         logger.info(f"   Heuristic scores - Doc:{doc_score} Data:{data_score} "
-                     f"(schema_boost:{schema_boost}) Timeline:{timeline_score}"
+                     f"(schema_boost:{schema_boost})"
                      f" (doc_intent_boost:{doc_intent_boost})")
-
-        # Timeline priority — only when clearly timeline AND not document-intent
-        if timeline_score >= 2 and timeline_score > doc_score and ENABLE_TIMELINE:
-            return RouterDecision(
-                query_type=QueryType.TIMELINE,
-                confidence=min(0.95, 0.5 + timeline_score * 0.1),
-                reasons=[f"Timeline keywords matched: {timeline_score}"],
-            )
 
         # Sort scores descending
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -1164,10 +1130,10 @@ class QueryRouter:
             mode_hint = ""
             if mode == "document_analysis":
                 mode_hint = ("UI CONTEXT: document_analysis — when genuinely ambiguous, "
-                             "lean toward FILE_LIST or TIMELINE (browsing/organising docs).\n\n")
+                             "lean toward FILE_LIST or DOCUMENT (browsing/organising docs).\n\n")
             elif mode == "correspondence":
                 mode_hint = ("UI CONTEXT: correspondence — when genuinely ambiguous, "
-                             "lean toward TIMELINE or THREAD (mail/notice flow).\n\n")
+                             "lean toward THREAD or DOCUMENT (mail/notice flow).\n\n")
 
             prompt = safe_render_prompt(
                 self.CLASSIFICATION_PROMPT,
@@ -1238,8 +1204,6 @@ class QueryRouter:
             qtype = QueryType.DOCUMENT
             if "FILE_LIST" in result:
                 qtype = QueryType.FILE_LIST
-            elif "TIMELINE" in result:
-                qtype = QueryType.TIMELINE
             elif "HYBRID" in result:
                 qtype = QueryType.HYBRID
             elif "DOCUMENT" in result:
@@ -2924,110 +2888,6 @@ class QueryRouter:
                 "sources": [],
             }
 
-    # ── Compound intent parsing ─────────────────────────────────
-
-    _SEMANTIC_KEYWORDS = {
-        "delay": "delay", "delays": "delay", "delayed": "delay",
-        "notice of delay": "delay", "extension of time": "delay", "eot": "delay",
-        "claim": "claim", "claims": "claim", "claiming": "claim",
-        "notice of claim": "claim",
-        "approval": "approval", "approvals": "approval", "approve": "approval",
-        "variation": "variation", "change order": "variation",
-        "payment": "payment", "invoice": "payment",
-        "termination": "termination", "terminate": "termination",
-        "suspension": "termination", "suspend": "termination",
-        "progress": "progress",
-        "quality": "quality", "defect": "quality", "inspection": "quality",
-    }
-
-    _SCOPE_KEYWORDS = {
-        "correspondence": "correspondence", "letter": "correspondence",
-        "letters": "correspondence", "communication": "correspondence",
-        "communications": "correspondence",
-        "notice": "notice", "notices": "notice",
-        "email": "email", "emails": "email",
-        "report": "report", "reports": "report",
-        "contract": "contract", "agreement": "contract",
-        "minutes": "minutes", "meeting": "minutes",
-    }
-
-    def _parse_compound_intent(self, query_lower: str) -> Dict[str, Optional[str]]:
-        """
-        Extract semantic filter (what to find) and scope filter (where to look)
-        from a query.
-
-        Example:
-            "what are the delay events in the correspondence"
-            -> {"semantic": "delay", "scope": "correspondence"}
-
-        Returns:
-            Dict with 'semantic' and 'scope' keys (values may be None)
-        """
-        semantic = None
-        scope = None
-
-        # Check multi-word keywords first (longer matches take priority)
-        for kw in sorted(self._SEMANTIC_KEYWORDS, key=len, reverse=True):
-            if kw in query_lower:
-                semantic = self._SEMANTIC_KEYWORDS[kw]
-                break
-
-        for kw in sorted(self._SCOPE_KEYWORDS, key=len, reverse=True):
-            if kw in query_lower:
-                scope = self._SCOPE_KEYWORDS[kw]
-                break
-
-        return {"semantic": semantic, "scope": scope}
-
-    def _build_compound_answer(
-        self,
-        query: str,
-        intent: Dict[str, Optional[str]],
-        matched_docs: List[Dict[str, Any]],
-        rag_result: Optional[Dict[str, Any]],
-    ) -> str:
-        """Build answer combining metadata listing with RAG content."""
-        semantic = intent.get("semantic", "")
-        scope = intent.get("scope", "")
-
-        lines = [f"Found **{len(matched_docs)}** {scope or 'document'}(s) related to **{semantic}**:\n"]
-
-        for i, doc in enumerate(matched_docs[:20], 1):
-            date = doc.get("date", "No date")
-            sender = (doc.get("sender") or "Unknown")[:40]
-            recipient = (doc.get("recipient") or "Unknown")[:40]
-            subject = (doc.get("subject") or "")[:80]
-            doc_type = doc.get("doc_type", "")
-            actions = doc.get("actions", "")
-            if isinstance(actions, list):
-                actions = ", ".join(actions)
-
-            type_badge = f" [{doc_type}]" if doc_type else ""
-            action_str = f" | Actions: {actions}" if actions else ""
-
-            lines.append(
-                f"{i}. **{date}** - {doc.get('file_name', 'Unknown')}{type_badge}\n"
-                f"   {sender} \u2192 {recipient}\n"
-                f"   {subject}{action_str}\n"
-            )
-
-        # Append RAG content if available. Skip placeholder/refusal answers
-        # ("Empty Response" from LlamaIndex, "not found", "no documents") so the
-        # listing isn't polluted with a meaningless detail block.
-        rag_answer = (rag_result or {}).get("answer", "")
-        _ra_low = rag_answer.strip().lower()
-        if (
-            rag_answer
-            and _ra_low not in ("empty response", "none")
-            and "not found" not in _ra_low
-            and "no documents" not in _ra_low
-        ):
-            lines.append(f"\n---\n**Detail from document content:**\n\n{rag_answer}")
-
-        return "\n".join(lines)
-
-    # Controlled vocabularies the LLM maps natural language onto. Kept in sync with
-    # the ingest enrichment (file_router._enrich_document_llm) and event_timeline.
     _SCOPE_DOC_TYPES = ("correspondence, contract, variation, claim, delay notice, "
                         "payment certificate, BOQ, drawing, report, meeting minutes, "
                         "witness statement, transcript, other")
@@ -3158,513 +3018,6 @@ class QueryRouter:
         except Exception:
             return "EMPTY"
 
-    def _synthesize_temporal_answer(self, query: str, event_rows: List[Dict],
-                                    notice_context: str = "") -> str:
-        """One LLM call that turns STRUCTURED, date-sorted events (with reason +
-        actor + evidence) — optionally cross-referenced with correspondence
-        context — into a chronological, evidence-cited narrative. Feeding the
-        model structured rows (not raw nodes) keeps the prompt small and the
-        answer grounded ('X delayed on D BECAUSE … per <file>')."""
-        from . import llm_client
-        from .prompt_security import build_system_prompt
-
-        lines = []
-        for e in event_rows[:60]:
-            date = e.get("date") or "(undated)"
-            etype = e.get("event_type", "")
-            actor = e.get("actor") or ""
-            reason = e.get("reason") or e.get("description") or ""
-            fname = e.get("file_name") or ""
-            seg = f"- {date} [{etype}]"
-            if actor:
-                seg += f" {actor}:"
-            seg += f" {reason}"
-            if fname:
-                seg += f"  (evidence: {fname})"
-            lines.append(seg)
-        events_block = "\n".join(lines) if lines else "(no structured events)"
-
-        prompt = (
-            "You answer a chronological question about a construction project using "
-            "the STRUCTURED EVENTS below (already date-sorted). Build a clear timeline: "
-            "what happened, WHEN, WHO, and crucially WHY (the reason/excuse), and cite "
-            "the evidence file for each point. Only use the data provided — never invent "
-            "dates, figures, or causes. If the events don't answer the question, say so.\n\n"
-            f"QUESTION: {query}\n\n"
-            f"STRUCTURED EVENTS (date-sorted):\n{events_block}\n"
-        )
-        if notice_context:
-            prompt += f"\nRELATED CORRESPONDENCE (for cross-reference):\n{notice_context[:2500]}\n"
-
-        _syn_think = THINKING_BUDGET_SYNTHESIS if ENABLE_THINKING else 0
-        resp = llm_client.generate_text(
-            prompt,
-            system=build_system_prompt("You synthesize grounded, chronological answers."),
-            thinking=_syn_think,
-        )
-        try:
-            from .telemetry import get_current_trace
-            tr = get_current_trace()
-            if tr:
-                tr.record_llm_call(resp.usage)
-        except Exception:
-            pass
-        return resp.text.strip()
-
-    def _timeline_document_fallback(self, query: str, expanded_query: str) -> Dict[str, Any]:
-        """Chronology from the user's OWN documents when the event store is empty.
-        Corpus-safe: document_rag.query honours _current_user_corpus, so an
-        edinburgh user only ever sees edinburgh docs (no demo leak). Keeps the
-        TIMELINE type so the UI still renders a timeline; sources are tagged so the
-        response builder routes them to related_docs (what the timeline renders from)."""
-        try:
-            rag = self.document_rag.query(
-                "Build a CHRONOLOGICAL timeline for the question below: list each key "
-                "event with its DATE (oldest first) and what happened, citing the source "
-                f"document. Question: {expanded_query}")
-        except Exception as e:
-            logger.warning(f"   timeline document fallback failed: {e}")
-            rag = {"answer": "", "sources": []}
-        related, seen = [], set()
-        for s in (rag.get("sources") or []):
-            fn = s.get("file_name")
-            if not fn or fn in seen:
-                continue
-            seen.add(fn)
-            related.append({**s, "type": "search_result"})  # → related_docs (timeline UI)
-        answer = (rag.get("answer") or "").strip()
-        if not answer and not related:
-            answer = "No chronological events were found in your documents for this query."
-        return {
-            "query": query,
-            "query_type": QueryType.TIMELINE.value,
-            "answer": answer,
-            "sources": related,
-        }
-
-    def _handle_timeline_query(self, query: str) -> Dict[str, Any]:
-        """Handle timeline/notice-based query using light graph with enhanced capabilities."""
-        logger.info("Routing to Timeline/Graph handler...")
-
-        try:
-            from .light_graph import get_light_graph
-            from .notice_extractor import NOTICES_DIR
-            import json
-
-            graph = get_light_graph()
-
-            # Expand jargon in query
-            expanded_query = self.jargon.expand_query(query)
-            query_lower = expanded_query.lower()
-
-            # === Cluster queries ===
-            cluster_keywords = ["cluster", "group", "document group", "categorize"]
-            if any(kw in query_lower for kw in cluster_keywords):
-                # Try to extract a specific cluster name
-                cluster_name = None
-                for kw in ["about", "related to", "regarding"]:
-                    if kw in query_lower:
-                        cluster_name = query_lower.split(kw)[-1].strip().rstrip("?.")
-                        break
-
-                summary = graph.get_cluster_summary(cluster_name)
-                return {
-                    "query": query,
-                    "query_type": QueryType.TIMELINE.value,
-                    "answer": summary,
-                    "sources": [],
-                }
-
-            # === Structured event store (delay / excuse / decision chronology) ===
-            # The rich events carry reason + actor + date + evidence, so answer
-            # "what was delayed and WHY / give the chronology" from the structured
-            # store FIRST. Empty store (fresh corpus) → fall through to notices.
-            from .document_rag import _current_user_corpus
-            _tl_corpus = _current_user_corpus()
-            try:
-                from .event_timeline import get_event_timeline
-                store = get_event_timeline()
-                if store.count() > 0:
-                    scope = self.compute_query_scope(query)
-                    # NOTE: project filter intentionally omitted. Ingest stores
-                    # events with an empty project, so passing an LLM-extracted
-                    # project name ("Edinburgh Tram Project") would zero out every
-                    # match. The corpus is single-project, so event_type / actor /
-                    # date range are the meaningful filters.
-                    ev_rows = store.timeline_context(
-                        event_type=scope.get("event_type"),
-                        actor=scope.get("actor"),
-                        date_from=scope.get("date_from"),
-                        date_to=scope.get("date_to"),
-                    )
-                    # Per-user corpus isolation: the event store is extracted from
-                    # the bulk (edinburgh) corpus, so demo-corpus users see none.
-                    if _tl_corpus == "demo":
-                        ev_rows = []
-                    if ev_rows:
-                        # Cross-reference correspondence via light_graph.timeline —
-                        # but light_graph holds ONLY demo notices, so skip it for
-                        # edinburgh users (would leak demo files into the context).
-                        notice_ctx = ""
-                        if _tl_corpus != "edinburgh":
-                            try:
-                                tl = graph.timeline(
-                                    start_date=scope.get("date_from"),
-                                    end_date=scope.get("date_to"),
-                                    party_filter=scope.get("actor"),
-                                    topic_filter=scope.get("topic"),
-                                )
-                                notice_ctx = "\n".join(
-                                    f"- {n.get('date','')} {n.get('sender','')}"
-                                    f"→{n.get('recipient','')}: {n.get('subject','')}"
-                                    for n in (tl or [])[:25]
-                                )
-                            except Exception:
-                                pass
-                        answer = self._synthesize_temporal_answer(query, ev_rows, notice_ctx)
-                        return {
-                            "query": query,
-                            "query_type": QueryType.TIMELINE.value,
-                            "answer": answer,
-                            "sources": self._build_event_sources(ev_rows),
-                        }
-            except Exception as e:
-                logger.warning(f"   Event-store timeline failed, falling through: {e}")
-
-            # Edinburgh users have NO populated event store (bulk corpus was ingested
-            # vectors-only, so LLM event-enrichment never ran). Instead of a dead
-            # "no events" reply, build the chronology from their OWN documents via
-            # corpus-scoped RAG (document_rag respects _current_user_corpus, so no
-            # demo leak). Do NOT fall through to the light_graph / notice / cluster
-            # paths below — those are demo-only.
-            if _tl_corpus == "edinburgh":
-                return self._timeline_document_fallback(query, expanded_query)
-
-            # === 0. Compound queries: semantic intent + document scope ===
-            intent = self._parse_compound_intent(query_lower)
-            if intent["semantic"] and intent["scope"]:
-                logger.info(f"   Compound intent: semantic={intent['semantic']}, scope={intent['scope']}")
-                search_terms = self.jargon.get_concept_search_terms(query)
-                logger.info(f"   Expanded search terms: {search_terms[:10]}...")
-                matched_docs = graph.search_broad(terms=search_terms, scope=intent["scope"])
-
-                if matched_docs:
-                    logger.info(f"   Compound search found {len(matched_docs)} docs")
-                    doc_ids = [d["doc_id"] for d in matched_docs if d.get("doc_id")]
-
-                    # RAG augmentation: get content-level details
-                    rag_result = None
-                    if doc_ids:
-                        try:
-                            rag_result = self.document_rag.query(expanded_query, doc_ids=doc_ids)
-                        except Exception as e:
-                            logger.warning(f"   RAG augmentation failed: {e}")
-                            # Fallback: try without doc_id filter
-                            try:
-                                rag_result = self.document_rag.query(expanded_query)
-                            except Exception:
-                                pass
-
-                    answer = self._build_compound_answer(query, intent, matched_docs, rag_result)
-                    compound_sources = [
-                        self._build_source(d.get("doc_id"), d, NOTICES_DIR)
-                        for d in matched_docs
-                    ]
-
-                    return {
-                        "query": query,
-                        "query_type": QueryType.TIMELINE.value,
-                        "answer": answer,
-                        "sources": compound_sources,
-                    }
-                else:
-                    logger.info("   Compound search returned no results, falling through")
-
-            # Parse query for filters
-            results = []
-            sources = []
-            answer_prefix = ""
-
-            # === Pattern matching for different query types ===
-
-            # 1. Communication flow queries
-            if any(kw in query_lower for kw in ['who sent', 'who received',
-                                                   'correspondence', 'communication',
-                                                   'from whom', 'sent to']):
-                party = self._extract_party_from_query(query_lower)
-                flow = graph.communication_flow(party=party)
-
-                if flow:
-                    answer_prefix = f"Communication flow{' for ' + party if party else ''}:\n\n"
-                    answer_lines = [answer_prefix]
-                    for i, record in enumerate(flow[:25], 1):
-                        if not record:
-                            continue
-                        direction_arrow = "\u2192" if record.get('direction') != 'incoming' else "\u2190"
-                        cc_list = record.get('cc_list') or []
-                        actions = record.get('actions') or []
-                        cc_str = f" (CC: {', '.join(cc_list[:2])})" if cc_list else ""
-                        actions_str = f" [{', '.join(actions[:3])}]" if actions else ""
-
-                        answer_lines.append(
-                            f"{i}. **{record.get('date', 'Unknown')}** | {record.get('sender', 'Unknown')} {direction_arrow} {record.get('recipient', 'Unknown')}{cc_str}\n"
-                            f"   {(record.get('subject') or '')[:80]}{actions_str}\n"
-                        )
-                        sources.append(self._build_source(record.get('doc_id', ''), record, NOTICES_DIR))
-
-                    answer = "\n".join(answer_lines)
-                    parties = graph.get_all_parties()
-                    if parties:
-                        answer += "\n**Active parties:**\n"
-                        for p in parties[:10]:
-                            answer += f"- {p['party']}: {p['sent_count']} sent, {p['received_count']} received\n"
-                else:
-                    answer = "No communication records found."
-
-                return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
-
-            # 2. Correspondence between two parties
-            if any(kw in query_lower for kw in ['between']):
-                parties = self._extract_two_parties(query_lower)
-                if parties:
-                    corr = graph.correspondence_between(parties[0], parties[1])
-                    if corr:
-                        answer_lines = [f"Correspondence between **{parties[0]}** and **{parties[1]}**:\n\n"]
-                        for i, record in enumerate(corr[:25], 1):
-                            if not record:
-                                continue
-                            node = record.get('node') or {}
-                            answer_lines.append(
-                                f"{i}. **{record.get('date', 'Unknown')}** | {record.get('from', 'Unknown')} \u2192 {record.get('to', 'Unknown')}\n"
-                                f"   {(record.get('subject') or '')[:80]}\n"
-                            )
-                            if node.get('doc_id'):
-                                sources.append(self._build_source(node['doc_id'], node, NOTICES_DIR))
-                        answer = "\n".join(answer_lines)
-                    else:
-                        answer = f"No correspondence found between {parties[0]} and {parties[1]}."
-                    return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
-
-            # 3. Project-based queries
-            if any(kw in query_lower for kw in ['project', 'contract']):
-                project_filter = self._extract_filter_term(query_lower, ['project'])
-                contract_ref = self._extract_filter_term(query_lower, ['contract'])
-                proj_docs = graph.project_documents(project_filter=project_filter, contract_ref=contract_ref)
-
-                if proj_docs:
-                    filter_label = project_filter or contract_ref or "all"
-                    answer_prefix = f"Documents for project/contract **{filter_label}**:\n\n"
-                    results = proj_docs
-                else:
-                    answer = "No documents found for the specified project/contract."
-                    return {"query": query, "query_type": QueryType.TIMELINE.value, "answer": answer, "sources": sources}
-
-            # 4. Action-based queries
-            elif any(kw in query_lower for kw in ['delay']):
-                delay_docs = graph.search_by_action('delay')
-                results = [d['node'] for d in delay_docs if d.get('node')]
-                answer_prefix = "Documents mentioning delays:\n\n"
-
-            elif any(kw in query_lower for kw in ['claim']):
-                claim_docs = graph.search_by_action('claim')
-                results = [d['node'] for d in claim_docs if d.get('node')]
-                answer_prefix = "Documents mentioning claims:\n\n"
-
-            elif any(kw in query_lower for kw in ['approval', 'approve']):
-                approve_docs = graph.search_by_action('approve')
-                results = [d['node'] for d in approve_docs if d.get('node')]
-                answer_prefix = "Documents related to approvals:\n\n"
-
-            elif any(kw in query_lower for kw in ['termination', 'terminate']):
-                term_docs = graph.search_by_action('terminate')
-                results = [d['node'] for d in term_docs if d.get('node')]
-                answer_prefix = "Documents related to termination:\n\n"
-
-            # 5. Project analysis queries (via DocumentAgent)
-            elif any(kw in query_lower for kw in ['analysis', 'insight', 'overview', 'issues',
-                                                    'parties involved', 'participants', 'summary of project']):
-                try:
-                    from .document_agent import get_document_agent
-                    agent = get_document_agent()
-                    agent_result = agent.answer_project_question(query)
-                    return {
-                        "query": query,
-                        "query_type": QueryType.TIMELINE.value,
-                        "answer": agent_result.get("answer", "No analysis available."),
-                        "sources": agent_result.get("sources", []),
-                    }
-                except Exception as e:
-                    logger.warning(f"   DocumentAgent error: {e}")
-                    results = graph.timeline()
-                    answer_prefix = "Document overview:\n\n"
-
-            # 6. All notices / list view
-            elif any(kw in query_lower for kw in ['all notices', 'list notices', 'show notices']):
-                results = graph.timeline()
-                answer_prefix = "All documents in chronological order:\n\n"
-
-            # 7. Chain/trace queries
-            elif 'chain' in query_lower or 'trace' in query_lower:
-                nodes = list(graph.graph.nodes.keys())
-                if nodes:
-                    chain = graph.trace_chain(nodes[0], depth=5)
-                    results = [chain['start']] if chain.get('start') else []
-                    results.extend([item['node'] for item in chain.get('downstream', []) if item.get('node')])
-                    answer_prefix = f"Document chain starting from {nodes[0]}:\n\n"
-                else:
-                    answer_prefix = "No documents in graph.\n\n"
-
-            # 8. Default: show timeline
-            else:
-                results = graph.timeline()
-                answer_prefix = "Document timeline:\n\n"
-
-            # Build answer from results
-            if results:
-                answer_lines = [answer_prefix]
-                for i, node in enumerate(results[:25], 1):
-                    if not node:
-                        continue
-                    date = node.get('date') or 'No date'
-                    sender = (node.get('sender') or 'Unknown')[:40]
-                    recipient = (node.get('recipient') or 'Unknown')[:40]
-                    subject = (node.get('subject') or '')[:80]
-                    file_name = node.get('file_name') or node.get('doc_id') or 'Unknown'
-                    doc_type = node.get('doc_type') or ''
-                    actions = node.get('actions') or []
-                    direction = node.get('direction') or ''
-
-                    type_badge = f" [{doc_type}]" if doc_type else ""
-                    action_str = f" | Actions: {', '.join(actions[:3])}" if actions else ""
-                    dir_str = f" ({direction})" if direction else ""
-
-                    answer_lines.append(
-                        f"{i}. **{date}** - {file_name}{type_badge}{dir_str}\n"
-                        f"   From: {sender} \u2192 To: {recipient}\n"
-                        f"   {subject}{action_str}\n"
-                    )
-
-                    sources.append(self._build_source(
-                        node.get('doc_id'), node, NOTICES_DIR
-                    ))
-
-                answer = "\n".join(answer_lines)
-
-                # Add graph stats
-                stats = graph.get_statistics()
-                answer += f"\n\n*Graph: {stats['node_count']} documents, {stats['edge_count']} relationships*"
-            else:
-                answer = "No notices found matching your query. Make sure documents have been processed with notice extraction enabled."
-
-            return {
-                "query": query,
-                "query_type": QueryType.TIMELINE.value,
-                "answer": answer,
-                "sources": sources,
-            }
-
-        except ImportError as e:
-            logger.error(f"   Timeline handler import error: {e}")
-            return {
-                "query": query,
-                "query_type": QueryType.TIMELINE.value,
-                "answer": "Timeline feature requires notice extraction. Please ensure documents are processed first.",
-                "sources": [],
-            }
-        except Exception as e:
-            logger.error(f"   Timeline query error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                "query": query,
-                "query_type": QueryType.TIMELINE.value,
-                "answer": f"Error processing timeline query: {str(e)}",
-                "sources": [],
-            }
-
-    # ── Helper methods ────────────────────────────────────────
-
-    def _build_event_sources(self, event_rows: List[Dict]) -> List[Dict[str, Any]]:
-        """Clickable sources for a chronological answer — one per distinct evidence
-        document, deduped, with the cited event text as the highlight so the right
-        panel can open the excerpt (PDF page image or chunk-text fallback)."""
-        seen: set = set()
-        sources: List[Dict[str, Any]] = []
-        for e in event_rows:
-            fname = e.get("file_name") or ""
-            doc_id = e.get("doc_id") or ""
-            key = fname or doc_id
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            reg = self.document_rag.file_registry.get(fname, {})
-            sources.append({
-                "type": "event",
-                "file_name": fname or doc_id,
-                # Click id = file_name so the viewer resolves it (on-disk PDF for the
-                # bulk corpus, or registry remap for older docs). The event's stored
-                # doc_id is a content hash that won't resolve for unregistered docs.
-                "doc_id": fname or doc_id,
-                "file_path": reg.get("file_path", ""),
-                "page_number": 1,
-                "total_pages": reg.get("page_count", 1),
-                "date": e.get("date", ""),
-                "highlight_text": (e.get("reason") or e.get("description") or "")[:300],
-            })
-            if len(sources) >= 12:
-                break
-        return sources
-
-    def _build_source(self, doc_id: str, node: Dict, notices_dir: Path) -> Dict[str, Any]:
-        """Build source entry with evidence from notice file, including file_path for clickability."""
-        import json
-
-        file_name = node.get('file_name', doc_id or 'Unknown')
-        date = node.get('date', 'Unknown')
-        sender = (node.get('sender') or 'Unknown')[:40]
-        recipient = (node.get('recipient') or 'Unknown')[:40]
-        subject = (node.get('subject') or '')[:100]
-
-        evidence = []
-        highlight_text = ""
-        if doc_id:
-            notice_path = notices_dir / f"{doc_id}.json"
-            if notice_path.exists():
-                try:
-                    with open(notice_path, 'r', encoding='utf-8') as f:
-                        notice_data = json.load(f)
-                    evidence = notice_data.get('evidence_spans', [])[:3]
-                    # Use first evidence span as highlight text
-                    if evidence:
-                        highlight_text = evidence[0].get('text', '') if isinstance(evidence[0], dict) else str(evidence[0])
-                except Exception:
-                    pass
-
-        # Lookup file_path from RAG file_registry
-        file_path = ""
-        page_number = 1
-        total_pages = 1
-        reg = self.document_rag.file_registry.get(file_name, {})
-        if reg:
-            file_path = reg.get("file_path", "")
-            total_pages = reg.get("page_count", 1)
-
-        return {
-            "type": "notice",
-            "file_name": file_name,
-            "file_path": file_path,
-            "page_number": page_number,
-            "total_pages": total_pages,
-            "doc_id": doc_id,
-            "date": date,
-            "sender": sender,
-            "recipient": recipient,
-            "subject": subject,
-            "highlight_text": highlight_text,
-            "evidence": evidence,
-        }
-
-    @staticmethod
     def _extract_party_from_query(query_lower: str) -> Optional[str]:
         """Extract a party name from query text."""
         patterns = [
@@ -3721,8 +3074,6 @@ class QueryRouter:
             return self._handle_data_query(expanded, doc_ids=doc_ids)
         elif query_type == QueryType.DOCUMENT:
             return self._handle_document_query(expanded, doc_ids=doc_ids)
-        elif query_type == QueryType.TIMELINE:
-            return self._handle_timeline_query(query)
         else:  # HYBRID
             return self._handle_hybrid_query(expanded, doc_ids=doc_ids)
 
@@ -3748,9 +3099,6 @@ class QueryRouter:
             return self.data_analyzer.query_dual(expanded, allowed_tables=allowed_tables)
         elif query_type == QueryType.DOCUMENT:
             return self._handle_document_query_dual(expanded, doc_ids=doc_ids)
-        elif query_type == QueryType.TIMELINE:
-            single = self._handle_timeline_query(query)
-            return {p: single for p in LLM_PROVIDERS}
         else:  # HYBRID
             return self._handle_hybrid_query_dual(expanded)
 
@@ -3858,7 +3206,6 @@ class QueryRouter:
     _FALLBACK_MAP = {
         QueryType.DOCUMENT: QueryType.DATA,
         QueryType.DATA: QueryType.DOCUMENT,
-        QueryType.TIMELINE: QueryType.DOCUMENT,
         QueryType.HYBRID: QueryType.DATA,
     }
 

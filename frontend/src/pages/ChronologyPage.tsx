@@ -1,6 +1,6 @@
 import { Suspense, lazy, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import DocumentAnalysisTimeline from '../components/chat/DocumentAnalysisTimeline';
+import ChronologyTimeline from '../components/chronology/ChronologyTimeline';
 import type { TimelineEvent } from '../utils/timeline';
 import { formatTimelineLabel } from '../utils/timeline';
 import { getFileTypeBadge } from '../styles/tokens';
@@ -26,7 +26,7 @@ const RightDocViewer = lazy(() => import('../components/viewer/RightDocViewer'))
    drawn from the facets response, so a type with no events never appears. */
 const TYPE_ORDER = ['delay', 'disruption', 'excuse', 'decision', 'milestone', 'claim'];
 
-/** Store row → the shape DocumentAnalysisTimeline already renders. */
+/** Store row → the shape ChronologyTimeline already renders. */
 function toTimelineEvents(rows: ChronologyEvent[]): TimelineEvent[] {
   return rows.map((r) => ({
     id: r.doc_id || undefined,
@@ -201,7 +201,7 @@ export default function ChronologyPage() {
           )}
 
           {!isLoading && !isError && events.length > 0 && (
-            <DocumentAnalysisTimeline
+            <ChronologyTimeline
               events={events}
               showFilters={false}
               caption="Project record"

@@ -75,7 +75,7 @@ export interface LoginResponse {
 }
 
 export interface ChatResponse {
-  ui_intent: 'answer' | 'doc_list' | 'timeline' | 'email_trace' | 'sql_result';
+  ui_intent: 'answer' | 'doc_list' | 'email_trace' | 'sql_result';
   assistant_text: string;
   citations: Citation[];
   related_docs: RelatedDoc[];

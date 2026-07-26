@@ -108,7 +108,6 @@ INTENT_MAP = {
     "document": "answer",
     "data": "sql_result",
     "hybrid": "answer",
-    "timeline": "timeline",   # chronological list → vertical timeline (was doc_list table)
     "thread": "email_trace",
     "draft": "answer",
     "file_list": "doc_list",  # "what files exist" → flat doc table

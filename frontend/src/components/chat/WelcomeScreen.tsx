@@ -5,12 +5,12 @@ interface Props {
   onSend?: (text: string) => void;
 }
 
-// Starter queries — click to run. There are no modes anymore; the router
-// figures out the skill (document list / correspondence / data / timeline).
+// Starter queries — click to run. Chronology lives in its own area now, so
+// these stay on what the chat is for: reading documents, correspondence, data.
 const SUGGESTIONS: { label: string; prompt: string; symbol: string }[] = [
-  { symbol: '▤', label: 'Documents on a topic, chronologically', prompt: 'Show me all documents related to "the topic", chronologically.' },
+  { symbol: '▤', label: 'Find documents on a topic', prompt: 'Which documents discuss "the topic"?' },
   { symbol: '✉', label: 'Summarize recent correspondence', prompt: 'Summarize the latest correspondence and list any unanswered items.' },
-  { symbol: '◷', label: 'Latest notices & timeline', prompt: 'List the latest notices in chronological order.' },
+  { symbol: '◷', label: 'What a notice says', prompt: 'What does the latest delay notice say, and who sent it?' },
   { symbol: '∑', label: 'Ask a project data question', prompt: 'How many workers were on site last month?' },
 ];
 

@@ -12,7 +12,7 @@ import SqlArtifact from './SqlArtifact';
 import EmailTraceResponse from './EmailTraceResponse';
 import CtaButton from './CtaButton';
 import DocumentAnalysisTable from './DocumentAnalysisTable';
-import DocumentAnalysisTimeline, { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
+import { mapRelatedDocsToTimeline } from '../../utils/timeline';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -96,16 +96,17 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
   // → ui_intent "doc_list") with related documents, render them as a single
   // clickable, chronological table on the home page — the rich "document
   // analysis" output without needing a dedicated mode. Replaces the flat
-  // doc-list table / timeline / chip strip so we never stack two views.
+  // doc-list table / chip strip so we never stack two views.
   const relatedCount = response?.related_docs?.length ?? 0;
-  // Chronological LIST query (TIMELINE) → vertical timeline. FILE_LIST → table.
-  const showTimeline = intent === 'timeline' && relatedCount > 0;
+  // Chronology is its own area now (/chronology), so the chat no longer draws
+  // a vertical timeline. FILE_LIST and any answer carrying related documents
+  // render as the chronological table.
   const showDocAnalysisTable = intent === 'doc_list' && relatedCount > 0;
   // Related documents attached to a normal answer (document/hybrid/…): render as
   // the rich chronological table (≥2 docs) instead of the flat bubble strip, so
   // every "related documents" surface is the structured table the user expects.
   const showRelatedAsTable =
-    intent !== 'doc_list' && intent !== 'timeline' &&
+    intent !== 'doc_list' &&
     intent !== 'email_trace' && intent !== 'sql_result' && relatedCount >= 2;
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
@@ -118,7 +119,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
   }, [text]);
 
   // Inline citations are only meaningful for plain answer responses where the
-  // text itself is the primary content. Doc-list / timeline / email-trace /
+  // text itself is the primary content. Doc-list / email-trace /
   // sql_result intents render their own structured sources.
   const showInlineCitations =
     intent === 'answer' && !!response?.citations?.length;
@@ -157,17 +158,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
             {/* Intent-specific rendering */}
             {response && (
               <>
-                {showTimeline ? (
-                  <div className="mt-3">
-                    <DocumentAnalysisTimeline
-                      events={mapRelatedDocsToTimeline(response.related_docs)}
-                      onEventClick={(e) => {
-                        if (!e.id) return;
-                        onDocClick({ docId: e.id, fileName: e.title });
-                      }}
-                    />
-                  </div>
-                ) : showDocAnalysisTable || showRelatedAsTable ? (
+                {showDocAnalysisTable || showRelatedAsTable ? (
                   <div className="mt-3">
                     <DocumentAnalysisTable
                       events={mapRelatedDocsToTimeline(response.related_docs)}
@@ -199,7 +190,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
                     )}
 
                     {/* A single related doc → compact bubble strip (table is overkill). */}
-                    {intent !== 'doc_list' && intent !== 'timeline' &&
+                    {intent !== 'doc_list' &&
                      intent !== 'email_trace' && (
                       <RelatedDocsList
                         docs={response.related_docs}

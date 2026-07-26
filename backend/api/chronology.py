@@ -1,9 +1,9 @@
 """Chronology endpoints — the event timeline as its own area.
 
 The event store has been in the tree for a while but had no HTTP surface: the
-only reader was router._handle_timeline_query, which answered chronology
-*questions* inside the chat. Chronology is now a place you go rather than a
-question you ask, so it needs to be readable directly — filtered, faceted and
+only reader was the router's timeline handler, which answered chronology
+*questions* inside the chat. That handler is gone: chronology is a place you
+go rather than a question you ask, so it is read directly — filtered, faceted and
 paged, with no LLM in the path.
 
 src/event_timeline.py already exposes exactly the right primitives

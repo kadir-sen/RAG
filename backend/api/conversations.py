@@ -17,10 +17,14 @@ from backend.services.response_builder import build_chat_response
 router = APIRouter()
 
 
+# Stored messages predate ui_intent and carry the old query_type instead; this
+# maps back so history renders the way it did live. "doc_list" used to map to
+# "timeline", which meant a FILE_LIST answer drawn as a table came back as a
+# vertical timeline after a reload — the inverse of INTENT_MAP, not its mirror.
 _LEGACY_QUERY_TYPE_MAP = {
     "answer": "document",
     "sql_result": "data",
-    "doc_list": "timeline",
+    "doc_list": "file_list",
     "email_trace": "thread",
 }
 

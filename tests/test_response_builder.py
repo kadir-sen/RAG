@@ -23,12 +23,15 @@ class TestIntentMapping:
         resp = build_chat_response(raw)
         assert resp.ui_intent == "answer"
 
-    def test_timeline_maps_to_timeline(self):
-        # timeline now renders as a vertical timeline (was doc_list table);
-        # INTENT_MAP["timeline"] == "timeline". See response_builder INTENT_MAP.
+    def test_timeline_is_no_longer_an_intent(self):
+        # Chronology moved out of the chat into its own area (/chronology), so
+        # the router no longer emits query_type "timeline" and INTENT_MAP has
+        # no entry for it. An unmapped type must fall back to a plain answer
+        # rather than inventing a ui_intent the frontend cannot render.
+        assert "timeline" not in INTENT_MAP
         raw = {"query_type": "timeline", "answer": "test", "sources": []}
         resp = build_chat_response(raw)
-        assert resp.ui_intent == "timeline"
+        assert resp.ui_intent == "answer"
 
     def test_thread_maps_to_email_trace(self):
         raw = {"query_type": "thread", "answer": "test", "sources": []}

@@ -71,7 +71,7 @@ class QuotaInfo(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    ui_intent: str       # "answer" | "doc_list" | "timeline" | "email_trace" | "sql_result"
+    ui_intent: str       # "answer" | "doc_list" | "email_trace" | "sql_result"
     assistant_text: str
     citations: List[Citation] = Field(default_factory=list)
     related_docs: List[RelatedDoc] = Field(default_factory=list)
