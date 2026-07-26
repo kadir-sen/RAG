@@ -31,11 +31,8 @@ class TestExtensionMap:
     def test_csv_is_data(self):
         assert EXTENSION_MAP[".csv"] == "data"
 
-    def test_xer_is_programme(self):
-        assert EXTENSION_MAP[".xer"] == "programme"
-
     def test_all_extensions_covered(self):
-        assert len(EXTENSION_MAP) == 10
+        assert len(EXTENSION_MAP) == 9
 
 
 class TestProcessingResult:

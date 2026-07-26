@@ -3,19 +3,7 @@ import type {
   DataTablesStatus,
   DiagnoseResult,
   ReindexResult,
-  TrustGuardStats,
 } from '../types/api';
-
-export async function getTrustGuardStats(
-  days = 30,
-  recent = 50,
-): Promise<TrustGuardStats> {
-  const { data } = await apiClient.get<TrustGuardStats>(
-    '/admin/trust-guard/stats',
-    { params: { days, recent } },
-  );
-  return data;
-}
 
 export async function getDataTablesStatus(): Promise<DataTablesStatus> {
   const { data } = await apiClient.get<DataTablesStatus>(

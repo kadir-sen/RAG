@@ -50,12 +50,6 @@ class DocumentRecord:
     # the per-document inventory to reduce hallucination/misrouting.
     llm_summary: Optional[str] = None
     llm_topics: List[str] = field(default_factory=list)
-    # Programme (.xer) metadata persisted at ingest so resolvers can pick
-    # baseline/current by data_date WITHOUT re-parsing files:
-    # {programme_type, data_date, plan_start, scheduled_finish,
-    #  activity_count, relationship_count, milestone_count,
-    #  project_short_name, parser_version, parse_error?}
-    programme_meta: Dict = field(default_factory=dict)
 
 
 class DocumentRegistry:
@@ -182,16 +176,6 @@ class DocumentRegistry:
                     rec.schema_match_details = schema_match_details
                 self._save()
                 logger.info(f"[Registry] Completed: {rec.file_name}")
-
-    def set_programme_meta(self, doc_id: str, meta: Dict) -> None:
-        """Persist parsed XER metadata (data_date etc.) for a programme file."""
-        with self._file_lock:
-            rec = self._records.get(doc_id)
-            if rec:
-                rec.programme_meta = dict(meta or {})
-                self._save()
-                logger.info(f"[Registry] programme_meta set for {rec.file_name}: "
-                            f"data_date={meta.get('data_date')}")
 
     def set_llm_enrichment(
         self,

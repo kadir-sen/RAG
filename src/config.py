@@ -82,30 +82,6 @@ RAG_CANDIDATE_K = int(os.getenv("RAG_CANDIDATE_K", "30"))   # per-retriever cand
 RAG_RERANK_K = int(os.getenv("RAG_RERANK_K", "15"))         # candidates sent to the reranker
 RAG_FINAL_K = int(os.getenv("RAG_FINAL_K", "6"))            # chunks kept for synthesis
 RRF_K = int(os.getenv("RRF_K", "60"))                       # RRF damping constant
-# ── Deterministic reranker (Sprint B) ──────────────────────
-# Tier 1 = deterministic entity/date/doc-type reranking + MMR (no model, ~0 RAM);
-# always on. Tier 2 = optional cross-encoder (bge-reranker ONNX), off by default
-# for the 2GB box. Tier 3 = the existing LLM reranker (ENABLE_RERANK), kept for
-# forensic paths. Reranking degrades gracefully to the fused order on any error.
-# ── Compound planner (Sprint C) ────────────────────────────
-# The multi-step skill-graph planner sits ABOVE the single-route fast path and
-# only activates for genuinely compound (multi-record) prompts; simple prompts
-# still take the fast route. Enabled by default (env can turn it off).
-ENABLE_COMPOUND_PLANNER = os.getenv("ENABLE_COMPOUND_PLANNER", "true").lower() in ("1", "true", "yes")
-# When deterministic cues are thin, let an LLM PROPOSE a subtask plan — always
-# re-validated (invented skills rejected). Deterministic-first; LLM only fills
-# the gap. Enabled by default (env can turn it off).
-ENABLE_LLM_DECOMPOSER = os.getenv("ENABLE_LLM_DECOMPOSER", "true").lower() in ("1", "true", "yes")
-ENABLE_DETERMINISTIC_RERANK = os.getenv("ENABLE_DETERMINISTIC_RERANK", "true").lower() in ("1", "true", "yes")
-# Tier-2 cross-encoder via fastembed (ONNX, no torch). OFF by default: enabling
-# it on the 2 GB Lightsail box was verified in production to saturate memory —
-# loading the ONNX model on top of the app + qdrant + embeddings left the box
-# swap-thrashing and /api/health unresponsive for minutes on the first query.
-# Turn on (ENABLE_CROSS_ENCODER=true) ONLY on a larger host (>=4 GB). When off,
-# the reranker still runs the deterministic Tier-1 (entity/date/MMR) + LLM Tier-3.
-ENABLE_CROSS_ENCODER = os.getenv("ENABLE_CROSS_ENCODER", "false").lower() in ("1", "true", "yes")
-CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "Xenova/ms-marco-MiniLM-L-6-v2")
-RERANK_MMR_LAMBDA = float(os.getenv("RERANK_MMR_LAMBDA", "0.7"))  # relevance↔diversity
 
 # Pinecone settings
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "hybrid-rag")
@@ -126,16 +102,12 @@ BASE_DIR = Path(__file__).parent.parent
 DATA_DIR = BASE_DIR / "data"
 DOCUMENTS_DIR = DATA_DIR / "documents"
 TABLES_DIR = DATA_DIR / "tables"
-PROGRAMME_DIR = DATA_DIR / "programmes"   # Primavera P6 XER exports
 STORAGE_DIR = BASE_DIR / "storage"
-ARTIFACTS_DIR = STORAGE_DIR / "artifacts"  # generated analysis outputs (xlsx …)
 
 # Ensure directories exist
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
 TABLES_DIR.mkdir(parents=True, exist_ok=True)
-PROGRAMME_DIR.mkdir(parents=True, exist_ok=True)
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Chunking settings
 CHUNK_SIZE = 1024
@@ -243,18 +215,6 @@ REACT_TIME_BUDGET_SEC = float(os.getenv("REACT_TIME_BUDGET_SEC", "90"))
 # ── Feature Flags ───────────────────────────────────────────
 ENABLE_TIMELINE = os.getenv("ENABLE_TIMELINE", "true").lower() == "true"
 ENABLE_AB_TESTING = os.getenv("ENABLE_AB_TESTING", "false").lower() == "true"
-
-# ── Trust Guard (risk-gated answer verification) ────────────
-# Post-answer verification layer: risk classifier + corpus entity pre-check +
-# claim-level verifier (lite model) + caveat/rewrite composer. Targets the QA
-# failure patterns (false premise acceptance, fake-entity substitution, ghost
-# attribution) without slowing low-risk chat. Fails open: any error returns the
-# draft answer unverified.
-ENABLE_TRUST_GUARD = os.getenv("ENABLE_TRUST_GUARD", "true").lower() in ("1", "true", "yes")
-# Minimum query risk tier that triggers verification: low | medium | high.
-TRUST_GUARD_MIN_RISK = os.getenv("TRUST_GUARD_MIN_RISK", "medium")
-# Max re-retrieval rounds when the verifier reports insufficient evidence.
-TRUST_GUARD_MAX_RERETRIEVALS = int(os.getenv("TRUST_GUARD_MAX_RERETRIEVALS", "1"))
 
 # ── Template-Based Extraction ──────────────────────────────
 TEMPLATE_FILE = STORAGE_DIR / "parquet" / "templates.json"

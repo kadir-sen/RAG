@@ -891,7 +891,6 @@ class DocumentRAG:
         file_names: Optional[List[str]] = None,
         payload_filters: Optional[Dict[str, Any]] = None,
         synthesize: bool = True,
-        rerank_hints: Optional[Dict[str, Any]] = None,
     ) -> dict:
         """Query documents with proper page-level citations.
         If doc_ids is provided, only search within those documents.
@@ -945,7 +944,6 @@ class DocumentRAG:
                     raw_question=original_question,   # cleaner text for lexical + rerank
                     top_k=top_k, doc_ids=doc_ids, file_names=file_names,
                     payload_filters=payload_filters, synthesize=synthesize,
-                    rerank_hints=rerank_hints,
                 )
                 # Empty-scope safety net: a scoped query that found nothing retries
                 # once unscoped rather than reporting "not found".
@@ -954,7 +952,7 @@ class DocumentRAG:
                     hybrid = self._hybrid_query(
                         question=question, raw_question=original_question,
                         top_k=top_k, doc_ids=doc_ids, file_names=file_names,
-                        synthesize=synthesize, rerank_hints=rerank_hints,
+                        synthesize=synthesize,
                     )
                 if hybrid is not None:
                     return hybrid
@@ -1094,8 +1092,7 @@ class DocumentRAG:
                       doc_ids: Optional[List[str]] = None,
                       file_names: Optional[List[str]] = None,
                       payload_filters: Optional[Dict[str, Any]] = None,
-                      synthesize: bool = True,
-                      rerank_hints: Optional[Dict[str, Any]] = None) -> Optional[dict]:
+                      synthesize: bool = True) -> Optional[dict]:
         """Dense + lexical candidate fusion (RRF) + optional LLM rerank, then
         synthesize an answer from the final chunks. Returns None when there are
         no candidates at all (caller falls back to the dense path).
@@ -1104,8 +1101,7 @@ class DocumentRAG:
         the lexical lane stays unscoped because the chunk store doesn't mirror those
         keys — fusion + rerank still surface the in-scope chunks, and an empty-result
         unfiltered retry in query() protects recall."""
-        from .config import (RAG_CANDIDATE_K, RAG_RERANK_K, RAG_FINAL_K,
-                             ENABLE_RERANK, ENABLE_DETERMINISTIC_RERANK)
+        from .config import RAG_CANDIDATE_K, RAG_RERANK_K, RAG_FINAL_K, ENABLE_RERANK
 
         final_k = top_k or RAG_FINAL_K
 
@@ -1150,28 +1146,11 @@ class DocumentRAG:
         from .lexical_index import rrf_fuse
         fused = rrf_fuse(dense, lexical, doc_boost, rrf_k=RRF_K)
 
-        # 4. Rerank. Tier 1 (deterministic: entity/date/phrase boosts + MMR
-        # diversification) always reorders the fused pool with signals the
-        # vector score can't see; Tier 3 (LLM) then refines the diversified top
-        # when enabled (forensic paths). Each tier degrades to its input on error.
-        pool = fused
-        if ENABLE_DETERMINISTIC_RERANK and len(fused) > 1:
-            try:
-                from .rag import rerank_candidates
-                hints = rerank_hints or {}
-                pool = rerank_candidates(
-                    raw_question, fused, top_k=max(final_k, RAG_RERANK_K),
-                    entities=hints.get("entities"),
-                    date_range=hints.get("date_range"),
-                    doc_types=hints.get("doc_types"),
-                    project=hints.get("project"))
-            except Exception as e:
-                logger.debug(f"   deterministic rerank skipped: {e}")
-                pool = fused
-        if ENABLE_RERANK and len(pool) > final_k:
-            final = self._llm_rerank(raw_question, pool[:RAG_RERANK_K], final_k)
+        # 4. LLM rerank the top of the fused pool → final_k
+        if ENABLE_RERANK and len(fused) > final_k:
+            final = self._llm_rerank(raw_question, fused[:RAG_RERANK_K], final_k)
         else:
-            final = pool[:final_k]
+            final = fused[:final_k]
 
         # 6. Build sources (dedupe by file+page, preserve order)
         sources = []
@@ -1577,11 +1556,8 @@ class DocumentRAG:
             f"QUESTION: {question}\n\n"
             "ANSWER:"
         )
-        # Route through the gateway (was a raw create_llm bypass): gains
-        # caching/retry/usage-logging/quota + fallback + error sanitization.
-        from src.llm import gateway
-        _res = gateway.complete("rag_answer_synthesis", prompt)
-        answer = _res.text if _res.status != "degraded" else _res.degraded_message
+        response = llm.complete(prompt)
+        answer = response.text
 
         # Step 4: Extract sources metadata
         sources = []
@@ -1895,11 +1871,13 @@ class DocumentRAG:
             "ANSWER:"
         )
 
-        # Route through the gateway: gains caching/retry/usage-logging/quota
-        # + fallback + error sanitization (previously a raw create_llm bypass).
-        from src.llm import gateway
-        _res = gateway.complete("rag_answer_synthesis", prompt)
-        answer = _res.text if _res.status != "degraded" else _res.degraded_message
+        try:
+            llm, _ = create_llm(provider)
+            response = llm.complete(prompt)
+            answer = getattr(response, "text", str(response))
+        except Exception as e:
+            logger.error(f"[NamedDoc] {provider} synthesis failed: {e}")
+            answer = ""
 
         # Build sources list (named first, then semantic)
         sources: List[Dict[str, Any]] = []

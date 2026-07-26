@@ -41,25 +41,12 @@ jobs:
         # gate stays fast and deterministic.
         run: |
           pytest -q \
-            tests/test_sql_security.py \
             tests/test_router_document_listing.py \
             tests/test_router_intent_doc_list.py \
             tests/test_router_rebalance.py \
             tests/test_response_builder.py \
             tests/test_response_builder_dedupe.py \
-            tests/test_api_embedding.py \
-            tests/test_workflows_registry.py \
-            tests/test_workflows_planner.py \
-            tests/test_workflows_executor.py \
-            tests/test_programme_guards.py \
-            tests/test_assembled_report.py \
-            tests/test_data_catalog.py \
-            tests/test_plan_to_execution.py \
-            tests/test_reranker.py \
-            tests/test_compound_planner.py \
-            tests/test_output_router.py \
-            tests/test_followups.py \
-            tests/test_version_endpoint.py
+            tests/test_api_embedding.py
 
   # ── 2. Build the Docker image and push it to GHCR ────────────────────────
   build-and-push:
@@ -75,10 +62,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compute lowercase image name and build stamp
-        run: |
-          echo "IMAGE_LOWER=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-          echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - name: Compute lowercase image name
+        run: echo "IMAGE_LOWER=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -98,10 +83,6 @@ jobs:
           tags: |
             ghcr.io/${{ env.IMAGE_LOWER }}:latest
             ghcr.io/${{ env.IMAGE_LOWER }}:${{ github.sha }}
-          # Baked into the image and reported by GET /api/version.
-          build-args: |
-            GIT_SHA=${{ github.sha }}
-            BUILD_TIME=${{ env.BUILD_TIME }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -119,56 +100,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pre-flight: the 2 GB box can be briefly unreachable (cold start, memory
-      # pressure, reboot). Without this, SCP fails instantly with an opaque
-      # "dial tcp :22 i/o timeout" and the whole deploy looks like a code failure
-      # even though tests and the image build passed. Wait for SSH to answer, and
-      # if it never does, fail with a message that names the real cause.
-      - name: Wait for the server to accept SSH
-        env:
-          HOST: ${{ secrets.LIGHTSAIL_HOST }}
-          PORT: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-        run: |
-          echo "Waiting for ${HOST}:${PORT} to accept connections…"
-          for i in $(seq 1 30); do
-            if timeout 5 bash -c "echo > /dev/tcp/${HOST}/${PORT}" 2>/dev/null; then
-              echo "SSH reachable (attempt ${i})."
-              exit 0
-            fi
-            echo "  attempt ${i}/30 — not reachable yet, retrying in 10s"
-            sleep 10
-          done
-          echo "::error title=Server unreachable::SSH on ${HOST}:${PORT} did not respond after ~5 minutes."
-          echo "::error::This is an INFRASTRUCTURE failure, not a code failure — the tests and the image build both succeeded."
-          echo "::error::The instance is most likely frozen or rebooting. Reboot it in the Lightsail console, wait for /api/health, then re-run this workflow."
-          exit 1
-
       # Ship the (parametrized) compose file to the server's home, then move it
       # into APP_DIR inside the SSH script (handles root-owned dirs via sudo).
-      # Attempt 1 is allowed to fail so a single transient hiccup doesn't burn
-      # the deploy; attempt 2 only runs if it did.
       - name: Copy compose file to server
-        id: scp
-        continue-on-error: true
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          timeout: 120s
-          source: docker-compose.prod.yml
-          target: coair-deploy
-
-      - name: Copy compose file to server (retry)
-        if: steps.scp.outcome == 'failure'
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.LIGHTSAIL_HOST }}
-          username: ${{ secrets.LIGHTSAIL_USER }}
-          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          timeout: 120s
           source: docker-compose.prod.yml
           target: coair-deploy
 
@@ -184,7 +124,6 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          timeout: 120s
           envs: IMAGE,GHCR_TOKEN,GHCR_USER,APP_DIR
           script: |
             set -euo pipefail
@@ -218,11 +157,6 @@ jobs:
             for i in $(seq 1 48); do
               if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
                 echo "Health OK"
-                # Print what is actually live so the deploy log itself records
-                # the running commit + feature flags (no SSH needed afterwards).
-                echo "Deployed version:"
-                curl -fsS http://127.0.0.1:8000/api/version || echo "  (/api/version not available in this build)"
-                echo
                 exit 0
               fi
               sleep 5

@@ -301,44 +301,37 @@ class FormatConverter:
         return {}
 
     def _match_schema(self, df: pd.DataFrame) -> Optional[str]:
-        """Assign a canonical schema via the fuzzy Schema Profiler.
+        df_cols = {c.lower().strip() for c in df.columns}
+        best_match = None
+        best_ratio = 0.0
 
-        Returns a schema_id only on a confident (≥70% required-field) match;
-        ambiguous headers return None (and are logged for clarification) so we
-        never silently mis-cast a partially-matching sheet.
-        """
-        from .schema_profiler import get_profiler
+        for schema_info in self.schemas.list_schemas():
+            schema = self.schemas.get_schema(schema_info["schema_id"])
+            if not schema:
+                continue
+            required = [c for c in schema.columns if c.required]
+            if not required:
+                continue
 
-        result = get_profiler().profile(list(df.columns))
-        if result.schema_id and not result.needs_clarification:
-            return result.schema_id
-        if result.needs_clarification and result.candidates:
-            logger.info(
-                f"[FormatConverter] Ambiguous headers "
-                f"(columns: {list(df.columns)[:5]}...) — best guess "
-                f"{result.candidates[0][0]} @ {result.candidates[0][1]:.0%}; "
-                f"mapped {result.column_map}. Skipping auto-assignment.")
-        return None
+            matched = 0
+            for col_def in required:
+                if col_def.name.lower() in df_cols:
+                    matched += 1
+                elif any(alias.lower() in df_cols for alias in col_def.aliases):
+                    matched += 1
+
+            ratio = matched / len(required)
+            if ratio >= 0.7 and ratio > best_ratio:
+                best_ratio = ratio
+                best_match = schema.schema_id
+
+        return best_match
 
     def _cast_types(self, df: pd.DataFrame, schema_id: str) -> pd.DataFrame:
         schema = self.schemas.get_schema(schema_id)
         if not schema:
             return df
         df = df.copy()
-
-        # Rename raw → canonical via the profiler's fuzzy column map first, so
-        # non-verbatim (but confidently-matched) headers land on canonical
-        # names before the exact-match/dtype pass below runs.
-        try:
-            from .schema_profiler import get_profiler
-            col_map = get_profiler().profile(list(df.columns)).column_map
-            rename = {raw: canon for raw, canon in col_map.items()
-                      if raw in df.columns and raw != canon
-                      and canon not in df.columns}
-            if rename:
-                df = df.rename(columns=rename)
-        except Exception as e:
-            logger.warning(f"[FormatConverter] profiler rename skipped: {e}")
 
         for col_def in schema.columns:
             col_name = col_def.name
