@@ -64,19 +64,3 @@ export async function getStats(): Promise<DashboardStats> {
 export function getExportUrl(): string {
   return `${apiClient.defaults.baseURL}/files/export`;
 }
-
-/** Download a generated analysis artifact (auth header via apiClient) and
- * trigger a browser save. `url` is the server-relative path from
- * programme_artifact.artifacts[].url, e.g. "/api/artifacts/<run>/<file>". */
-export async function downloadArtifact(url: string, filename: string): Promise<void> {
-  const path = url.replace(/^\/api/, '');
-  const { data } = await apiClient.get<Blob>(path, { responseType: 'blob' });
-  const objectUrl = URL.createObjectURL(data);
-  const a = document.createElement('a');
-  a.href = objectUrl;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(objectUrl);
-}

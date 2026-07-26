@@ -27,63 +27,11 @@ from .config import (
 from .logger import logger, log_separator, log_document_processing
 from .catalog import _active_corpus
 
-# User-safe message for any SQL-path failure. NEVER interpolate the exception —
-# raw provider errors (429/quota/billing URL) must not reach the chat.
-SQL_UNAVAILABLE_MSG = ("SQL analysis is temporarily unavailable; please narrow "
-                       "the question or try again shortly.")
-
 
 class UnsafeSqlError(Exception):
     """Generated SQL failed a safety guard. Never self-corrected, never
     retried — a query that reaches for an unknown table or a file-reading
     table function is not a syntax slip to fix, it is a request to refuse."""
-
-
-def _reraise_budget(exc: Exception) -> None:
-    """Budget/quota exceptions must reach the FastAPI 402 handler — never get
-    swallowed into an answer string. Call this first in every SQL except."""
-    from .usage_tracker import BudgetExceededError
-    from .user_store import UserQuotaExceededError
-    if isinstance(exc, (BudgetExceededError, UserQuotaExceededError)):
-        raise exc
-
-
-class SqlFailureReason:
-    """Internal SQL-failure taxonomy. The user-facing message stays simple
-    (SQL_UNAVAILABLE_MSG), but logs/telemetry carry the exact reason so a
-    schema/column problem is never conflated with an LLM-quota outage."""
-    NO_COMPATIBLE_TABLE = "NO_COMPATIBLE_TABLE"
-    LOW_CONFIDENCE_MAPPING = "LOW_CONFIDENCE_MAPPING"
-    SQL_GENERATION_LLM_UNAVAILABLE = "SQL_GENERATION_LLM_UNAVAILABLE"
-    SQL_PARSE_ERROR = "SQL_PARSE_ERROR"
-    DUCKDB_EXECUTION_ERROR = "DUCKDB_EXECUTION_ERROR"
-    NO_ROWS = "NO_ROWS"
-    DATE_ANOMALY = "DATE_ANOMALY"
-    UNSAFE_SQL = "UNSAFE_SQL"
-    UNKNOWN = "UNKNOWN"
-
-
-def classify_sql_failure(exc: Exception) -> str:
-    """Map a raw SQL-path exception to a SqlFailureReason (never surfaced raw)."""
-    if isinstance(exc, UnsafeSqlError):
-        return SqlFailureReason.UNSAFE_SQL
-    msg = str(exc).lower()
-    if any(t in msg for t in ("429", "quota", "resource_exhausted", "rate limit",
-                              "billing", "generativelanguage.googleapis.com",
-                              "llm call failed")):
-        return SqlFailureReason.SQL_GENERATION_LLM_UNAVAILABLE
-    if any(t in msg for t in ("binder error", "catalog error", "referenced column",
-                              "does not have a column", "parser error",
-                              "syntax error", "conversion error")):
-        return SqlFailureReason.DUCKDB_EXECUTION_ERROR
-    return SqlFailureReason.UNKNOWN
-
-
-def _log_sql_failure(reason: str, table_name: Optional[str] = None,
-                     detail: str = "") -> None:
-    """Structured, non-leaking telemetry line for a SQL failure."""
-    logger.warning(f"[SQLFailure] reason={reason} table={table_name or '-'} "
-                   f"detail={(detail or '')[:200]}")
 
 
 # SQL validation patterns. Scanned against literal-stripped SQL (see
@@ -830,21 +778,10 @@ class DataAnalyzerSQL:
                 question, sql, result_df, table_name
             )
 
-            # The SQL is already deterministic; only the narration needs an LLM.
-            # If that call fails (provider outage / dead quota), keep the computed
-            # result and fall back to the LLM-free template summary rather than
-            # discarding a correct answer. Genuine budget/user-quota still 402s.
-            try:
-                summary = self._generate_summary(question, sql, result_df,
-                                                 provider=provider,
-                                                 table_name=table_name,
-                                                 detail_df=detail_df)
-            except Exception as se:
-                _reraise_budget(se)
-                logger.warning(f"   Shortcut summary LLM unavailable ({se}); "
-                               f"using deterministic summary")
-                summary = self._lazy_summary(question, sql, result_df,
-                                             table_name, detail_df=detail_df)
+            summary = self._generate_summary(question, sql, result_df,
+                                             provider=provider,
+                                             table_name=table_name,
+                                             detail_df=detail_df)
 
             file_path = self.file_paths.get(table_name, '')
             from .document_rag import generate_doc_id
@@ -1797,14 +1734,8 @@ class DataAnalyzerSQL:
 
     # ── SQL generation via llm_client ─────────────────────────
 
-    def _generate_sql(self, question: str, table_name: str, provider: str = "gemini",
-                      concept_columns: Optional[Dict[str, str]] = None) -> str:
-        """Use llm_client to generate SQL query with jargon context.
-
-        concept_columns (concept→raw column) is a planner hint pinning the real
-        columns that answer the query's concepts; it is folded into the table
-        context so the model uses the confirmed column rather than guessing.
-        """
+    def _generate_sql(self, question: str, table_name: str, provider: str = "gemini") -> str:
+        """Use llm_client to generate SQL query with jargon context."""
         from . import llm_client
         from .prompt_security import safe_render_prompt, build_system_prompt
 
@@ -1857,23 +1788,6 @@ class DataAnalyzerSQL:
 
         # Build table context from insight
         table_context = self._build_table_context(table_name)
-
-        # Planner concept→column hint: pin the real columns that answer the
-        # query's concepts. Only include mappings whose column actually exists in
-        # this table (the planner picks the best table, but we self-generate for
-        # the selected one) so we never point the model at a non-existent column.
-        if concept_columns:
-            hint_lines = []
-            for concept, raw_col in concept_columns.items():
-                if raw_col in columns:
-                    quoted = f'"{raw_col}"' if ' ' in raw_col else raw_col
-                    hint_lines.append(
-                        f"  - {concept.replace('_', ' ')} → use column {quoted}")
-            if hint_lines:
-                table_context += (
-                    "\n\nCONFIRMED CONCEPT→COLUMN MAPPING "
-                    "(use these exact columns for these concepts; do not invent "
-                    "or substitute columns):\n" + "\n".join(hint_lines))
 
         # Schema-specific hints for known formats
         target_schema = info.get("header_metadata", {}).get("target_schema", "")
@@ -2229,16 +2143,12 @@ class DataAnalyzerSQL:
     # ── Main query entry point ────────────────────────────────
 
     def query(self, question: str, table_name: Optional[str] = None,
-              allowed_tables: Optional[List[str]] = None,
-              concept_columns: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+              allowed_tables: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Query data using safe SQL execution.
         Self-corrects once on SQL errors.
         Uses lazy summary for small results.
         If allowed_tables is provided, only consider those tables.
-        concept_columns (concept→raw physical column) is an optional planner hint
-        that pins which real columns answer the query's concepts, so the LLM uses
-        the confirmed column instead of guessing (never invents columns).
         """
         log_separator("SQL Data Query")
         logger.info(f"Question: {question[:100]}...")
@@ -2319,8 +2229,7 @@ class DataAnalyzerSQL:
             # Step 1: Generate SQL
             logger.info("   Generating SQL query...")
             start_time = time.time()
-            sql = self._generate_sql(question, table_name,
-                                     concept_columns=concept_columns)
+            sql = self._generate_sql(question, table_name)
             gen_time = time.time() - start_time
             logger.info(f"   Generated SQL ({gen_time:.2f}s): {sql[:100]}...")
 
@@ -2340,14 +2249,12 @@ class DataAnalyzerSQL:
                         logger.info(f"   Self-corrected SQL: {sql[:100]}...")
 
                 if not is_valid:
-                    _log_sql_failure(SqlFailureReason.SQL_PARSE_ERROR,
-                                     table_name, error)
+                    logger.error(f"   SQL validation failed after retry: {error}")
                     return {
                         "answer": f"Cannot execute this query: {error}",
                         "sources": [{"error": error}],
                         "sql": sql,
                         "result_data": None,
-                        "failure_reason": SqlFailureReason.SQL_PARSE_ERROR,
                     }
 
             # Table references are checked inside _execute_checked, below —
@@ -2441,27 +2348,26 @@ class DataAnalyzerSQL:
             }
 
         except UnsafeSqlError as unsafe:
-            # Guard tripped: log the exact reason, tell the user nothing that
-            # would help shape the next attempt.
-            _log_sql_failure(SqlFailureReason.UNSAFE_SQL, table_name, str(unsafe))
+            # Guard tripped. The reason goes to the log; the user gets nothing
+            # that would help shape the next attempt — note this deliberately
+            # does NOT use the generic handler below, which interpolates the
+            # exception into the answer.
+            logger.warning(f"   [SQL] Refused unsafe query on table={table_name or '-'}: "
+                           f"{str(unsafe)[:200]}")
             return {
-                "answer": SQL_UNAVAILABLE_MSG,
+                "answer": "That question can't be answered from the loaded data tables.",
                 "sources": [],
                 "sql": sql,
                 "result_data": None,
-                "failure_reason": SqlFailureReason.UNSAFE_SQL,
             }
 
         except Exception as e:
-            _reraise_budget(e)   # budget/quota → 402, never an answer string
-            reason = classify_sql_failure(e)
-            _log_sql_failure(reason, table_name, str(e))
+            logger.error(f"   Query error: {e}")
             return {
-                "answer": SQL_UNAVAILABLE_MSG,
-                "sources": [{"table_name": table_name}],
+                "answer": f"Error executing query: {str(e)}",
+                "sources": [{"error": str(e), "table_name": table_name}],
                 "sql": sql,
                 "result_data": None,
-                "failure_reason": reason,
             }
 
     def query_with_provider(self, question: str, provider: str,
@@ -2561,15 +2467,23 @@ class DataAnalyzerSQL:
                 "highlight_columns": highlight_columns,
             }
 
-        except Exception as e:
-            _reraise_budget(e)
-            reason = classify_sql_failure(e)
-            _log_sql_failure(reason, table_name, f"[{provider}] {e}")
+        except UnsafeSqlError as unsafe:
+            # Same reasoning as in query(): the generic handler below would put
+            # the guard's detail straight into the answer.
+            logger.warning(f"   [{provider}] [SQL] Refused unsafe query on "
+                           f"table={table_name or '-'}: {str(unsafe)[:200]}")
             return {
-                "answer": SQL_UNAVAILABLE_MSG,
-                "sources": [{"table_name": table_name}],
+                "answer": "That question can't be answered from the loaded data tables.",
+                "sources": [],
                 "sql": sql, "result_data": None,
-                "failure_reason": reason,
+            }
+
+        except Exception as e:
+            logger.error(f"   [{provider}] Query error: {e}")
+            return {
+                "answer": f"Error executing query: {str(e)}",
+                "sources": [{"error": str(e), "table_name": table_name}],
+                "sql": sql, "result_data": None,
             }
 
     def query_dual(self, question: str, table_name: Optional[str] = None,
@@ -2590,11 +2504,10 @@ class DataAnalyzerSQL:
                     prov, result = future.result()
                     results[prov] = result
                 except Exception as e:
-                    _reraise_budget(e)
                     prov = futures[future]
                     logger.error(f"   [{prov}] Dual query failed: {e}")
                     results[prov] = {
-                        "answer": SQL_UNAVAILABLE_MSG,
+                        "answer": f"Error from {prov}: {e}",
                         "sources": [], "sql": None, "result_data": None,
                     }
 

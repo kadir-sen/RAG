@@ -37,10 +37,6 @@ class Message:
     sql: Optional[str] = None
     result_data: Optional[List[Any]] = None
     dual_answers: Optional[Dict] = None
-    # Deterministic analysis artifact (ToolResult dict) attached to this
-    # assistant answer — lets follow-ups like "make this into a report
-    # section" reuse the previous result without re-running anything.
-    artifact: Optional[Dict] = None
     # Stable id so user feedback (👍/👎) can reference a specific assistant answer.
     message_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 

@@ -70,18 +70,8 @@ class QuotaInfo(BaseModel):
     percent_remaining: float = 100.0  # 0–100
 
 
-class TrustGuardInfo(BaseModel):
-    """Trust Guard verification verdict for the answer — drives the
-    verified/partially-verified/needs-review badge in the chat UI."""
-    sufficiency_label: str = ""      # verified | partially_supported | insufficient | unverified
-    sufficiency: float = 0.0         # evidence sufficiency score 0..1
-    caveats: List[str] = Field(default_factory=list)
-    analyst_review_required: bool = False
-    action: str = ""                 # approve | approve_with_caveats | rewrite | refuse
-
-
 class ChatResponse(BaseModel):
-    ui_intent: str       # "answer" | "doc_list" | "timeline" | "email_trace" | "sql_result" | "programme_result"
+    ui_intent: str       # "answer" | "doc_list" | "timeline" | "email_trace" | "sql_result"
     assistant_text: str
     citations: List[Citation] = Field(default_factory=list)
     related_docs: List[RelatedDoc] = Field(default_factory=list)
@@ -91,13 +81,6 @@ class ChatResponse(BaseModel):
     route: Optional[str] = None      # telemetry route: AGENT | HYBRID_COMPLEX | DOCUMENT … (observability)
     cta: Optional[CallToAction] = None
     quota: Optional[QuotaInfo] = None
-    trust_guard: Optional[TrustGuardInfo] = None
-    # Deterministic programme-analysis output (ToolResult dict or workflow
-    # pack) — free-form because the contract lives in src/programme_tools.
-    programme_artifact: Optional[dict] = None
-    # Chat-native rich blocks (validated by backend.models.blocks) — additive:
-    # legacy answers carry None and render exactly as before.
-    blocks: Optional[List[dict]] = None
 
 
 class ConversationMeta(BaseModel):

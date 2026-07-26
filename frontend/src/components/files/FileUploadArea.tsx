@@ -1,7 +1,7 @@
 import { useRef, useState, type DragEvent } from 'react';
 
 const ACCEPTED =
-  '.pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.eml,.msg,.xer';
+  '.pdf,.docx,.doc,.txt,.xlsx,.xls,.csv,.eml,.msg';
 
 interface Props {
   onUpload: (files: File[]) => void;

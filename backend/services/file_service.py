@@ -6,7 +6,7 @@ from typing import List
 
 from fastapi import UploadFile
 
-from src.config import DOCUMENTS_DIR, TABLES_DIR, EMAILS_DIR, PROGRAMME_DIR
+from src.config import DOCUMENTS_DIR, TABLES_DIR, EMAILS_DIR
 
 EXTENSION_MAP = {
     ".pdf": ("document", DOCUMENTS_DIR),
@@ -18,7 +18,6 @@ EXTENSION_MAP = {
     ".xlsx": ("data", TABLES_DIR),
     ".xls": ("data", TABLES_DIR),
     ".csv": ("data", TABLES_DIR),
-    ".xer": ("programme", PROGRAMME_DIR),  # Primavera P6 export
 }
 
 

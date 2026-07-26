@@ -19,7 +19,6 @@
     "@tanstack/react-query": "^5.90.21",
     "@tanstack/react-virtual": "^3.13.19",
     "axios": "^1.13.6",
-    "dompurify": "^3.4.12",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",

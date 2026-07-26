@@ -25,7 +25,6 @@ from backend.api import (
     admin,
     admin_jargon,
     admin_users,
-    artifacts,
     auth,
     chat,
     conversations,
@@ -109,9 +108,6 @@ def create_app() -> FastAPI:
     app.include_router(feedback.router, prefix="/api", tags=["feedback"], dependencies=auth_dep)
     app.include_router(files.router, prefix="/api", tags=["files"], dependencies=auth_dep)
     app.include_router(
-        artifacts.router, prefix="/api", tags=["artifacts"], dependencies=auth_dep,
-    )
-    app.include_router(
         documents.router, prefix="/api", tags=["documents"], dependencies=auth_dep,
     )
     app.include_router(
@@ -149,29 +145,6 @@ def create_app() -> FastAPI:
     @app.get("/api/health", tags=["health"])
     async def health():
         return {"status": "ok"}
-
-    @app.get("/api/version", tags=["health"])
-    async def version():
-        """Which build is actually running, and with which capabilities.
-
-        GIT_SHA / BUILD_TIME are baked into the image at build time, so this
-        answers "is the latest version live?" with one request — no SSH needed.
-        The feature flags are included because they change behaviour and are set
-        per-environment; only booleans are exposed, never secrets or config values.
-        """
-        import os
-        from src import config as _cfg
-        return {
-            "commit": os.getenv("GIT_SHA", "unknown"),
-            "built_at": os.getenv("BUILD_TIME", "unknown"),
-            "features": {
-                "compound_planner": _cfg.ENABLE_COMPOUND_PLANNER,
-                "llm_decomposer": _cfg.ENABLE_LLM_DECOMPOSER,
-                "deterministic_rerank": _cfg.ENABLE_DETERMINISTIC_RERANK,
-                "cross_encoder": _cfg.ENABLE_CROSS_ENCODER,
-                "hybrid_retrieval": _cfg.ENABLE_HYBRID_RETRIEVAL,
-            },
-        }
 
     # Serve React frontend in production
     if _frontend_dist.exists():

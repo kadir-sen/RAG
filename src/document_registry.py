@@ -50,12 +50,6 @@ class DocumentRecord:
     # the per-document inventory to reduce hallucination/misrouting.
     llm_summary: Optional[str] = None
     llm_topics: List[str] = field(default_factory=list)
-    # Programme (.xer) metadata persisted at ingest so resolvers can pick
-    # baseline/current by data_date WITHOUT re-parsing files:
-    # {programme_type, data_date, plan_start, scheduled_finish,
-    #  activity_count, relationship_count, milestone_count,
-    #  project_short_name, parser_version, parse_error?}
-    programme_meta: Dict = field(default_factory=dict)
 
 
 class DocumentRegistry:
@@ -77,15 +71,44 @@ class DocumentRegistry:
 
     # ── Persistence ──────────────────────────────────────────
 
+    @staticmethod
+    def _record_from_dict(rec: Dict[str, Any]) -> DocumentRecord:
+        """Backward- and forward-compatible DocumentRecord loader.
+
+        Drops keys DocumentRecord doesn't declare and lets missing ones fall to
+        their defaults. A registry written by a newer build carries fields this
+        one has never heard of, and `DocumentRecord(**rec)` raises on the first
+        of them — which used to abort the whole load loop, so one unknown key
+        emptied the entire library.
+        """
+        known = DocumentRecord.__dataclass_fields__
+        return DocumentRecord(**{k: v for k, v in rec.items() if k in known})
+
     def _load(self):
         if REGISTRY_FILE.exists():
             try:
                 data = json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
-                for doc_id, rec in data.items():
-                    self._records[doc_id] = DocumentRecord(**rec)
-                logger.info(f"[Registry] Loaded {len(self._records)} documents")
             except Exception as e:
                 logger.error(f"[Registry] Failed to load: {e}")
+                return
+
+            dropped_keys, failed = set(), 0
+            for doc_id, rec in data.items():
+                try:
+                    dropped_keys |= set(rec) - set(DocumentRecord.__dataclass_fields__)
+                    self._records[doc_id] = self._record_from_dict(rec)
+                except Exception as e:
+                    # Per record, so one malformed entry costs one document
+                    # rather than every document after it.
+                    failed += 1
+                    logger.warning(f"[Registry] Skipping unreadable record {doc_id}: {e}")
+
+            logger.info(f"[Registry] Loaded {len(self._records)} documents")
+            if dropped_keys:
+                logger.info(f"[Registry] Ignored unknown field(s) written by another "
+                            f"build: {', '.join(sorted(dropped_keys))}")
+            if failed:
+                logger.warning(f"[Registry] {failed} record(s) could not be loaded")
 
     def _save(self):
         REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -182,16 +205,6 @@ class DocumentRegistry:
                     rec.schema_match_details = schema_match_details
                 self._save()
                 logger.info(f"[Registry] Completed: {rec.file_name}")
-
-    def set_programme_meta(self, doc_id: str, meta: Dict) -> None:
-        """Persist parsed XER metadata (data_date etc.) for a programme file."""
-        with self._file_lock:
-            rec = self._records.get(doc_id)
-            if rec:
-                rec.programme_meta = dict(meta or {})
-                self._save()
-                logger.info(f"[Registry] programme_meta set for {rec.file_name}: "
-                            f"data_date={meta.get('data_date')}")
 
     def set_llm_enrichment(
         self,

@@ -13,8 +13,6 @@ import EmailTraceResponse from './EmailTraceResponse';
 import CtaButton from './CtaButton';
 import DocumentAnalysisTable from './DocumentAnalysisTable';
 import DocumentAnalysisTimeline, { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
-import ProgrammeResult from './ProgrammeResult';
-import BlockRenderer from './blocks/BlockRenderer';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -69,9 +67,7 @@ function StepTrail({ steps }: { steps: ActivityStep[] }) {
           <li key={s.seq} className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
             <span className="font-mono text-[var(--accent)]">✓</span>
             <span className="truncate">{s.label}</span>
-            {s.detail && s.kind !== 'draft' && (
-              <span className="font-mono text-[10px] opacity-70 truncate">{s.detail}</span>
-            )}
+            {s.detail && <span className="font-mono text-[10px] opacity-70 truncate">{s.detail}</span>}
           </li>
         ))}
       </ul>
@@ -101,23 +97,9 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
   // every "related documents" surface is the structured table the user expects.
   const showRelatedAsTable =
     intent !== 'doc_list' && intent !== 'timeline' &&
-    intent !== 'email_trace' && intent !== 'sql_result' &&
-    intent !== 'programme_result' && relatedCount >= 2;
+    intent !== 'email_trace' && intent !== 'sql_result' && relatedCount >= 2;
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
-
-  // Trust Guard verdict → badge label. "verified" reassures; anything weaker
-  // warns. Caveat text itself is already appended to assistant_text upstream.
-  const tg = response?.trust_guard;
-  const trustLabel = !tg
-    ? null
-    : tg.analyst_review_required || tg.sufficiency_label === 'insufficient'
-      ? 'needs analyst review'
-      : tg.sufficiency_label === 'verified'
-        ? 'verified'
-        : tg.sufficiency_label === 'partially_supported'
-          ? 'partially verified'
-          : null;
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(text).then(() => {
@@ -128,12 +110,9 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
 
   // Inline citations are only meaningful for plain answer responses where the
   // text itself is the primary content. Doc-list / timeline / email-trace /
-  // sql_result intents render their own structured sources. programme_result
-  // is included: delay-chronology paragraphs carry "(file, p.N)" refs whose
-  // clickable counterparts are these citations.
+  // sql_result intents render their own structured sources.
   const showInlineCitations =
-    (intent === 'answer' || intent === 'programme_result') &&
-    !!response?.citations?.length;
+    intent === 'answer' && !!response?.citations?.length;
 
   return (
     <div className="mb-6 px-4 animate-fade-in-up group">
@@ -148,13 +127,6 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
               {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
                 <Badge label="low confidence" />
               )}
-            </div>
-          )}
-
-          {/* Trust Guard verification badge — always visible when present */}
-          {trustLabel && (
-            <div className="mb-1.5 flex items-center gap-2">
-              <Badge label={trustLabel} />
             </div>
           )}
 
@@ -173,19 +145,8 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
               )}
             </div>
 
-            {/* Chat-native block path: when blocks are present they own the
-                rich rendering; intent-specific branches are skipped. Trust
-                badge, step trail and footer stay. */}
-            {!!response?.blocks?.length && (
-              <BlockRenderer
-                blocks={response.blocks}
-                onDocClick={onDocClick}
-                onSend={onRetry}
-              />
-            )}
-
-            {/* Intent-specific rendering (legacy path, unchanged) */}
-            {response && !response.blocks?.length && (
+            {/* Intent-specific rendering */}
+            {response && (
               <>
                 {showTimeline ? (
                   <div className="mt-3">
@@ -228,14 +189,9 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
                       <SqlArtifact artifact={response.sql_artifact} onSourceClick={onDocClick} />
                     )}
 
-                    {/* Deterministic programme-analysis output (XER tools). */}
-                    {intent === 'programme_result' && response.programme_artifact && (
-                      <ProgrammeResult artifact={response.programme_artifact} />
-                    )}
-
                     {/* A single related doc → compact bubble strip (table is overkill). */}
                     {intent !== 'doc_list' && intent !== 'timeline' &&
-                     intent !== 'email_trace' && intent !== 'programme_result' && (
+                     intent !== 'email_trace' && (
                       <RelatedDocsList
                         docs={response.related_docs}
                         onDocClick={onDocClick}
