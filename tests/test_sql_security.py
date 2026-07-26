@@ -16,7 +16,12 @@ layers stop that here:
 Either layer alone blocks the exploit; both are tested alone.
 """
 
+import sys
+from pathlib import Path
+
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data_analyzer_sql import validate_sql
 from src.prompt_security import (TABLE_FUNCTION, UNKNOWN_TABLE,
