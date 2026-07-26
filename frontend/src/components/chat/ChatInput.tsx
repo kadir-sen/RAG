@@ -64,10 +64,15 @@ export default function ChatInput({ onSend, disabled }: Props) {
       {(quotaExhausted || quotaLow) && (
         <div
           role={quotaExhausted ? 'alert' : 'status'}
+          // The banner carries its state in the rule and the glyph, not in the
+          // body text: --warning against paper measures 3.61:1, under AA for
+          // text this size. Ink is 12.9:1 and it is what the sheet's own rule
+          // ("emphasis is ink, not a colour") asks for anyway. --danger clears
+          // AA at 7.1:1, so the exhausted case can keep speaking in red.
           className={`max-w-3xl mx-auto mb-2 rounded border px-3.5 py-2 text-xs flex items-center gap-2 bg-[var(--wash)] ${
             quotaExhausted
               ? 'border-[var(--danger)] text-[var(--danger)]'
-              : 'border-[var(--warning)] text-[var(--warning)]'
+              : 'border-[var(--warning)] text-[var(--text-primary)]'
           }`}
         >
           <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
