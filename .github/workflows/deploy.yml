@@ -42,6 +42,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_sql_security.py \
+            tests/test_document_registry_load.py \
             tests/test_router_document_listing.py \
             tests/test_router_intent_doc_list.py \
             tests/test_router_rebalance.py \

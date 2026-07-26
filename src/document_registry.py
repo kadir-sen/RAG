@@ -71,15 +71,44 @@ class DocumentRegistry:
 
     # ── Persistence ──────────────────────────────────────────
 
+    @staticmethod
+    def _record_from_dict(rec: Dict[str, Any]) -> DocumentRecord:
+        """Backward- and forward-compatible DocumentRecord loader.
+
+        Drops keys DocumentRecord doesn't declare and lets missing ones fall to
+        their defaults. A registry written by a newer build carries fields this
+        one has never heard of, and `DocumentRecord(**rec)` raises on the first
+        of them — which used to abort the whole load loop, so one unknown key
+        emptied the entire library.
+        """
+        known = DocumentRecord.__dataclass_fields__
+        return DocumentRecord(**{k: v for k, v in rec.items() if k in known})
+
     def _load(self):
         if REGISTRY_FILE.exists():
             try:
                 data = json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))
-                for doc_id, rec in data.items():
-                    self._records[doc_id] = DocumentRecord(**rec)
-                logger.info(f"[Registry] Loaded {len(self._records)} documents")
             except Exception as e:
                 logger.error(f"[Registry] Failed to load: {e}")
+                return
+
+            dropped_keys, failed = set(), 0
+            for doc_id, rec in data.items():
+                try:
+                    dropped_keys |= set(rec) - set(DocumentRecord.__dataclass_fields__)
+                    self._records[doc_id] = self._record_from_dict(rec)
+                except Exception as e:
+                    # Per record, so one malformed entry costs one document
+                    # rather than every document after it.
+                    failed += 1
+                    logger.warning(f"[Registry] Skipping unreadable record {doc_id}: {e}")
+
+            logger.info(f"[Registry] Loaded {len(self._records)} documents")
+            if dropped_keys:
+                logger.info(f"[Registry] Ignored unknown field(s) written by another "
+                            f"build: {', '.join(sorted(dropped_keys))}")
+            if failed:
+                logger.warning(f"[Registry] {failed} record(s) could not be loaded")
 
     def _save(self):
         REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
