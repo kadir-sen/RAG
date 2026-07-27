@@ -213,7 +213,6 @@ ROUTE_AGENT_CONF = float(os.getenv("ROUTE_AGENT_CONF", "0.55"))
 REACT_TIME_BUDGET_SEC = float(os.getenv("REACT_TIME_BUDGET_SEC", "90"))
 
 # ── Feature Flags ───────────────────────────────────────────
-ENABLE_TIMELINE = os.getenv("ENABLE_TIMELINE", "true").lower() == "true"
 ENABLE_AB_TESTING = os.getenv("ENABLE_AB_TESTING", "false").lower() == "true"
 
 # ── Template-Based Extraction ──────────────────────────────

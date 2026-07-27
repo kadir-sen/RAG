@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ChartBlock from './ChartBlock';
 import type { SQLArtifact as SQLArtifactType } from '../../types/api';
 import type { ViewerDoc } from '../../stores/uiStore';
 
@@ -50,6 +51,14 @@ export default function SqlArtifact({ artifact, onSourceClick }: Props) {
               {artifact.generated_sql}
             </pre>
           </div>
+
+          {/* The chart, when the shape of the result earns one — the backend
+              decides that from the columns, not the model. Drawn above the
+              table because the picture is the summary and the table is the
+              evidence for it. */}
+          {artifact.chart && artifact.preview_rows.length > 0 && (
+            <ChartBlock spec={artifact.chart} rows={artifact.preview_rows} />
+          )}
 
           {/* Preview table */}
           {artifact.preview_rows.length > 0 && (

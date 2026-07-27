@@ -1,13 +1,17 @@
 import { Component, Suspense, lazy } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 import AppShell from './layout/AppShell';
 import ChatPage from './pages/ChatPage';
 import LoginPage from './pages/LoginPage';
+import ModulePickerPage from './pages/ModulePickerPage';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 
 const SettingsModal = lazy(() => import('./components/shared/SettingsModal'));
+/* Its own area, and a heavy one (timeline + viewer) — not worth carrying in
+   the picker's bundle for the visits that never open it. */
+const ChronologyPage = lazy(() => import('./pages/ChronologyPage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -64,19 +68,32 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            {/* One authenticated shell, three areas inside it. The shell holds
+                the top bar, the sheet toggle and the settings modal, so those
+                are the same wherever you are. */}
             <Route
-              path="/*"
               element={
                 <ProtectedRoute>
                   <AppShell>
-                    <ChatPage />
+                    <Outlet />
                   </AppShell>
                   <Suspense fallback={null}>
                     <SettingsModal />
                   </Suspense>
                 </ProtectedRoute>
               }
-            />
+            >
+              <Route path="/" element={<ModulePickerPage />} />
+              <Route
+                path="/chronology"
+                element={
+                  <Suspense fallback={null}>
+                    <ChronologyPage />
+                  </Suspense>
+                }
+              />
+              <Route path="/chat" element={<ChatPage />} />
+            </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

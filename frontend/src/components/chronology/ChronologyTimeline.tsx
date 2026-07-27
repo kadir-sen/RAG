@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import MonoTag from '../ui/MonoTag';
-import TimelineNode from '../ui/TimelineNode';
+import TimelineNode from './TimelineNode';
 import type { TimelineEvent } from '../../utils/timeline';
 
 export type { TimelineEvent } from '../../utils/timeline';
@@ -17,7 +17,7 @@ interface Props {
   caption?: string;
 }
 
-export default function DocumentAnalysisTimeline({
+export default function ChronologyTimeline({
   events,
   topic,
   emptyState,
