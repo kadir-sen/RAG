@@ -48,10 +48,11 @@ RUN mkdir -p data/documents data/tables data/emails storage cache logs/telemetry
 # Copy target schemas (needed for converter pipeline)
 COPY storage/schemas/ ./storage/schemas/
 
-# The authored chronologies. These are content, not uploads — the chronology
-# area reads them at runtime, so without this the area builds fine and then
-# returns empty narratives in production.
-COPY data/chronologies/ ./data/chronologies/
+# Authored content that ships with the app. Deliberately NOT under data/ or
+# storage/: docker-compose.prod.yml bind-mounts both of those from the host,
+# which masks whatever the image put there. Files here are visible at runtime
+# because nothing mounts over /app/content.
+COPY content/ ./content/
 
 # Cloud Run injects PORT env variable (default 8080)
 ENV PORT=8080

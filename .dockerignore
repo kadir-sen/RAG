@@ -21,10 +21,7 @@ env/
 .claude/
 
 # Data (uploaded at runtime, not baked into image)
-# data/* rather than data/ so the authored chronologies can be re-included —
-# same arrangement as storage/schemas below. The uploaded corpus stays out.
-data/*
-!data/chronologies/
+data/
 storage/*
 !storage/schemas/
 cache/
