@@ -44,7 +44,7 @@ export default function SubjectNarrative({ subject, entries, onClear }: Props) {
       {entries.length === 0 ? (
         <p className="mt-4 text-[12px] text-[var(--text-muted)]">
           This chronology has no readable entries — the source document may be
-          missing from data/chronologies/.
+          missing from content/chronologies/.
         </p>
       ) : (
         <ol className="mt-4">

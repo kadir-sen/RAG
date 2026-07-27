@@ -1,7 +1,7 @@
 """The curated chronologies, and how a typed subject is matched to one.
 
 A subject typed into the chronology chat bar resolves to one of the authored
-chronologies in data/chronologies/ and its narrative is shown in full. The
+chronologies in content/chronologies/ and its narrative is shown in full. The
 matching is deliberately **not** an LLM call: these documents are the record,
 the mapping from subject to document is a fixed one, and a model that
 occasionally picks the wrong chronology for a dispute is worse than useless.
@@ -14,7 +14,7 @@ weights, same thresholds, same three outcomes — so the portal's builder and
 this area agree on what a subject means.
 
 TO ADD A CHRONOLOGY
-  1. Drop the .docx in data/chronologies/
+  1. Drop the .docx in content/chronologies/
   2. Add an entry to _DOCS below: ref, title, file, summary, keywords
 Keywords outweigh the title, so put the words people actually type in there —
 abbreviations, party names, synonyms.
@@ -31,7 +31,10 @@ from typing import Dict, List, Optional
 from .config import BASE_DIR
 from .logger import logger
 
-CHRONOLOGY_DIR = BASE_DIR / "data" / "chronologies"
+# Under content/, not data/: docker-compose.prod.yml bind-mounts ./data over
+# /app/data, so anything the image ships there is invisible once the container
+# runs. These are authored content that travels with the build, not user data.
+CHRONOLOGY_DIR = BASE_DIR / "content" / "chronologies"
 
 COLLECTION = "Edinburgh Tram Network — Delay and Prolongation"
 
