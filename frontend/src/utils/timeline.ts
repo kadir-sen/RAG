@@ -11,6 +11,10 @@ export interface TimelineEvent {
   tag?: string;
   note?: string;
   highlight?: boolean;
+  /** Source document, shown at the end of the row. Only the chronology area
+      sets it — mapRelatedDocsToTimeline leaves it undefined, because there the
+      row's title already is the document. */
+  source?: string;
 }
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

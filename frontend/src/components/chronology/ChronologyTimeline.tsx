@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import MonoTag from '../ui/MonoTag';
+import FileTypeBadge from '../ui/FileTypeBadge';
 import TimelineNode from './TimelineNode';
 import type { TimelineEvent } from '../../utils/timeline';
 
@@ -79,9 +80,12 @@ export default function ChronologyTimeline({
             return (
               <li
                 key={e.id ?? `${e.date}-${i}`}
-                className="grid grid-cols-[64px_24px_1fr_auto] items-start gap-3"
+                className="grid grid-cols-[7rem_24px_1fr_auto] items-start gap-3"
               >
-                <span className="font-mono text-[11px] text-[var(--text-secondary)] pt-2 text-right">
+                {/* Left-aligned and wider than it was: the store's dates are
+                    free-form ("1970 to 1975"), so they neither fit a 64px
+                    column nor line up usefully when right-aligned. */}
+                <span className="font-mono text-[11px] text-[var(--text-secondary)] pt-2 leading-snug">
                   {e.label}
                 </span>
 
@@ -122,8 +126,24 @@ export default function ChronologyTimeline({
                   )}
                 </button>
 
-                <span className="font-mono text-[10px] text-[var(--accent)] pt-3.5">
-                  {clickable ? 'open →' : ''}
+                {/* The source document, so a row says which paper it came
+                    from without opening it. Full name in the title attribute
+                    because these are long and the column is not. */}
+                <span className="pt-3 flex flex-col items-end gap-0.5 max-w-[11rem]">
+                  {e.source && (
+                    <span
+                      className="flex items-center gap-1.5 min-w-0 w-full justify-end"
+                      title={e.source}
+                    >
+                      <FileTypeBadge extension={e.source.slice(e.source.lastIndexOf('.'))} size="sm" />
+                      <span className="font-mono text-[10px] text-[var(--text-muted)] truncate">
+                        {e.source}
+                      </span>
+                    </span>
+                  )}
+                  {clickable && (
+                    <span className="font-mono text-[10px] text-[var(--accent)]">open →</span>
+                  )}
                 </span>
               </li>
             );

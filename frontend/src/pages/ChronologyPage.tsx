@@ -2,7 +2,6 @@ import { Suspense, lazy, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import ChronologyTimeline from '../components/chronology/ChronologyTimeline';
 import type { TimelineEvent } from '../utils/timeline';
-import { formatTimelineLabel } from '../utils/timeline';
 import { getFileTypeBadge } from '../styles/tokens';
 import MonoTag from '../components/ui/MonoTag';
 import Skeleton from '../components/shared/Skeleton';
@@ -40,9 +39,19 @@ const TYPE_ORDER = ['delay', 'disruption', 'excuse', 'decision', 'milestone', 'c
 /** Store row → the shape ChronologyTimeline already renders. */
 function toTimelineEvents(rows: ChronologyEvent[]): TimelineEvent[] {
   return rows.map((r) => ({
-    id: r.doc_id || undefined,
+    // The file name, not doc_id. These events come from the bulk corpus, whose
+    // documents have no registry entry — the viewer resolves them by file name
+    // through its chunk-text fallback, and a hash doc_id simply misses. This is
+    // the same substitution /library makes for the same documents
+    // (backend/api/library.py:_vectors_only_library_docs).
+    id: r.file_name || undefined,
     date: r.date,
-    label: formatTimelineLabel(r.date),
+    // Shown exactly as extracted. The store's dates are free-form because the
+    // ingest kept whatever the document said — "1905", "1970 to 1975",
+    // "28 March 2006". formatTimelineLabel assumes ISO and splits on
+    // whitespace, which turned "1 June 2007" into "1" and invented a month for
+    // "1905" ("Jan 1905"). Reformatting can only lose or fabricate here.
+    label: r.date || '—',
     type: r.event_type,
     badge: getFileTypeBadge(r.file_name),
     title: r.description || r.reason || r.file_name,
@@ -50,6 +59,7 @@ function toTimelineEvents(rows: ChronologyEvent[]): TimelineEvent[] {
     tag: r.event_type,
     note: r.reason || undefined,
     highlight: r.event_type === 'delay' || r.event_type === 'claim',
+    source: r.file_name || undefined,
   }));
 }
 
@@ -282,7 +292,7 @@ export default function ChronologyPage() {
               showFilters={false}
               caption="Project record"
               onEventClick={(e) =>
-                e.id && openDocument({ docId: e.id, fileName: e.title })
+                e.id && openDocument({ docId: e.id, fileName: e.source || e.id })
               }
             />
           )}
