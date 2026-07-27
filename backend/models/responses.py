@@ -35,6 +35,19 @@ class RelatedDoc(BaseModel):
     recipient: str = ""
 
 
+class ChartSpec(BaseModel):
+    """How to draw a SQL result, when it is worth drawing.
+
+    Derived from the shape of the returned columns, not asked of the LLM — the
+    model already does not compute the numbers, and it should not be deciding
+    how to present them either. Absent whenever the result does not plot
+    cleanly, which is the common case.
+    """
+    type: str                                       # "bar" | "line"
+    x: str                                          # categorical / date column
+    y: List[str] = Field(default_factory=list)      # numeric columns
+
+
 class SQLArtifact(BaseModel):
     generated_sql: str = ""
     tables_used: List[str] = Field(default_factory=list)
@@ -42,6 +55,7 @@ class SQLArtifact(BaseModel):
     preview_rows: List[dict] = Field(default_factory=list)
     source_file_id: str = ""
     source_file_name: str = ""
+    chart: Optional[ChartSpec] = None
 
 
 class ProviderAnswer(BaseModel):
