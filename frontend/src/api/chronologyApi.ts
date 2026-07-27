@@ -48,3 +48,41 @@ export async function getChronologySummary(): Promise<number> {
   const { data } = await apiClient.get<{ total_events: number }>('/chronology/summary');
   return data.total_events;
 }
+
+/* ── the authored chronologies ─────────────────────────────────────────
+   Separate from the event store above: written narratives of a known issue,
+   resolved by typing its subject. Matching is server-side and deterministic. */
+
+export interface ChronologySubject {
+  ref: string;
+  title: string;
+  summary: string;
+}
+
+export interface ChronologyEntry {
+  ref: string;
+  text: string;
+  sub: string[];
+}
+
+export type SubjectMatch =
+  | { status: 'match'; subject: ChronologySubject; score?: number; entries: ChronologyEntry[] }
+  | { status: 'ambiguous' | 'none'; candidates: ChronologySubject[] };
+
+export async function listChronologySubjects(): Promise<{
+  collection: string;
+  subjects: ChronologySubject[];
+}> {
+  const { data } = await apiClient.get('/chronology/subjects');
+  return data;
+}
+
+export async function matchChronologySubject(subject: string): Promise<SubjectMatch> {
+  const { data } = await apiClient.post<SubjectMatch>('/chronology/match', { subject });
+  return data;
+}
+
+export async function getChronologySubject(ref: string): Promise<SubjectMatch> {
+  const { data } = await apiClient.get<SubjectMatch>(`/chronology/subjects/${ref}`);
+  return data;
+}

@@ -14,6 +14,7 @@ this module is a thin, honest wrapper over them.
 from typing import Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
 
 from backend.core.security import get_current_user, UserContext
 
@@ -129,3 +130,75 @@ async def chronology_events(
         limit=_MAX_LIMIT,
     )
     return {"events": _scope_to_corpus(rows, user)[:limit]}
+
+
+# ── the authored chronologies ───────────────────────────────────────────
+# A second, separate thing from the event store above. The store is extracted
+# from the corpus and is browsed with filters; these are written narratives of
+# a known issue, resolved by typing its subject. Both belong to the chronology
+# area, and neither goes near an LLM.
+
+
+class SubjectRequest(BaseModel):
+    subject: str
+
+
+def _doc_out(doc) -> Dict:
+    return {"ref": doc.ref, "title": doc.title, "summary": doc.summary}
+
+
+@router.get("/chronology/subjects")
+async def chronology_subjects(_: UserContext = Depends(get_current_user)) -> Dict:
+    """Every authored chronology — what the picker offers when a typed subject
+    matches nothing, and what the area lists before anything is typed."""
+    from src.chronology_library import COLLECTION, list_docs
+
+    return {"collection": COLLECTION, "subjects": [_doc_out(d) for d in list_docs()]}
+
+
+@router.post("/chronology/match")
+async def chronology_match(
+    body: SubjectRequest, _: UserContext = Depends(get_current_user),
+) -> Dict:
+    """Resolve a typed subject to one chronology and return its narrative.
+
+    Token scoring with phrase bonuses, no LLM: the mapping from subject to
+    document is fixed, and a model that occasionally picks the wrong
+    chronology for a dispute is worse than one that asks. A close runner-up
+    therefore returns "ambiguous" rather than a guess, and a weak best score
+    returns "none" with the full list to choose from.
+    """
+    from src.chronology_library import get_entries, match
+
+    result = match(body.subject or "")
+    status = result["status"]
+
+    if status == "match":
+        doc = result["doc"]
+        return {
+            "status": "match",
+            "subject": _doc_out(doc),
+            "score": result["score"],
+            "entries": get_entries(doc.ref),
+        }
+
+    return {
+        "status": status,
+        "candidates": [_doc_out(r["doc"]) for r in result["ranked"]],
+    }
+
+
+@router.get("/chronology/subjects/{ref}")
+async def chronology_subject(
+    ref: str, _: UserContext = Depends(get_current_user),
+) -> Dict:
+    """One chronology by reference — what a candidate chip resolves to when the
+    typed subject was ambiguous or matched nothing."""
+    from fastapi import HTTPException
+
+    from src.chronology_library import get_doc, get_entries
+
+    doc = get_doc(ref)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="No such chronology")
+    return {"status": "match", "subject": _doc_out(doc), "entries": get_entries(ref)}

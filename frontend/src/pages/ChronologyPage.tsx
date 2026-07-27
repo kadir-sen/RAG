@@ -7,7 +7,18 @@ import { getFileTypeBadge } from '../styles/tokens';
 import MonoTag from '../components/ui/MonoTag';
 import Skeleton from '../components/shared/Skeleton';
 import { useChronologyEvents, useChronologyFacets } from '../hooks/useChronology';
-import type { ChronologyEvent } from '../api/chronologyApi';
+import SubjectBar from '../components/chronology/SubjectBar';
+import SubjectNarrative from '../components/chronology/SubjectNarrative';
+import {
+  getChronologySubject,
+  matchChronologySubject,
+} from '../api/chronologyApi';
+import type {
+  ChronologyEvent,
+  ChronologyEntry,
+  ChronologySubject,
+  SubjectMatch,
+} from '../api/chronologyApi';
 import { useUIStore } from '../stores/uiStore';
 
 const RightDocViewer = lazy(() => import('../components/viewer/RightDocViewer'));
@@ -43,6 +54,50 @@ function toTimelineEvents(rows: ChronologyEvent[]): TimelineEvent[] {
 }
 
 export default function ChronologyPage() {
+  /* Two ways in, and they do not mix: type a subject and read that issue's
+     authored chronology, or leave the bar empty and browse the events the
+     corpus produced. The narrative wins while one is open, because a
+     chronology being read should not have a filter list competing with it. */
+  const [subject, setSubject] = useState<ChronologySubject | null>(null);
+  const [entries, setEntries] = useState<ChronologyEntry[]>([]);
+  const [candidates, setCandidates] = useState<ChronologySubject[]>([]);
+  const [barStatus, setBarStatus] = useState<'idle' | 'loading' | 'match' | 'ambiguous' | 'none'>('idle');
+  const [lastSubject, setLastSubject] = useState('');
+
+  const applyMatch = (r: SubjectMatch) => {
+    if (r.status === 'match') {
+      setSubject(r.subject);
+      setEntries(r.entries);
+      setCandidates([]);
+      setBarStatus('match');
+    } else {
+      setSubject(null);
+      setEntries([]);
+      setCandidates(r.candidates);
+      setBarStatus(r.status);
+    }
+  };
+
+  const handleSubject = async (s: string) => {
+    setLastSubject(s);
+    setBarStatus('loading');
+    try {
+      applyMatch(await matchChronologySubject(s));
+    } catch {
+      setBarStatus('none');
+      setCandidates([]);
+    }
+  };
+
+  const handlePick = async (ref: string) => {
+    setBarStatus('loading');
+    try {
+      applyMatch(await getChronologySubject(ref));
+    } catch {
+      setBarStatus('none');
+    }
+  };
+
   const [eventType, setEventType] = useState<string | null>(null);
   const [actor, setActor] = useState('');
   const [dateFrom, setDateFrom] = useState('');
@@ -153,9 +208,30 @@ export default function ChronologyPage() {
         )}
       </aside>
 
-      {/* ── the timeline ───────────────────────────────────────── */}
-      <div className="flex-1 min-w-0 overflow-y-auto">
+      {/* ── subject bar + whichever view it selected ───────────── */}
+      <div className="flex-1 min-w-0 flex flex-col min-h-0">
+        <SubjectBar
+          onSubmit={handleSubject}
+          onPick={handlePick}
+          status={barStatus}
+          candidates={candidates}
+          lastSubject={lastSubject}
+        />
+        <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-4 md:px-8 py-8">
+          {subject ? (
+            <SubjectNarrative
+              subject={subject}
+              entries={entries}
+              onClear={() => {
+                setSubject(null);
+                setEntries([]);
+                setCandidates([]);
+                setBarStatus('idle');
+              }}
+            />
+          ) : (
+          <>
           <header className="mb-6">
             <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
               Module · 01
@@ -210,6 +286,9 @@ export default function ChronologyPage() {
               }
             />
           )}
+          </>
+          )}
+        </div>
         </div>
       </div>
 

@@ -1,0 +1,76 @@
+import type { ChronologyEntry, ChronologySubject } from '../../api/chronologyApi';
+
+/**
+ * An authored chronology, told in full.
+ *
+ * The source is a numbered narrative ("6.4.1 The strategy for delivering…"),
+ * so it is drawn as one: the reference in mono against a hairline rule, the
+ * paragraph beside it, sub-points indented under their entry. Same revision
+ * column as the activity feed and the step trail — a numbered sequence with a
+ * rule down its left is the sheet's way of saying "these happened in order".
+ */
+interface Props {
+  subject: ChronologySubject;
+  entries: ChronologyEntry[];
+  onClear: () => void;
+}
+
+export default function SubjectNarrative({ subject, entries, onClear }: Props) {
+  return (
+    <article className="mt-5">
+      <header className="pb-3 border-b border-[var(--border)]">
+        <div className="flex items-baseline justify-between gap-4">
+          <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
+            Chronology · {subject.ref}
+          </p>
+          {/* Without this the narrative is a one-way door — there is no other
+              way back to the events the corpus produced. */}
+          <button
+            type="button"
+            onClick={onClear}
+            className="shrink-0 font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+          >
+            ← all events
+          </button>
+        </div>
+        <h2 className="mt-1.5 text-[17px] font-semibold tracking-tight text-[var(--text-primary)]">
+          {subject.title}
+        </h2>
+        <p className="mt-1.5 text-[12px] text-[var(--text-secondary)] max-w-2xl">
+          {subject.summary}
+        </p>
+      </header>
+
+      {entries.length === 0 ? (
+        <p className="mt-4 text-[12px] text-[var(--text-muted)]">
+          This chronology has no readable entries — the source document may be
+          missing from data/chronologies/.
+        </p>
+      ) : (
+        <ol className="mt-4 flex flex-col border-l border-[var(--border)]">
+          {entries.map((e) => (
+            <li key={e.ref} className="pl-4 py-2.5">
+              <span className="font-mono text-[10px] tabular-nums tracking-[0.1em] text-[var(--text-muted)]">
+                {e.ref}
+              </span>
+              <p className="mt-1 text-[13px] leading-6 text-[var(--text-primary)]">{e.text}</p>
+              {e.sub.length > 0 && (
+                <ul className="mt-2 flex flex-col gap-1.5 pl-4 border-l border-[var(--border)]">
+                  {e.sub.map((s, i) => (
+                    <li key={i} className="text-[12px] leading-5 text-[var(--text-secondary)]">
+                      {s}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+
+      <p className="mt-5 font-mono text-[10px] tracking-[0.14em] uppercase text-[var(--text-muted)]">
+        {entries.length} entries · end of chronology
+      </p>
+    </article>
+  );
+}

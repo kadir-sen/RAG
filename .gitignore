@@ -45,7 +45,11 @@ env/
 *~
 
 # Data directories (exclude uploaded files)
-data/
+# data/* rather than data/ so a subdirectory can be re-included below — git
+# cannot descend into an excluded directory, so the negation has to sit
+# against an entry that only excludes the children.
+data/*
+!data/chronologies/
 uploads/
 storage/
 
