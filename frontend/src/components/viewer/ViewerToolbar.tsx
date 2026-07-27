@@ -37,7 +37,7 @@ export default function ViewerToolbar({
               className="shrink-0 font-mono text-[10px] tracking-wider px-1.5 py-0.5 border rounded inline-flex items-center gap-1.5"
               style={{ borderColor: typeBadge.color, color: typeBadge.color }}
             >
-              <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: typeBadge.color }} />
+              <span aria-hidden="true" className="w-1.5 h-1.5" style={{ background: typeBadge.color }} />
               {typeBadge.label}
             </span>
           )}
@@ -72,7 +72,7 @@ export default function ViewerToolbar({
           {onExport && (
             <button
               onClick={onExport}
-              className="px-2 py-1 rounded text-[10px] font-mono tracking-wide bg-[var(--accent-glow)] text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white transition-colors whitespace-nowrap"
+              className="px-2 py-1 rounded text-[10px] font-mono tracking-wide bg-[var(--accent-glow)] text-[var(--accent)] hover:bg-[var(--accent)] hover:text-[var(--accent-ink)] transition-colors whitespace-nowrap"
             >
               ↓ CSV
             </button>
@@ -80,7 +80,7 @@ export default function ViewerToolbar({
           <button
             onClick={onClose}
             aria-label="Close viewer"
-            className="w-7 h-7 rounded-lg flex items-center justify-center bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--danger)] hover:text-white transition-colors"
+            className="w-7 h-7 rounded-lg flex items-center justify-center bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--danger)] hover:text-[var(--accent-ink)] transition-colors"
           >
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="4" y1="4" x2="12" y2="12" />

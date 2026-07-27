@@ -26,7 +26,7 @@ export default function UserMenu() {
   if (!user) {
     return (
       <div
-        className="w-7 h-7 rounded-full bg-[var(--bg-surface)] grid place-items-center text-[var(--text-muted)] text-[11px]"
+        className="w-7 h-7 rounded-[2px] border border-[var(--border)] grid place-items-center font-mono text-[var(--text-muted)] text-[11px]"
         aria-label="No user"
       >
         ?
@@ -41,7 +41,7 @@ export default function UserMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Account menu for ${user.display_name}`}
-        className="w-7 h-7 rounded-full bg-gradient-to-br from-[#6366F1] to-[#8B5CF6] flex items-center justify-center text-white text-[11px] font-semibold hover:opacity-90 transition-opacity"
+        className="w-7 h-7 rounded-[2px] bg-[var(--ink)] flex items-center justify-center font-mono text-[var(--accent-ink)] text-[11px] font-bold hover:opacity-88 transition-opacity"
       >
         {initial(user.display_name || user.username)}
       </button>
@@ -52,7 +52,7 @@ export default function UserMenu() {
           className="absolute right-0 mt-2 w-56 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md shadow-xl z-50 overflow-hidden"
         >
           <div className="px-3 py-3 border-b border-[var(--border)]">
-            <div className="text-[13px] text-white font-medium truncate">
+            <div className="text-[13px] text-[var(--text-primary)] font-medium truncate">
               {user.display_name || user.username}
             </div>
             <div className="font-mono text-[10px] text-[var(--text-muted)] tracking-wide truncate mt-0.5">
@@ -66,7 +66,7 @@ export default function UserMenu() {
               logout();
               window.location.assign('/login');
             }}
-            className="w-full text-left px-3 py-2.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-white font-mono tracking-wide transition-colors"
+            className="w-full text-left px-3 py-2.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] font-mono tracking-wide transition-colors"
           >
             Sign out →
           </button>

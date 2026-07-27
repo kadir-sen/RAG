@@ -17,13 +17,14 @@ function glyph(kind: string): string {
   return KIND_GLYPH[kind] ?? '·';
 }
 
+/* Square pips, not circles — the sheet has no round corners anywhere else. */
 function BouncingDots() {
   return (
     <span className="inline-flex gap-1" aria-hidden="true">
       {[0, 1, 2].map((i) => (
         <span
           key={i}
-          className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] animate-bounce"
+          className="w-1 h-1 bg-[var(--accent)] animate-bounce"
           style={{ animationDelay: `${i * 0.15}s` }}
         />
       ))}
@@ -48,9 +49,13 @@ export default function ActivityFeed({ requestId, visible }: Props) {
 
   if (!steps.length) {
     return (
-      <div className="flex items-center gap-2 px-4 py-3" role="status" aria-label="Working">
-        <BouncingDots />
-        <span className="text-sm text-[var(--text-secondary)]">thinking…</span>
+      <div className="px-2 md:px-6 py-3" role="status" aria-label="Working">
+        <div className="max-w-3xl flex items-center gap-2 pl-3 border-l border-[var(--border)]">
+          <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
+            working
+          </span>
+          <BouncingDots />
+        </div>
       </div>
     );
   }
@@ -58,23 +63,34 @@ export default function ActivityFeed({ requestId, visible }: Props) {
   const last = steps.length - 1;
   return (
     <div
-      className="px-4 py-3"
+      className="px-2 md:px-6 py-3"
       role="status"
       aria-live="polite"
       aria-label="Assistant activity"
     >
-      <ul className="flex flex-col gap-1.5">
+      {/* A revision column: hairline rule down the left, sequence numbers in
+          mono against it. The running step is struck in to full ink; settled
+          ones fall back to annotation grey with a check. */}
+      <ol className="max-w-3xl flex flex-col border-l border-[var(--border)]">
         {steps.map((s: ActivityStep, i: number) => {
           const active = i === last;
           return (
             <li
               key={s.seq}
-              className={`flex items-center gap-2 text-[13px] transition-colors ${
-                active ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'
+              className={`flex items-baseline gap-2.5 pl-3 py-[3px] text-[13px] transition-colors ${
+                active
+                  ? 'text-[var(--text-primary)] border-l border-[var(--ink)] -ml-px'
+                  : 'text-[var(--text-muted)]'
               }`}
             >
               <span
-                className={`font-mono text-[11px] w-3 text-center ${
+                className="font-mono text-[10px] tabular-nums text-[var(--text-muted)] w-4 shrink-0"
+                aria-hidden="true"
+              >
+                {String(i + 1).padStart(2, '0')}
+              </span>
+              <span
+                className={`font-mono text-[11px] w-3 shrink-0 text-center ${
                   active ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'
                 }`}
                 aria-hidden="true"
@@ -87,11 +103,11 @@ export default function ActivityFeed({ requestId, visible }: Props) {
                   {s.detail}
                 </span>
               )}
-              {active && <span className="ml-1"><BouncingDots /></span>}
+              {active && <span className="ml-1 self-center"><BouncingDots /></span>}
             </li>
           );
         })}
-      </ul>
+      </ol>
     </div>
   );
 }

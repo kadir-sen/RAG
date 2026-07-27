@@ -27,6 +27,7 @@ from backend.api import (
     admin_users,
     auth,
     chat,
+    chronology,
     conversations,
     feedback,
     files,
@@ -102,6 +103,9 @@ def create_app() -> FastAPI:
     # Authenticated routers (chat already injects user explicitly; the router-
     # level dep is a belt-and-suspenders gate).
     app.include_router(chat.router, prefix="/api", tags=["chat"], dependencies=auth_dep)
+    app.include_router(
+        chronology.router, prefix="/api", tags=["chronology"], dependencies=auth_dep,
+    )
     app.include_router(
         conversations.router, prefix="/api", tags=["conversations"], dependencies=auth_dep,
     )

@@ -7,7 +7,6 @@ const TONE_BY_LABEL: Record<string, 'accent' | 'success' | 'warning' | 'danger' 
   doc_list: 'accent',
   email_trace: 'accent',
   sql_result: 'success',
-  timeline: 'accent',
   // indexing status
   completed: 'success',
   indexing: 'accent',
@@ -19,10 +18,10 @@ const TONE_BY_LABEL: Record<string, 'accent' | 'success' | 'warning' | 'danger' 
 
 const TONE_CLASSES: Record<string, string> = {
   accent:  'text-[var(--accent)] bg-[var(--accent-glow)] border-[var(--accent)]/40',
-  success: 'text-[var(--accent-green)] bg-[rgba(34,197,94,0.12)] border-[var(--accent-green)]/40',
-  warning: 'text-[var(--warning)] bg-[rgba(199,125,44,0.12)] border-[var(--warning)]/40',
-  danger:  'text-[var(--danger)] bg-[rgba(239,68,68,0.12)] border-[var(--danger)]/40',
-  muted:   'text-[var(--text-secondary)] bg-[rgba(255,255,255,0.04)] border-[var(--border)]',
+  success: 'text-[var(--accent-green)] bg-[var(--wash)] border-[var(--accent-green)]/40',
+  warning: 'text-[var(--warning)] bg-[var(--wash)] border-[var(--warning)]/40',
+  danger:  'text-[var(--danger)] bg-[var(--wash)] border-[var(--danger)]/40',
+  muted:   'text-[var(--text-secondary)] bg-[var(--wash)] border-[var(--border)]',
 };
 
 export default function Badge({ label }: { label: string }) {

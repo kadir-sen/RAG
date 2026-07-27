@@ -47,15 +47,15 @@ export default function LoginPage() {
       <div className="w-full max-w-md animate-fade-in-up">
         <div className="flex items-center gap-4 mb-7">
           <div
-            className="w-14 h-14 grid place-items-center border border-[var(--border)] bg-[rgba(255,255,255,0.04)] rounded"
+            className="w-14 h-14 grid place-items-center border border-[var(--border)] bg-[var(--wash)] rounded"
             aria-hidden="true"
           >
-            <span className="font-mono font-bold text-white tracking-wider text-lg">CO</span>
+            <span className="font-mono font-bold text-[var(--text-primary)] tracking-wider text-lg">CO</span>
           </div>
           <div>
-            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-white">
+            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
               <span>CO</span>
-              <span className="text-[var(--accent)]">Air</span>
+              <span className="text-[var(--brand)]">Air</span>
             </h1>
             <p className="text-xs md:text-sm text-[var(--text-secondary)] font-mono mt-1 tracking-wide">
               sign in to continue
@@ -65,7 +65,7 @@ export default function LoginPage() {
 
         <form
           onSubmit={handleSubmit}
-          className="bg-[rgba(255,255,255,0.03)] border border-[var(--border)] rounded-md overflow-hidden"
+          className="bg-[var(--wash)] border border-[var(--border)] rounded-md overflow-hidden"
         >
           <div className="flex items-center gap-2 px-4 pt-4">
             <span className="font-mono text-[10px] tracking-[0.18em] px-1.5 py-0.5 border border-[var(--border)] text-[var(--text-secondary)] rounded">
@@ -113,7 +113,7 @@ export default function LoginPage() {
           </div>
 
           {error && (
-            <div className="mx-4 mb-4 px-3 py-2 rounded border border-[var(--danger)] bg-[rgba(220,38,38,0.08)]">
+            <div className="mx-4 mb-4 px-3 py-2 rounded border border-[var(--danger)] bg-[var(--wash)]">
               <span className="font-mono text-[10px] tracking-[0.16em] text-[var(--danger)]">
                 [ ERROR · {error === 'invalid_credentials' ? '401' : 'AUTH'} ]
               </span>
@@ -130,7 +130,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading || !username.trim() || !password}
-            className="w-full px-4 py-3 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:bg-[rgba(255,255,255,0.08)] disabled:text-[var(--text-muted)] text-white font-mono text-xs tracking-[0.18em] uppercase transition-colors"
+            className="w-full px-4 py-3 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:bg-[var(--wash-firm)] disabled:text-[var(--text-muted)] text-[var(--accent-ink)] font-mono text-xs tracking-[0.18em] uppercase transition-colors"
           >
             {loading ? '· Authenticating ·' : 'Enter →'}
           </button>

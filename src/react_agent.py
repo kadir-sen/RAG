@@ -65,7 +65,6 @@ _TOOLS_DOC = """Available tools (prefer survey → read):
 - read_documents: deep-read the full text of specific documents you picked from a survey. action_input = comma-separated file names from the survey list.
 - document_search: broad semantic search that returns text excerpts directly (use only when a survey is not enough). action_input = a focused search query.
 - sql_query: query structured project data tables (quantities, hours, costs). action_input = a natural-language data question.
-- timeline_query: chronological sequence of notices / correspondence. action_input = a timeline question.
 - file_list: list or count documents by topic. action_input = a topic or filter.
 - finish: give the final answer. action_input = the complete answer text for the user.
 
@@ -259,11 +258,6 @@ class ReActAgent:
                     "result_data": r.get("result_data"),
                     "result_columns": r.get("result_columns"),
                 }
-
-            if action == "timeline_query":
-                _emit("searching", "searching the timeline…", q[:80])
-                r = self.router._handle_timeline_query(q)
-                return (r.get("answer") or "(no timeline result)"), r.get("sources", []), {}
 
             if action == "file_list":
                 _emit("tool", "listing documents…", q[:80])

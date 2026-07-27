@@ -7,17 +7,28 @@ interface Props {
   initials?: string;
 }
 
+/**
+ * Speaker mark beside a message.
+ *
+ * Drawn as a registration square rather than a coloured bubble: the
+ * assistant is an ink-filled block (it issues the answer), the reader is
+ * a hairlined block (an annotation made on the sheet).
+ */
 function Avatar({ variant, initials }: Props) {
   const label = initials ?? (variant === 'assistant' ? 'A' : 'U');
-  const gradient =
-    variant === 'assistant'
-      ? 'from-[#6366F1] to-[#A855F7]'
-      : 'from-[#7C3AED] to-[#9333EA]';
+  const assistant = variant === 'assistant';
   return (
     <div
       aria-hidden="true"
-      className={`shrink-0 rounded-full bg-gradient-to-br ${gradient} text-white text-[11px] font-semibold flex items-center justify-center select-none`}
-      style={{ width: 'var(--avatar-size)', height: 'var(--avatar-size)' }}
+      className="shrink-0 grid place-items-center select-none font-mono text-[10px] font-bold tracking-wider"
+      style={{
+        width: 'var(--avatar-size)',
+        height: 'var(--avatar-size)',
+        borderRadius: 2,
+        background: assistant ? 'var(--ink)' : 'transparent',
+        border: `1px solid ${assistant ? 'var(--ink)' : 'var(--ink-soft)'}`,
+        color: assistant ? 'var(--accent-ink)' : 'var(--text-secondary)',
+      }}
     >
       {label}
     </div>

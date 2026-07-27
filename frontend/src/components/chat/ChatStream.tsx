@@ -39,7 +39,7 @@ export default function ChatStream({ messages, isLoading, onDocClick, onRetry, a
 
   return (
     <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto py-4 md:py-6" role="log" aria-label="Chat messages" aria-live="polite">
-      <div className="max-w-6xl mx-auto px-3 md:px-6">
+      <div className="max-w-5xl mx-auto px-2 md:px-6">
         {messages.map((msg) => (
           <MessageItem key={msg.id} message={msg} onDocClick={onDocClick} onRetry={onRetry} />
         ))}

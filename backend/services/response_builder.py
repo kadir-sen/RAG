@@ -83,6 +83,7 @@ from backend.models.responses import (
     Citation,
     ProviderAnswer,
     RelatedDoc,
+    ChartSpec,
     SQLArtifact,
 )
 
@@ -108,7 +109,6 @@ INTENT_MAP = {
     "document": "answer",
     "data": "sql_result",
     "hybrid": "answer",
-    "timeline": "timeline",   # chronological list → vertical timeline (was doc_list table)
     "thread": "email_trace",
     "draft": "answer",
     "file_list": "doc_list",  # "what files exist" → flat doc table
@@ -446,14 +446,61 @@ def _build_sql_artifact(
             if isinstance(part, list):
                 rows.extend(part)
 
+    preview = _json_safe(rows[:20])
     return SQLArtifact(
         generated_sql=sql,
         tables_used=tables_used,
         row_count=len(rows),
-        preview_rows=_json_safe(rows[:20]),
+        preview_rows=preview,
         source_file_id=source_file_id,
         source_file_name=source_file_name,
+        chart=_infer_chart(preview),
     )
+
+
+# A result has to earn a chart. Two rows is a sentence, forty categories is a
+# wall of labels — both read better as the table that is already there.
+_CHART_MIN_ROWS = 3
+_CHART_MAX_ROWS = 24
+_DATE_HINTS = ("date", "month", "week", "day", "period", "year")
+
+
+def _infer_chart(rows: List[Dict[str, Any]]) -> "ChartSpec | None":
+    """Decide whether a result plots, from the shape of its columns alone.
+
+    Deliberately conservative and deliberately not an LLM call: the model does
+    not compute these numbers and should not be choosing how to draw them
+    either. One label column plus at least one numeric column, and a row count
+    in a range where a chart actually helps — otherwise None and the table
+    stands on its own.
+    """
+    if not (_CHART_MIN_ROWS <= len(rows) <= _CHART_MAX_ROWS):
+        return None
+
+    cols = list(rows[0].keys())
+    if len(cols) < 2:
+        return None
+
+    def numeric(col: str) -> bool:
+        vals = [r.get(col) for r in rows if r.get(col) is not None]
+        return bool(vals) and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals)
+
+    numeric_cols = [c for c in cols if numeric(c)]
+    label_cols = [c for c in cols if c not in numeric_cols]
+    if not numeric_cols or not label_cols:
+        return None
+
+    # The x axis is the first label column; a date-ish name makes it a line,
+    # because a sequence over time reads as a trend and categories do not.
+    x = label_cols[0]
+    kind = "line" if any(h in x.lower() for h in _DATE_HINTS) else "bar"
+
+    # Every label distinct, or the bars are stacking two things under one tick.
+    labels = [str(r.get(x, "")) for r in rows]
+    if len(set(labels)) != len(labels):
+        return None
+
+    return ChartSpec(type=kind, x=x, y=numeric_cols[:3])
 
 
 def _extract_cta(result_data: Any) -> CallToAction | None:

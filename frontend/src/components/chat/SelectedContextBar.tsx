@@ -33,7 +33,7 @@ export default function SelectedContextBar() {
           >
             {/* image-like type tile */}
             <span
-              className="grid place-items-center w-8 h-8 rounded border border-[var(--border)] bg-[rgba(255,255,255,0.03)] font-mono text-[8px] font-semibold tracking-wider text-[var(--text-secondary)]"
+              className="grid place-items-center w-8 h-8 rounded border border-[var(--border)] bg-[var(--wash)] font-mono text-[8px] font-semibold tracking-wider text-[var(--text-secondary)]"
               style={{ borderColor: badge.dot }}
               aria-hidden="true"
             >

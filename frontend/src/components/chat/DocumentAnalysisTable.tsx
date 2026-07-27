@@ -22,7 +22,7 @@ export default function DocumentAnalysisTable({
 }: Props) {
   if (events.length === 0) {
     return (
-      <div className={`rounded-md border border-[var(--border)] bg-[rgba(255,255,255,0.02)] px-4 py-8 text-center ${className}`}>
+      <div className={`rounded-md border border-[var(--border)] bg-[var(--wash)] px-4 py-8 text-center ${className}`}>
         <p className="font-mono text-[11px] text-[var(--text-muted)]">
           No documents found{topic ? ` for "${topic}"` : ''}.
         </p>
@@ -39,7 +39,7 @@ export default function DocumentAnalysisTable({
         {topic && <MonoTag>topic · {topic}</MonoTag>}
       </div>
 
-      <div className="rounded-md border border-[var(--border)] bg-[rgba(255,255,255,0.02)] overflow-hidden">
+      <div className="rounded-md border border-[var(--border)] bg-[var(--wash)] overflow-hidden">
         <div className="flex items-center justify-between px-4 py-2 border-b border-dashed border-[var(--border)]">
           <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-secondary)]">
             {caption ?? 'Chronological roadmap'}
@@ -86,7 +86,7 @@ export default function DocumentAnalysisTable({
                             {e.tag}
                           </span>
                         )}
-                        <span className="text-[13px] font-semibold text-white break-words">
+                        <span className="text-[13px] font-semibold text-[var(--text-primary)] break-words">
                           {e.title}
                         </span>
                       </div>
@@ -96,7 +96,7 @@ export default function DocumentAnalysisTable({
                         className="inline-flex items-center gap-1.5 font-mono text-[10px] tracking-wider"
                         style={{ color: dot }}
                       >
-                        <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
+                        <span aria-hidden="true" className="w-1.5 h-1.5" style={{ background: dot }} />
                         {e.type}
                       </span>
                     </td>

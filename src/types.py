@@ -20,7 +20,6 @@ class QueryType(Enum):
     DOCUMENT = "document"
     DATA = "data"
     HYBRID = "hybrid"
-    TIMELINE = "timeline"
     THREAD = "thread"      # correspondence thread view
     DRAFT = "draft"        # draft response generation
     FILE_LIST = "file_list"  # database file listing
@@ -43,7 +42,6 @@ class RouterDecision:
 class StepType(Enum):
     SQL = "sql"
     DOCUMENT = "document"
-    TIMELINE = "timeline"
     COMBINE = "combine"
     FILTER = "filter"
 
@@ -175,7 +173,7 @@ class SQLGenerationResult(BaseModel):
 
 class PlanStepSchema(BaseModel):
     """Schema for a single plan step from LLM."""
-    type: str  # sql | document | timeline | combine
+    type: str  # sql | document | combine
     description: str
     instruction: str
     depends_on: List[int] = []
@@ -183,7 +181,7 @@ class PlanStepSchema(BaseModel):
     @field_validator("type")
     @classmethod
     def valid_type(cls, v: str) -> str:
-        allowed = {"sql", "document", "timeline", "combine", "filter"}
+        allowed = {"sql", "document", "combine", "filter"}
         if v.lower() not in allowed:
             raise ValueError(f"Invalid step type: {v}. Must be one of {allowed}")
         return v.lower()
@@ -205,7 +203,7 @@ class ClassificationResult(BaseModel):
     @field_validator("query_type")
     @classmethod
     def valid_query_type(cls, v: str) -> str:
-        allowed = {"DOCUMENT", "DATA", "TIMELINE", "HYBRID"}
+        allowed = {"DOCUMENT", "DATA", "HYBRID"}
         upper = v.upper()
         if upper not in allowed:
             raise ValueError(f"Invalid query type: {v}")

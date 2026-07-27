@@ -29,6 +29,13 @@ export interface RelatedDoc {
   recipient: string;
 }
 
+/** How the backend suggests drawing a SQL result. Absent when it does not plot. */
+export interface ChartSpec {
+  type: 'bar' | 'line';
+  x: string;
+  y: string[];
+}
+
 export interface SQLArtifact {
   generated_sql: string;
   tables_used: string[];
@@ -36,6 +43,7 @@ export interface SQLArtifact {
   preview_rows: Record<string, unknown>[];
   source_file_id: string;
   source_file_name: string;
+  chart?: ChartSpec | null;
 }
 
 export interface ProviderAnswer {
@@ -75,7 +83,7 @@ export interface LoginResponse {
 }
 
 export interface ChatResponse {
-  ui_intent: 'answer' | 'doc_list' | 'timeline' | 'email_trace' | 'sql_result';
+  ui_intent: 'answer' | 'doc_list' | 'email_trace' | 'sql_result';
   assistant_text: string;
   citations: Citation[];
   related_docs: RelatedDoc[];

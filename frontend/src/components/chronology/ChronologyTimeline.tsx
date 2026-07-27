@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import MonoTag from '../ui/MonoTag';
-import TimelineNode from '../ui/TimelineNode';
+import TimelineNode from './TimelineNode';
 import type { TimelineEvent } from '../../utils/timeline';
 
 export type { TimelineEvent } from '../../utils/timeline';
@@ -17,7 +17,7 @@ interface Props {
   caption?: string;
 }
 
-export default function DocumentAnalysisTimeline({
+export default function ChronologyTimeline({
   events,
   topic,
   emptyState,
@@ -28,7 +28,7 @@ export default function DocumentAnalysisTimeline({
 }: Props) {
   if (events.length === 0) {
     return (
-      <div className={`rounded-md border border-[var(--border)] bg-[rgba(255,255,255,0.02)] px-4 py-8 text-center ${className}`}>
+      <div className={`rounded-md border border-[var(--border)] bg-[var(--wash)] px-4 py-8 text-center ${className}`}>
         {emptyState ?? (
           <p className="font-mono text-[11px] text-[var(--text-muted)]">
             No documents found{topic ? ` for "${topic}"` : ''}.
@@ -55,7 +55,7 @@ export default function DocumentAnalysisTimeline({
             const dot = sample?.badge.dot ?? 'var(--text-muted)';
             return (
               <MonoTag key={t}>
-                <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
+                <span aria-hidden="true" className="w-1.5 h-1.5" style={{ background: dot }} />
                 {t} · {counts[t]}
               </MonoTag>
             );
@@ -63,7 +63,7 @@ export default function DocumentAnalysisTimeline({
         </div>
       )}
 
-      <div className="rounded-md border border-[var(--border)] bg-[rgba(255,255,255,0.02)] overflow-hidden">
+      <div className="rounded-md border border-[var(--border)] bg-[var(--wash)] overflow-hidden">
         <div className="flex items-center justify-between px-4 py-2 border-b border-dashed border-[var(--border)]">
           <span className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-secondary)]">
             {caption ?? 'Chronological roadmap'}
@@ -91,7 +91,7 @@ export default function DocumentAnalysisTimeline({
                   type="button"
                   disabled={!clickable}
                   onClick={() => onEventClick?.(e)}
-                  className="text-left rounded-md border bg-[rgba(255,255,255,0.03)] hover:bg-[rgba(var(--accent-rgb),0.06)] transition-colors px-3 py-2.5 disabled:cursor-default disabled:hover:bg-[rgba(255,255,255,0.03)]"
+                  className="text-left rounded-md border bg-[var(--wash)] hover:bg-[rgba(var(--accent-rgb),0.06)] transition-colors px-3 py-2.5 disabled:cursor-default disabled:hover:bg-[var(--wash)]"
                   style={{
                     borderColor: e.highlight ? 'var(--accent)' : 'var(--border)',
                     background: e.highlight ? 'rgba(var(--accent-rgb), 0.08)' : undefined,
@@ -106,7 +106,7 @@ export default function DocumentAnalysisTimeline({
                         {e.tag}
                       </span>
                     )}
-                    <span className="text-[13px] md:text-sm font-semibold text-white">
+                    <span className="text-[13px] md:text-sm font-semibold text-[var(--text-primary)]">
                       {e.title}
                     </span>
                   </div>

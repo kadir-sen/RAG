@@ -12,7 +12,7 @@ import SqlArtifact from './SqlArtifact';
 import EmailTraceResponse from './EmailTraceResponse';
 import CtaButton from './CtaButton';
 import DocumentAnalysisTable from './DocumentAnalysisTable';
-import DocumentAnalysisTimeline, { mapRelatedDocsToTimeline } from './DocumentAnalysisTimeline';
+import { mapRelatedDocsToTimeline } from '../../utils/timeline';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -59,18 +59,27 @@ function StepTrail({ steps }: { steps: ActivityStep[] }) {
   if (!steps.length) return null;
   return (
     <details className="mb-2 group/steps">
-      <summary className="cursor-pointer list-none text-[10px] font-mono uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-secondary)] select-none">
-        steps ({steps.length})
+      {/* Mono tag in the sheet's label convention (MODE.01, ACCESS · 01), and
+          the same numbered revision column the live ActivityFeed draws — the
+          trail is that feed, settled. */}
+      <summary className="cursor-pointer list-none inline-block px-1.5 py-0.5 border border-[var(--border)] rounded-[2px] text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--border-light)] select-none transition-colors">
+        steps · {steps.length}
       </summary>
-      <ul className="mt-1.5 flex flex-col gap-1 border-l border-[var(--border)] pl-3">
-        {steps.map((s) => (
-          <li key={s.seq} className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
-            <span className="font-mono text-[var(--accent)]">✓</span>
+      <ol className="mt-1.5 flex flex-col border-l border-[var(--border)]">
+        {steps.map((s, i) => (
+          <li
+            key={s.seq}
+            className="flex items-baseline gap-2.5 pl-3 py-[2px] text-[11px] text-[var(--text-muted)]"
+          >
+            <span className="font-mono text-[10px] tabular-nums w-4 shrink-0" aria-hidden="true">
+              {String(i + 1).padStart(2, '0')}
+            </span>
+            <span className="font-mono w-3 shrink-0 text-center text-[var(--accent)]" aria-hidden="true">✓</span>
             <span className="truncate">{s.label}</span>
             {s.detail && <span className="font-mono text-[10px] opacity-70 truncate">{s.detail}</span>}
           </li>
         ))}
-      </ul>
+      </ol>
     </details>
   );
 }
@@ -87,16 +96,17 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
   // → ui_intent "doc_list") with related documents, render them as a single
   // clickable, chronological table on the home page — the rich "document
   // analysis" output without needing a dedicated mode. Replaces the flat
-  // doc-list table / timeline / chip strip so we never stack two views.
+  // doc-list table / chip strip so we never stack two views.
   const relatedCount = response?.related_docs?.length ?? 0;
-  // Chronological LIST query (TIMELINE) → vertical timeline. FILE_LIST → table.
-  const showTimeline = intent === 'timeline' && relatedCount > 0;
+  // Chronology is its own area now (/chronology), so the chat no longer draws
+  // a vertical timeline. FILE_LIST and any answer carrying related documents
+  // render as the chronological table.
   const showDocAnalysisTable = intent === 'doc_list' && relatedCount > 0;
   // Related documents attached to a normal answer (document/hybrid/…): render as
   // the rich chronological table (≥2 docs) instead of the flat bubble strip, so
   // every "related documents" surface is the structured table the user expects.
   const showRelatedAsTable =
-    intent !== 'doc_list' && intent !== 'timeline' &&
+    intent !== 'doc_list' &&
     intent !== 'email_trace' && intent !== 'sql_result' && relatedCount >= 2;
   const time = formatTime(timestamp);
   const [copied, setCopied] = useState(false);
@@ -109,7 +119,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
   }, [text]);
 
   // Inline citations are only meaningful for plain answer responses where the
-  // text itself is the primary content. Doc-list / timeline / email-trace /
+  // text itself is the primary content. Doc-list / email-trace /
   // sql_result intents render their own structured sources.
   const showInlineCitations =
     intent === 'answer' && !!response?.citations?.length;
@@ -148,17 +158,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
             {/* Intent-specific rendering */}
             {response && (
               <>
-                {showTimeline ? (
-                  <div className="mt-3">
-                    <DocumentAnalysisTimeline
-                      events={mapRelatedDocsToTimeline(response.related_docs)}
-                      onEventClick={(e) => {
-                        if (!e.id) return;
-                        onDocClick({ docId: e.id, fileName: e.title });
-                      }}
-                    />
-                  </div>
-                ) : showDocAnalysisTable || showRelatedAsTable ? (
+                {showDocAnalysisTable || showRelatedAsTable ? (
                   <div className="mt-3">
                     <DocumentAnalysisTable
                       events={mapRelatedDocsToTimeline(response.related_docs)}
@@ -190,7 +190,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
                     )}
 
                     {/* A single related doc → compact bubble strip (table is overkill). */}
-                    {intent !== 'doc_list' && intent !== 'timeline' &&
+                    {intent !== 'doc_list' &&
                      intent !== 'email_trace' && (
                       <RelatedDocsList
                         docs={response.related_docs}
@@ -207,7 +207,7 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
             {failedText && onRetry && (
               <button
                 onClick={() => onRetry(failedText)}
-                className="mt-2 px-3 py-1.5 text-xs bg-[var(--accent)] text-white rounded-lg hover:bg-[var(--accent-hover)] transition-colors"
+                className="mt-2 px-3 py-1.5 text-xs bg-[var(--accent)] text-[var(--accent-ink)] rounded-lg hover:bg-[var(--accent-hover)] transition-colors"
               >
                 Retry
               </button>

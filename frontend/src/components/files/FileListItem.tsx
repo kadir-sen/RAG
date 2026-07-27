@@ -44,10 +44,10 @@ function FileListItem({ file, onClick, noticeMetadata }: Props) {
             className={
               'text-[9px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ' +
               (file.data_table_status === 'registered'
-                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                ? 'bg-[var(--wash)] text-[var(--green)] border border-[var(--green)]'
                 : file.data_table_status === 'no_schema_match'
-                  ? 'bg-zinc-500/20 text-zinc-300 border border-zinc-500/30'
-                  : 'bg-red-500/20 text-red-300 border border-red-500/30')
+                  ? 'bg-[var(--wash)] text-[var(--text-secondary)] border border-[var(--border)]'
+                  : 'bg-[var(--wash)] text-[var(--danger)] border border-[var(--danger)]')
             }
           >
             {file.data_table_status === 'registered'

@@ -24,7 +24,7 @@ function renderHighlighted(text: string, highlight: string) {
   return (
     <>
       {text.slice(0, idx)}
-      <mark className="bg-yellow-500/30 text-yellow-200 rounded px-0.5">
+      <mark className="mark-hit">
         {text.slice(idx, idx + highlight.length)}
       </mark>
       {text.slice(idx + highlight.length)}

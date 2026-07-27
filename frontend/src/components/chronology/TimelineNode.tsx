@@ -30,9 +30,9 @@ export default function TimelineNode({
         style={{
           background: highlight ? 'var(--accent)' : 'transparent',
           border: `2px solid ${color}`,
-          color: highlight ? '#fff' : color,
+          color: highlight ? 'var(--accent-ink)' : color,
           boxShadow: highlight
-            ? '0 0 0 4px rgba(var(--accent-rgb), 0.18)'
+            ? '0 0 0 3px var(--wash-firm)'
             : undefined,
         }}
       >

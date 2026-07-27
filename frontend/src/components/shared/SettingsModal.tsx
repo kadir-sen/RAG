@@ -50,7 +50,7 @@ export default function SettingsModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay)]"
       onClick={toggleSettings}
       role="presentation"
     >
@@ -86,7 +86,7 @@ export default function SettingsModal() {
             </h3>
             <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[var(--bg-primary)] border border-[var(--border)]">
               <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                className="w-8 h-8 rounded flex items-center justify-center text-[var(--accent-ink)] font-mono text-xs font-bold flex-shrink-0"
                 style={{ background: 'var(--gradient-accent)' }}
               >
                 P
@@ -95,7 +95,7 @@ export default function SettingsModal() {
                 <p className="text-sm text-[var(--text-primary)] font-medium">Pinecone</p>
                 <p className="text-[11px] text-[var(--text-muted)]">Index: hybrid-rag</p>
               </div>
-              <div className="w-2 h-2 rounded-full bg-emerald-500" title="Connected" />
+              <div className="w-2 h-2 bg-[var(--green)]" title="Connected" />
             </div>
           </section>
 
@@ -106,7 +106,7 @@ export default function SettingsModal() {
             </h3>
             <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[var(--bg-primary)] border border-[var(--border)]">
               <div
-                className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                className="w-8 h-8 rounded flex items-center justify-center text-[var(--accent-ink)] font-mono text-xs font-bold flex-shrink-0"
                 style={{ background: 'var(--gradient-warning)' }}
               >
                 S
@@ -115,7 +115,7 @@ export default function SettingsModal() {
                 <p className="text-sm text-[var(--text-primary)] font-medium">Local Storage</p>
                 <p className="text-[11px] text-[var(--text-muted)]">data/documents + DuckDB</p>
               </div>
-              <div className="w-2 h-2 rounded-full bg-emerald-500" title="Active" />
+              <div className="w-2 h-2 bg-[var(--green)]" title="Active" />
             </div>
           </section>
         </div>

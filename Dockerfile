@@ -48,6 +48,11 @@ RUN mkdir -p data/documents data/tables data/emails storage cache logs/telemetry
 # Copy target schemas (needed for converter pipeline)
 COPY storage/schemas/ ./storage/schemas/
 
+# The authored chronologies. These are content, not uploads — the chronology
+# area reads them at runtime, so without this the area builds fine and then
+# returns empty narratives in production.
+COPY data/chronologies/ ./data/chronologies/
+
 # Cloud Run injects PORT env variable (default 8080)
 ENV PORT=8080
 ENV APP_MODE=api

@@ -87,7 +87,7 @@ export default function DataTablesPanel({ open, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay)]"
       onClick={onClose}
     >
       <div
@@ -122,11 +122,11 @@ export default function DataTablesPanel({ open, onClose }: Props) {
               className={
                 'px-3 py-1.5 rounded-md border text-xs ' +
                 (s.tone === 'good'
-                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                  ? 'border-[var(--green)] bg-[var(--wash)] text-[var(--green)]'
                   : s.tone === 'warn'
-                    ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                    ? 'border-[var(--warning)] bg-[var(--wash)] text-[var(--warning)]'
                     : s.tone === 'bad'
-                      ? 'border-red-500/40 bg-red-500/10 text-red-300'
+                      ? 'border-[var(--danger)] bg-[var(--wash)] text-[var(--danger)]'
                       : 'border-[var(--border)] bg-[var(--bg-primary)]/60 text-[var(--text-secondary)]')
               }
             >
@@ -147,7 +147,7 @@ export default function DataTablesPanel({ open, onClose }: Props) {
             <button
               onClick={() => handleReindex(false)}
               disabled={reindexing}
-              className="px-3 py-1.5 text-xs rounded-md bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+              className="px-3 py-1.5 text-xs rounded-md bg-[var(--accent)] text-[var(--accent-ink)] hover:bg-[var(--accent-hover)] disabled:opacity-50"
             >
               {reindexing ? 'Working…' : 'Reindex unregistered'}
             </button>
@@ -175,7 +175,7 @@ export default function DataTablesPanel({ open, onClose }: Props) {
         )}
 
         {error && (
-          <div className="px-5 py-2 text-xs text-red-400 border-b border-[var(--border)]">
+          <div className="px-5 py-2 text-xs text-[var(--danger)] border-b border-[var(--border)]">
             {error}
           </div>
         )}
@@ -265,7 +265,7 @@ export default function DataTablesPanel({ open, onClose }: Props) {
               </button>
             </div>
             {!diagnosis.ok && (
-              <p className="text-[11px] text-red-400">{diagnosis.error}</p>
+              <p className="text-[11px] text-[var(--danger)]">{diagnosis.error}</p>
             )}
             {diagnosis.sheets?.map((s) => (
               <div key={s.sheet} className="mb-2 text-[11px]">
@@ -273,11 +273,11 @@ export default function DataTablesPanel({ open, onClose }: Props) {
                   <span className="font-semibold">{s.sheet}</span>
                   {s.rows != null && <> · {s.rows} rows</>}
                   {s.best_schema ? (
-                    <span className="ml-2 text-emerald-400">
+                    <span className="ml-2 text-[var(--green)]">
                       → {s.best_schema} ({s.best_ratio})
                     </span>
                   ) : (
-                    <span className="ml-2 text-amber-400">no match</span>
+                    <span className="ml-2 text-[var(--warning)]">no match</span>
                   )}
                 </p>
                 {s.schema_matches && s.schema_matches.length > 0 && (
@@ -302,27 +302,27 @@ export default function DataTablesPanel({ open, onClose }: Props) {
 function StatusPill({ status }: { status: string | null | undefined }) {
   if (status === 'registered') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--wash)] text-[var(--green)] border border-[var(--green)] font-semibold">
         REGISTERED
       </span>
     );
   }
   if (status === 'no_schema_match') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-500/20 text-zinc-300 border border-zinc-500/30 font-semibold">
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--wash)] text-[var(--text-secondary)] border border-[var(--border)] font-semibold">
         NO MATCH
       </span>
     );
   }
   if (status === 'error') {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/30 font-semibold">
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--wash)] text-[var(--danger)] border border-[var(--danger)] font-semibold">
         ERROR
       </span>
     );
   }
   return (
-    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold">
+    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--wash)] text-[var(--warning)] border border-[var(--warning)] font-semibold">
       PENDING
     </span>
   );
