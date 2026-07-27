@@ -21,6 +21,10 @@ interface Props {
   blurb: string;
   mark: ReactNode;
   to?: string;
+  /** An external destination. Renders a plain <a> rather than a router Link,
+      and deliberately without target="_blank" — the ask was for it to open in
+      the same window, as if it were part of this app. */
+  href?: string;
   status?: 'live' | 'soon';
 }
 
@@ -31,9 +35,10 @@ export default function ModuleTile({
   blurb,
   mark,
   to,
+  href,
   status = 'live',
 }: Props) {
-  const disabled = !to;
+  const disabled = !to && !href;
 
   const body = (
     <>
@@ -86,17 +91,25 @@ export default function ModuleTile({
 
   const shared = 'group flex flex-col gap-3.5 text-left';
 
-  if (disabled) {
+  if (to) {
     return (
-      <div className={`${shared} cursor-not-allowed`} aria-disabled="true">
+      <Link to={to} className={`${shared} no-underline focus:outline-none`} data-module={name}>
         {body}
-      </div>
+      </Link>
+    );
+  }
+
+  if (href) {
+    return (
+      <a href={href} className={`${shared} no-underline focus:outline-none`} data-module={name}>
+        {body}
+      </a>
     );
   }
 
   return (
-    <Link to={to} className={`${shared} no-underline focus:outline-none`} data-module={name}>
+    <div className={`${shared} cursor-not-allowed`} aria-disabled="true">
       {body}
-    </Link>
+    </div>
   );
 }
