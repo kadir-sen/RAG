@@ -53,12 +53,16 @@ _DOCS: List[ChronologyDoc] = [
         summary=("The SDS design contract with Parsons Brinckerhoff — scope, "
                  "co-ordination and the late and incomplete design deliverables."),
         keywords=[
-            "design", "designs", "designer", "sds", "system design services",
-            "incomplete design", "misaligned design", "design contract",
+            # the design itself
+            "design", "designs", "designer", "incomplete design",
+            "misaligned design", "design contract", "design deliverables",
+            "late design", "design development", "design programme",
+            "base date design", "drawings", "coordination", "co-ordination",
+            "uncoordinated", "consents", "approvals",
+            # the contract and who held it — these are what identify 01
+            "sds", "system design services", "scope of services", "novation",
             "parsons brinckerhoff", "scott wilson", "mott macdonald", "atkins",
-            "drawings", "coordination", "co-ordination", "uncoordinated",
-            "consents", "approvals", "design deliverables", "late design",
-            "design development", "scope of services", "tenderers",
+            "tenderers",
         ],
     ),
     ChronologyDoc(
@@ -70,9 +74,11 @@ _DOCS: List[ChronologyDoc] = [
         keywords=[
             "tie", "transport initiatives edinburgh", "mismanagement",
             "management", "governance", "client", "delivery vehicle",
-            "cec", "city of edinburgh council", "council", "tel", "board",
-            "audit scotland", "project estimate", "business case",
             "arms length", "organisation", "reporting", "executive chairman",
+            # the bodies and reviews that only 02 is about
+            "board", "audit scotland", "deloitte", "business case",
+            "project estimate", "estimating", "cost estimate",
+            "city of edinburgh council", "council",
         ],
     ),
     ChronologyDoc(
@@ -82,48 +88,65 @@ _DOCS: List[ChronologyDoc] = [
         summary=("The Multi-Utilities Diversion Framework Agreement — scope "
                  "growth, unforeseen apparatus and the diversion programme."),
         keywords=[
-            "mudfa", "utility", "utilities", "diversion", "diversions",
-            "apparatus", "statutory undertakers", "carillion", "alfred mcalpine",
-            "unforeseen", "trial holes", "services", "ducts", "mains",
-            "utility diversion", "diversion works", "gas", "water", "electricity",
+            "mudfa", "multi utilities diversion framework agreement",
+            "utility", "utilities", "utility diversion", "diversion",
+            "diversions", "diversion works",
+            "apparatus", "underground", "services", "ducts", "cables", "mains",
+            "excavation", "streetworks", "trial holes", "unforeseen",
+            "statutory undertakers",
+            # the contractor that only 03 is about
+            "carillion", "alfred mcalpine", "mcalpine", "amis",
         ],
     ),
     ChronologyDoc(
         ref="04",
-        title="Flawed Contract Strategy and Risk Transfer",
+        title='An "Irreparably Flawed" Contract Strategy',
         file="04-contract-strategy.docx",
-        summary=("The Infraco contract strategy — fixed price ambitions, the "
-                 "pricing assumptions and where the risk actually sat."),
+        summary=("The procurement strategy and risk transfer — the fixed-price "
+                 "premise, the Wiesbaden deal and the pricing assumptions."),
         keywords=[
-            "contract strategy", "risk transfer", "procurement", "infraco",
-            "fixed price", "lump sum", "pricing", "schedule 4", "notified departure",
-            "bilfinger", "siemens", "caf", "consortium", "wiesbaden",
-            "risk allocation", "tender", "novation", "flawed strategy",
+            "contract strategy", "commercial strategy", "procurement",
+            "procurement strategy", "flawed", "irreparably flawed",
+            "risk transfer", "transfer of risk", "risk allocation",
+            "fixed price", "lump sum", "pricing", "price",
+            "contract negotiation", "tendering", "tender",
+            # the specifics that identify 04 and nothing else
+            "wiesbaden", "side deal", "dla piper", "legal advice",
+            "notified departure", "notified departures", "schedule part 4",
+            "infraco contract", "bbs",
         ],
     ),
     ChronologyDoc(
         ref="05",
-        title="Contractor Disputes and Adjudications",
+        title="Severe Contractor Disputes and Work Stoppages",
         file="05-contractor-disputes.docx",
-        summary=("The disputes with the Infraco consortium — notified "
-                 "departures, adjudications and the mediation at Mar Hall."),
+        summary=("The breakdown between tie and BSC — the Dispute Resolution "
+                 "Procedure, the adjudications, mediation and the stoppages."),
         keywords=[
-            "dispute", "disputes", "adjudication", "adjudications", "claim",
-            "claims", "mediation", "mar hall", "settlement", "dsp",
-            "dispute resolution", "contractor", "consortium", "escalation",
-            "commercial", "entitlement", "arbitration",
+            "dispute", "disputes", "disputed", "contractor disputes",
+            "breakdown", "standstill", "stoppage", "stoppages",
+            "work stoppages", "downing tools", "suspension", "suspended",
+            "dispute resolution procedure", "adjudication", "adjudications",
+            "mediation", "litigation", "arbitration", "claims",
+            # where it happened, and who with
+            "princes street", "bsc", "bilfinger", "siemens", "caf",
+            "infraco", "consortium",
         ],
     ),
     ChronologyDoc(
         ref="06",
-        title="National Oversight and Public Scrutiny",
+        title="Withdrawal of National Oversight",
         file="06-national-oversight.docx",
-        summary=("Scottish Government, Transport Scotland and parliamentary "
-                 "scrutiny of the project."),
+        summary=("Transport Scotland stepping back to a funding-only role, "
+                 "and the monitoring that went with it."),
         keywords=[
-            "oversight", "scrutiny", "scottish government", "transport scotland",
-            "parliament", "parliamentary", "ministers", "minister", "public",
-            "committee", "inquiry", "audit", "grant", "funding", "national",
+            "oversight", "national oversight", "withdrawal", "withdrew",
+            "stepped back", "hands off", "monitoring", "scrutiny",
+            # the bodies that only 06 is about
+            "transport scotland", "scottish government", "scottish ministers",
+            "ministers", "government", "central government", "cabinet",
+            "funding", "funder", "funded", "funds", "grant", "grant offer",
+            "partnerships uk",
         ],
     ),
 ]
@@ -138,11 +161,22 @@ _MARGIN = 0.15      # the winner must beat the runner-up by this
 
 _TITLE_WEIGHT = 0.6
 _KEYWORD_WEIGHT = 1.0
+# Words that carry no subject signal. Interrogatives matter as much as
+# articles here: the score is a mean over query words, so "who funded it"
+# without them is two tokens where only one can match, and a perfect hit on
+# "funded" averages down to 0.5 and falls under the threshold.
 _STOP = {
+    # articles, prepositions, copulas
     "the", "a", "an", "of", "and", "or", "for", "to", "in", "on", "at", "by",
-    "with", "about", "is", "was", "were", "be", "that", "this", "it", "its",
-    "chronology", "history", "timeline", "show", "me", "give", "tell", "what",
-    "happened",
+    "with", "about", "is", "was", "were", "are", "be", "been", "that", "this",
+    "it", "its", "their", "there",
+    # interrogatives and the verbs that carry them
+    "who", "what", "when", "where", "why", "how", "which", "whose",
+    "did", "does", "do", "had", "has", "have",
+    # what people say when they mean "show me the chronology"
+    "chronology", "chronologies", "history", "timeline", "sequence", "events",
+    "show", "me", "my", "give", "tell", "about", "happened", "story",
+    "report", "explain", "describe",
 }
 
 
@@ -166,6 +200,17 @@ def _phrases(doc: ChronologyDoc) -> List[str]:
     return [_normalise(k).strip() for k in doc.keywords] + [_normalise(doc.title).strip()]
 
 
+
+def _shared_prefix(a: str, b: str) -> int:
+    """Length of the common leading run of two words."""
+    n = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        n += 1
+    return n
+
+
 def _term_score(query_token: str, terms: List[tuple]) -> float:
     """Best match for one query word: exact, shared stem, then substring."""
     best = 0.0
@@ -175,6 +220,14 @@ def _term_score(query_token: str, terms: List[tuple]) -> float:
         elif len(query_token) >= 4 and (word.startswith(query_token) or query_token.startswith(word)):
             # "utilities" ~ "utility", "disputes" ~ "dispute"
             s = weight * 0.75
+        elif _shared_prefix(query_token, word) >= 5:
+            # A shared root the prefix test above cannot see, because the words
+            # diverge after it: "diverted" ~ "diversion" (5), "governed" ~
+            # "governance" (6). Five is safe rather than lax — "contract" and
+            # "contractor" share eight and are already caught above, while
+            # genuinely unrelated pairs like "dispute" and "disruption" share
+            # only three and stay apart.
+            s = weight * 0.7
         elif len(query_token) >= 5 and query_token in word:
             s = weight * 0.5
         else:
@@ -228,6 +281,35 @@ _cache: Dict[str, List[Dict]] = {}
 _lock = threading.Lock()
 
 
+
+# "On 29 March 2005, tie issued…" / "In March 2007, the parties…" / "By May
+# 2007, …" — the authored entries lead with when it happened, so the date is
+# pulled out to be set against the paragraph rather than buried in it. Entries
+# that open with context instead of a date keep their sentence whole.
+_DATE_LEAD_RE = re.compile(
+    r"^(?:On|In|By|From|During|At)\s+"
+    r"((?:\d{1,2}\s+)?"
+    r"(?:January|February|March|April|May|June|July|August|September|October|"
+    r"November|December)"
+    r"(?:\s+\d{4})?|\d{4})"
+    r"\s*,\s*(.+)$",
+    re.I,
+)
+
+
+def _split_date(text: str) -> tuple:
+    """(date, remaining sentence) — ("", text) when it does not open with one."""
+    m = _DATE_LEAD_RE.match(text)
+    if not m:
+        return "", text
+    rest = m.group(2).strip()
+    # Left as written. Recapitalising the first word looks tidier until it hits
+    # "tie" — the delivery company's name is lowercase by design throughout
+    # these documents, and "Tie issued…" is simply wrong. The date sits in its
+    # own column anyway, so the sentence reads fine starting mid-clause.
+    return m.group(1).strip(), rest or text
+
+
 def _parse_docx(path: Path) -> List[Dict]:
     """A .docx chronology → its numbered entries.
 
@@ -245,7 +327,9 @@ def _parse_docx(path: Path) -> List[Dict]:
             continue
         m = re.match(r"^(\d+(?:\.\d+)+)\s*(.*)$", text)
         if m:
-            entries.append({"ref": m.group(1), "text": m.group(2).strip(), "sub": []})
+            body = m.group(2).strip()
+            when, body = _split_date(body)
+            entries.append({"ref": m.group(1), "date": when, "text": body, "sub": []})
         elif re.match(r"^[ivx]+\)", text, re.I) and entries:
             entries[-1]["sub"].append(re.sub(r"^[ivx]+\)\s*", "", text, flags=re.I))
         elif entries:

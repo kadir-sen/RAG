@@ -61,6 +61,8 @@ export interface ChronologySubject {
 
 export interface ChronologyEntry {
   ref: string;
+  /** Pulled out of the sentence when it opens with one; "" for context entries. */
+  date: string;
   text: string;
   sub: string[];
 }

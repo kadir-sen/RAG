@@ -47,22 +47,37 @@ export default function SubjectNarrative({ subject, entries, onClear }: Props) {
           missing from data/chronologies/.
         </p>
       ) : (
-        <ol className="mt-4 flex flex-col border-l border-[var(--border)]">
+        <ol className="mt-4">
           {entries.map((e) => (
-            <li key={e.ref} className="pl-4 py-2.5">
-              <span className="font-mono text-[10px] tabular-nums tracking-[0.1em] text-[var(--text-muted)]">
-                {e.ref}
-              </span>
-              <p className="mt-1 text-[13px] leading-6 text-[var(--text-primary)]">{e.text}</p>
-              {e.sub.length > 0 && (
-                <ul className="mt-2 flex flex-col gap-1.5 pl-4 border-l border-[var(--border)]">
-                  {e.sub.map((s, i) => (
-                    <li key={i} className="text-[12px] leading-5 text-[var(--text-secondary)]">
-                      {s}
-                    </li>
-                  ))}
-                </ul>
-              )}
+            <li
+              key={e.ref}
+              className="grid grid-cols-[7.5rem_1fr] gap-x-4 py-3 border-b border-[var(--border)] last:border-b-0"
+            >
+              {/* The date column is what makes this read as a chronology
+                  rather than a list: when, then what happened. Entries that
+                  open with context instead of a date show their reference
+                  there, so the column is never empty. */}
+              <div className="pt-0.5">
+                <p className="font-mono text-[11px] tabular-nums text-[var(--text-primary)] leading-5">
+                  {e.date || '—'}
+                </p>
+                <p className="font-mono text-[9px] tabular-nums tracking-[0.1em] text-[var(--text-muted)] mt-0.5">
+                  {e.ref}
+                </p>
+              </div>
+
+              <div className="min-w-0">
+                <p className="text-[13px] leading-6 text-[var(--text-primary)]">{e.text}</p>
+                {e.sub.length > 0 && (
+                  <ul className="mt-2 flex flex-col gap-1.5 pl-4 border-l border-[var(--border)]">
+                    {e.sub.map((s, i) => (
+                      <li key={i} className="text-[12px] leading-5 text-[var(--text-secondary)]">
+                        {s}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </li>
           ))}
         </ol>
