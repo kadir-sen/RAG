@@ -8,7 +8,9 @@ import Skeleton from '../components/shared/Skeleton';
 import { useChronologyEvents, useChronologyFacets } from '../hooks/useChronology';
 import SubjectBar from '../components/chronology/SubjectBar';
 import SubjectNarrative from '../components/chronology/SubjectNarrative';
+import DownloadDocxButton from '../components/chronology/DownloadDocxButton';
 import {
+  downloadEventsDocx,
   getChronologySubject,
   matchChronologySubject,
 } from '../api/chronologyApi';
@@ -243,9 +245,17 @@ export default function ChronologyPage() {
           ) : (
           <>
           <header className="mb-6">
-            <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
-              Module · 01
-            </p>
+            <div className="flex items-baseline justify-between gap-4">
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
+                Module · 01
+              </p>
+              {/* Downloads whatever the filters currently show, and the export
+                  states those filters on its first page — an extract that does
+                  not say it is one reads as the whole record. */}
+              {!isLoading && !isError && events.length > 0 && (
+                <DownloadDocxButton onDownload={() => downloadEventsDocx(filters)} />
+              )}
+            </div>
             <h1 className="mt-1.5 text-xl font-semibold tracking-tight text-[var(--text-primary)]">
               Chronology
             </h1>
