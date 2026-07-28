@@ -158,6 +158,29 @@ def test_a_filtered_export_says_it_is_filtered():
     assert "Filters" not in plain_text and "on file" in plain_text
 
 
+def test_a_truncated_export_says_so_on_its_first_page():
+    """The store holds more events than one document should carry. An extract
+    that ends quietly at a round number reads as the end of the record — and
+    this is a document people hand on."""
+    doc = _read(build_events_docx(_ROWS, {}, total_available=4210))
+    text = " ".join(p.text for p in doc.paragraphs)
+    assert "2 of 4210 events" in text
+    assert "carries the first 2 of 4210" in text
+    assert "continues beyond this extract" in text
+    assert "end of chronology" not in text
+
+
+def test_a_complete_export_does_not_cry_truncation():
+    doc = _read(build_events_docx(_ROWS, {}, total_available=len(_ROWS)))
+    text = " ".join(p.text for p in doc.paragraphs)
+    assert "2 events on file" in text
+    assert "end of chronology" in text
+    assert "continues beyond" not in text
+    # and the same when the caller says nothing about the total
+    plain = " ".join(p.text for p in _read(build_events_docx(_ROWS, {})).paragraphs)
+    assert "end of chronology" in plain and "continues beyond" not in plain
+
+
 def test_describe_filters():
     assert describe_filters({}) == ""
     assert describe_filters({"event_type": "delay"}) == "type = delay"

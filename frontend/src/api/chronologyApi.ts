@@ -21,19 +21,30 @@ export interface ChronologyFilters {
   limit?: number;
 }
 
+/** A page of events, plus how many the filters actually select. The two differ,
+    often by a lot — the header needs `matching` so it describes the record
+    rather than the page. */
+export interface ChronologyEventPage {
+  events: ChronologyEvent[];
+  matching: number;
+}
+
 export async function getChronologyEvents(
   f: ChronologyFilters = {},
-): Promise<ChronologyEvent[]> {
-  const { data } = await apiClient.get<{ events: ChronologyEvent[] }>('/chronology/events', {
-    params: {
-      event_type: f.eventType || undefined,
-      actor: f.actor || undefined,
-      date_from: f.dateFrom || undefined,
-      date_to: f.dateTo || undefined,
-      limit: f.limit ?? 200,
+): Promise<ChronologyEventPage> {
+  const { data } = await apiClient.get<{ events: ChronologyEvent[]; matching?: number }>(
+    '/chronology/events',
+    {
+      params: {
+        event_type: f.eventType || undefined,
+        actor: f.actor || undefined,
+        date_from: f.dateFrom || undefined,
+        date_to: f.dateTo || undefined,
+        limit: f.limit ?? 200,
+      },
     },
-  });
-  return data.events;
+  );
+  return { events: data.events, matching: data.matching ?? data.events.length };
 }
 
 /** Event counts per type — only types that actually have events come back. */

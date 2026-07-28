@@ -232,8 +232,15 @@ def describe_filters(f: Dict[str, Optional[str]]) -> str:
 
 
 def build_events_docx(rows: List[Dict[str, Any]],
-                      filters: Optional[Dict[str, Optional[str]]] = None) -> bytes:
-    """The event list, with whatever filters produced it stated up front."""
+                      filters: Optional[Dict[str, Optional[str]]] = None,
+                      total_available: Optional[int] = None) -> bytes:
+    """The event list, with whatever filters produced it stated up front.
+
+    `total_available` is how many events the filters actually select. When it
+    exceeds the rows handed over, the document says so on its first page: a
+    truncated chronology that ends quietly at a round number reads like the end
+    of the record, and this one is meant to be handed on.
+    """
     Pt, RGBColor, _ = _shared()
     doc = _new_document()
     described = describe_filters(filters or {})
@@ -241,12 +248,23 @@ def build_events_docx(rows: List[Dict[str, Any]],
     _label(doc, "Chronology · project record")
     _title(doc, "Chronology")
     n = len(rows)
-    _body(doc, f"{n} event{'' if n == 1 else 's'}"
-               f"{' matching the filters below' if described else ' on file'}",
-          size=10, colour="4B5563")
+    total = n if total_available is None else int(total_available)
+    truncated = total > n
+    if truncated:
+        summary = (f"{n} of {total} events"
+                   f"{' matching the filters below' if described else ' on file'}")
+    else:
+        summary = (f"{n} event{'' if n == 1 else 's'}"
+                   f"{' matching the filters below' if described else ' on file'}")
+    _body(doc, summary, size=10, colour="4B5563")
     if described:
         p = doc.add_paragraph()
         _mono(p.add_run(f"Filters — {described}"), size=8, colour=_MUTED)
+    if truncated:
+        p = doc.add_paragraph()
+        _mono(p.add_run(
+            f"This document carries the first {n} of {total} events. "
+            f"Narrow the filters to export the remainder."), size=8, colour=_ACCENT)
     _rule(doc)
 
     if not rows:
@@ -286,7 +304,9 @@ def build_events_docx(rows: List[Dict[str, Any]],
               size=8, colour=_MUTED)
 
     _fit(table, [2.6, 2.0, 7.4, 4.2])
-    _footer_note(doc, f"{n} event{'' if n == 1 else 's'} · end of chronology")
+    _footer_note(doc, f"{n} of {total} events · continues beyond this extract"
+                 if truncated
+                 else f"{n} event{'' if n == 1 else 's'} · end of chronology")
     _stamp(doc)
     return _save(doc)
 
