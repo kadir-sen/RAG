@@ -1,5 +1,6 @@
 import { useRef, useState, useCallback, type KeyboardEvent } from 'react';
 import { useAuthStore } from '../../stores/authStore';
+import { count } from '../../utils/format';
 
 interface Props {
   onSend: (text: string) => void;
@@ -86,7 +87,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
               : `Token quota running low — ${remainingPct.toFixed(0)}% left.`}
             {tokenLimit > 0 && (
               <span className="opacity-70">
-                {' '}({usedTokens.toLocaleString()} / {tokenLimit.toLocaleString()} tokens)
+                {' '}({count(usedTokens)} / {count(tokenLimit)} tokens)
               </span>
             )}
           </span>

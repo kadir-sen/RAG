@@ -21,6 +21,7 @@ import type {
   SubjectMatch,
 } from '../api/chronologyApi';
 import { useUIStore } from '../stores/uiStore';
+import { count } from '../utils/format';
 
 const RightDocViewer = lazy(() => import('../components/viewer/RightDocViewer'));
 
@@ -283,7 +284,7 @@ export default function ChronologyPage() {
             <p className="mt-1 text-[12px] text-[var(--text-secondary)]">
               {isLoading
                 ? 'Reading the record…'
-                : `${matching.toLocaleString()} event${matching === 1 ? '' : 's'}${filtered ? ' matching' : ' on file'}`}
+                : `${count(matching)} event${matching === 1 ? '' : 's'}${filtered ? ' matching' : ' on file'}`}
             </p>
           </header>
 
@@ -341,7 +342,7 @@ export default function ChronologyPage() {
                     show more
                   </button>
                   <span className="font-mono text-[10px] tracking-[0.14em] uppercase text-[var(--text-muted)]">
-                    {events.length.toLocaleString()} of {matching.toLocaleString()} shown
+                    {count(events.length)} of {count(matching)} shown
                   </span>
                 </div>
               )}
