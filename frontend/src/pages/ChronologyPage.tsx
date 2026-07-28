@@ -125,8 +125,13 @@ export default function ChronologyPage() {
     [eventType, actor, dateFrom, dateTo],
   );
 
-  const { data: rows, isLoading, isError } = useChronologyEvents(filters);
+  const { data: page, isLoading, isError } = useChronologyEvents(filters);
   const { data: facets } = useChronologyFacets();
+  const rows = page?.events;
+  /* How many the filters select, which is not how many this page carries — the
+     store holds far more events than one request returns. Saying "200 events"
+     when there are thousands describes the page as if it were the record. */
+  const matching = page?.matching ?? 0;
 
   const openDocument = useUIStore((s) => s.openDocument);
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
@@ -262,7 +267,9 @@ export default function ChronologyPage() {
             <p className="mt-1 text-[12px] text-[var(--text-secondary)]">
               {isLoading
                 ? 'Reading the record…'
-                : `${events.length} event${events.length === 1 ? '' : 's'}${filtered ? ' matching' : ' on file'}`}
+                : events.length < matching
+                  ? `Showing ${events.length} of ${matching} event${matching === 1 ? '' : 's'}${filtered ? ' matching' : ' on file'} — the download carries the rest`
+                  : `${matching} event${matching === 1 ? '' : 's'}${filtered ? ' matching' : ' on file'}`}
             </p>
           </header>
 

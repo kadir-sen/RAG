@@ -11,7 +11,7 @@ src/event_timeline.py already exposes exactly the right primitives
 this module is a thin, honest wrapper over them.
 """
 
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
@@ -23,6 +23,35 @@ router = APIRouter()
 # Whatever the caller asks for, never return more than this in one response.
 # The store's own default is 60; the area pages rather than scrolls forever.
 _MAX_LIMIT = 500
+
+# How much of the store we are willing to READ before scoping. This is a memory
+# backstop, not a business rule — it exists only so a runaway store cannot pull
+# the 2 GB box over. Counting and exporting must see the whole record, and
+# reading through the page limit is what made them lie: /summary and /facets
+# fetched 500 rows, scoped those, and reported the result as the total. With
+# more than 500 delay events alone in the store, the page confidently said
+# "499 events on file" and drew a chip reading "delay · 1".
+_READ_CEILING = 100_000
+
+# A single Word document is not the right container for an unbounded record, so
+# the export stops here — and says so in the document when it does. Silence
+# would be worse than the limit: an extract that does not admit it is one gets
+# handed on as the whole chronology.
+_EXPORT_MAX = 5_000
+
+
+def _scoped_rows(user: UserContext, **filters) -> List[Dict]:
+    """Every event this user can see under these filters, unpaged.
+
+    Callers that page apply their own limit afterwards. Reading the full set
+    first is the point: the corpus scoping drops rows, so truncating before it
+    lets another corpus's events eat the window and makes any count downstream
+    an undercount of unknown size.
+    """
+    from src.event_timeline import get_event_timeline
+
+    rows = get_event_timeline().timeline_context(limit=_READ_CEILING, **filters)
+    return _scope_to_corpus(rows, user)
 
 
 def _corpus_of(user: UserContext) -> str:
@@ -75,12 +104,10 @@ async def chronology_summary(user: UserContext = Depends(get_current_user)) -> D
     zero, the empty state that explains the corpus has not been enriched yet.
 
     Counted through the same corpus scoping as /events rather than the store's
-    raw count(), so the header can never promise rows the list won't show.
+    raw count(), so the header can never promise rows the list won't show — but
+    over the whole store, not the first page of it.
     """
-    from src.event_timeline import get_event_timeline
-
-    rows = get_event_timeline().timeline_context(limit=_MAX_LIMIT)
-    return {"total_events": len(_scope_to_corpus(rows, user))}
+    return {"total_events": len(_scoped_rows(user))}
 
 
 @router.get("/chronology/facets")
@@ -94,10 +121,7 @@ async def chronology_facets(user: UserContext = Depends(get_current_user)) -> Di
     """
     from collections import Counter
 
-    from src.event_timeline import get_event_timeline
-
-    rows = _scope_to_corpus(get_event_timeline().timeline_context(limit=_MAX_LIMIT), user)
-    counts = Counter(r.get("event_type") for r in rows if r.get("event_type"))
+    counts = Counter(r.get("event_type") for r in _scoped_rows(user) if r.get("event_type"))
     return {"event_type": dict(counts)}
 
 
@@ -109,7 +133,7 @@ async def chronology_events(
     date_to: Optional[str] = Query(None, description="ISO date, inclusive"),
     limit: int = Query(200, ge=1, le=_MAX_LIMIT),
     user: UserContext = Depends(get_current_user),
-) -> Dict[str, List[Dict]]:
+) -> Dict[str, Any]:
     """Events oldest-first, filtered.
 
     timeline_context is the right primitive rather than timeline(): it carries
@@ -119,17 +143,16 @@ async def chronology_events(
     The store is asked for the full window and the corpus scoping is applied
     after, then the caller's limit — filtering first would let another corpus's
     rows eat the limit and return a short page for no visible reason.
-    """
-    from src.event_timeline import get_event_timeline
 
-    rows = get_event_timeline().timeline_context(
-        event_type=event_type,
-        actor=actor,
-        date_from=date_from,
-        date_to=date_to,
-        limit=_MAX_LIMIT,
+    `matching` is how many events the filters actually select; `events` is the
+    page of them this response carries. They differ, often by a lot, and the
+    header needs the first number to avoid describing a page as a record.
+    """
+    rows = _scoped_rows(
+        user, event_type=event_type, actor=actor,
+        date_from=date_from, date_to=date_to,
     )
-    return {"events": _scope_to_corpus(rows, user)[:limit]}
+    return {"events": rows[:limit], "matching": len(rows)}
 
 
 # ── the authored chronologies ───────────────────────────────────────────
@@ -249,26 +272,26 @@ async def chronology_events_docx(
     actor: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
-    limit: int = Query(_MAX_LIMIT, ge=1, le=_MAX_LIMIT),
     user: UserContext = Depends(get_current_user),
 ) -> Response:
     """The event list as a Word document, under the same filters and the same
     corpus scoping as /chronology/events — an export that could show rows the
     page cannot would be worse than no export.
 
-    The default limit is the maximum rather than the page's 200: someone asking
-    for a document wants the whole record, not the first screen of it.
+    Deliberately unpaged: someone asking for a document wants the record, not
+    the first screen of it. `_EXPORT_MAX` is the only ceiling, and when it bites
+    the document says so on its first page rather than ending quietly at a round
+    number that reads like the end of the record.
     """
     from src.chronology_docx import build_events_docx, safe_filename
-    from src.event_timeline import get_event_timeline
 
-    rows = get_event_timeline().timeline_context(
-        event_type=event_type, actor=actor,
-        date_from=date_from, date_to=date_to, limit=_MAX_LIMIT,
+    rows = _scoped_rows(
+        user, event_type=event_type, actor=actor,
+        date_from=date_from, date_to=date_to,
     )
-    rows = _scope_to_corpus(rows, user)[:limit]
-    blob = build_events_docx(rows, {
+    total = len(rows)
+    blob = build_events_docx(rows[:_EXPORT_MAX], {
         "event_type": event_type, "actor": actor,
         "date_from": date_from, "date_to": date_to,
-    })
+    }, total_available=total)
     return _docx_response(blob, safe_filename("Chronology", "project-record") + ".docx")
