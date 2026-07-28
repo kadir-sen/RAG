@@ -183,49 +183,119 @@ def test_kill_switch_and_agent_disabled(monkeypatch):
     assert r._should_escalate(_doc(), "WEAK", tr) is False
 
 
-# ── 7. the structured-data mask ─────────────────────────────────────
-def test_excel_only_sources_do_not_hide_a_negative(monkeypatch):
-    """_handle_document_query attaches related Excel tables even when retrieval
-    returned nothing, so _verify_answer short-circuits to a free OK and the
-    negative is never questioned. The gate must spend the lite call it skipped —
-    exactly once, on a document-only view — and escalate on the result."""
+# ── 7. the shapes measured in production ────────────────────────────
+# Answers taken verbatim from the deployed system. The first two are confirmed
+# false negatives: asked again through the deep path, the corpus turned out to
+# hold five documents naming "Phase 1b — Roseburn to Granton" and three
+# describing geotechnical boreholes.
+_PHASE_1B = {
+    "query_type": "document",
+    "answer": ('Please provide a specific question regarding "Phase 1b". The provided '
+               'document excerpts do not contain information explicitly labeled '
+               '"Phase 1b". They refer to "Phase 1" and "Phase 2" in the context of '
+               '"Servicing Access Strategy Existing Restrictions" (CEC01526804.pdf, '
+               'p.2; CEC01533381.pdf, p.5) and "All Underpass - Phase 2" '
+               '(BFB00112198.pdf, p.24).'),
+    "sources": [{"file_name": f"CEC0152680{i}.pdf", "page_number": i} for i in range(1, 11)],
+}
+_BOREHOLES = {
+    "query_type": "document",
+    "answer": ("I am sorry, but the provided documents do not contain information about "
+               "geotechnical borehole logs or SPT values recorded near Haymarket."),
+    "sources": [{"file_name": "CEC01511679.pdf", "page_number": 4}],
+}
+
+
+def test_a_denial_that_cites_documents_still_escalates(monkeypatch):
+    """The case that made this redesign necessary.
+
+    The first version of the gate required zero document citations, so it would
+    have let this through untouched: 351 characters, ten citations, reading as a
+    grounded answer — and wrong. The verdict is now the whole gate.
+    """
     _on(monkeypatch)
     r, tr = _router(), _Trace()
-    calls = {"n": 0}
-
-    def _verify(q, res):
-        calls["n"] += 1
-        assert res["sources"] == [], "re-check must judge the answer without the Excel sources"
-        return "WEAK"
-
-    r._verify_answer = _verify
     r._react_agent = _Agent(_DEEP_GOOD)
-    masked = {"answer": "That information was not found in the provided documents.",
-              "sources": [{"file_name": "boq.xlsx", "type": "structured_data"}]}
 
-    out, verdict = r._maybe_escalate_negative("q", "q", None, _doc(), masked, "OK", tr)
+    out, _ = r._maybe_escalate_negative("Who signed the certificate of practical "
+                                        "completion for Phase 1b?", "q", None,
+                                        _doc(), _PHASE_1B, "WEAK", tr)
 
-    assert out is _DEEP_GOOD and verdict == "WEAK"
-    assert calls["n"] == 1, "at most one extra lite call per query"
+    assert out is _DEEP_GOOD
+    assert tr.route == "DOCUMENT_ESCALATED_AGENT"
 
 
-def test_strong_answer_costs_nothing_extra(monkeypatch):
-    """A grounded answer must not reach the gate's LLM branch at all."""
-    _on(monkeypatch)
-    r, tr = _router(), _Trace()
+def test_the_measured_refusals_are_recognised_as_denials():
+    """Neither of the two old pattern lists matched these. One list now, and it
+    does — which is what makes the router's contradiction guard and the response
+    builder's citation-stripping work on real answers rather than tidy ones."""
+    from src.answer_signals import denies_corpus
 
-    def _never(q, res):
-        raise AssertionError("a strong answer must not spend a verify call")
+    assert denies_corpus(_PHASE_1B["answer"]) is True
+    assert denies_corpus(_BOREHOLES["answer"]) is True
+    assert denies_corpus("The provided document excerpts do not contain any "
+                         "information regarding 'preheat temperature'.") is True
+    # …and a substantive answer that merely contains a negation is NOT a denial.
+    assert denies_corpus("The contract does not contain a termination clause; "
+                         "clause 60 governs payment instead.") is False
+    assert denies_corpus("Yes. The completion date moved from 2011 to 2014.") is False
+    assert denies_corpus("") is False
 
-    r._verify_answer = _never
-    r._react_agent = _Agent(_DEEP_GOOD)
-    strong = {"answer": "The contract sets out the payment terms in clause 60." * 4,
-              "sources": [{"file_name": "contract.pdf", "page_number": 3}]}
 
-    out, verdict = r._maybe_escalate_negative("q", "q", None, _doc(), strong, "OK", tr)
+def test_a_nuanced_refusal_keeps_its_explanation():
+    """Broadening the shared patterns must not let the contradiction guard
+    flatten a refusal that says what it DID find into a bare document count."""
+    r = QueryRouter.__new__(QueryRouter)
+    # bare — safe to replace / strip citations from
+    assert r._is_bare_denial("") is True
+    assert r._is_bare_denial("The documents do not contain that information.") is True
+    # nuanced — 351 chars of real content about what was found; must survive
+    assert r._is_bare_denial(_PHASE_1B["answer"]) is False
+    assert QueryRouter._looks_like_no_document_answer(_PHASE_1B["answer"]) is True
 
-    assert out is None and verdict == "OK"
-    assert r._react_agent.calls == 0
+
+def test_document_answers_are_always_judged_but_other_routes_are_not(monkeypatch):
+    """A document refusal reads as fluent, cited prose, so nothing cheap can spot
+    it — those always spend the lite call. DATA/FILE_LIST keep the free path."""
+    r = QueryRouter.__new__(QueryRouter)
+    spent = {"n": 0}
+
+    import src.llm_client as llm
+    from src.llm_client import LLMResponse
+    from src.types import LLMUsage
+
+    def _judge(prompt, **k):
+        spent["n"] += 1
+        assert "weak/empty draft" not in prompt, "the judge must not be told the verdict"
+        return LLMResponse(text="INCOMPLETE", usage=LLMUsage(provider="gemini"))
+
+    monkeypatch.setattr(llm, "generate_text", _judge)
+
+    # a strong-looking document answer is still judged
+    assert r._verify_answer("q", _PHASE_1B) == "WEAK"
+    assert spent["n"] == 1
+
+    # the same answer on a DATA route takes the free path
+    data_result = dict(_PHASE_1B, query_type="data")
+    assert r._verify_answer("q", data_result) == "OK"
+    assert spent["n"] == 1, "no call spent on a non-document route with sources"
+
+
+def test_verdict_tokens_map_both_old_and_new(monkeypatch):
+    """COMPLETE must not be read as INCOMPLETE, and the previous Turkish tokens
+    still map — a cached or drifting response must never turn an out-of-corpus
+    question into a 45-second search."""
+    r = QueryRouter.__new__(QueryRouter)
+    import src.llm_client as llm
+    from src.llm_client import LLMResponse
+    from src.types import LLMUsage
+
+    for token, expected in [("COMPLETE", "OK"), ("INCOMPLETE", "WEAK"),
+                            ("OUTSIDE", "OFFTOPIC"), ("EKSIK", "WEAK"),
+                            ("KONU_DISI", "OFFTOPIC"), ("TAMAM", "OK")]:
+        monkeypatch.setattr(llm, "generate_text", lambda p, _t=token, **k: LLMResponse(
+            text=_t, usage=LLMUsage(provider="gemini")))
+        assert r._verify_answer("q", _PHASE_1B) == expected, token
 
 
 # ── 8. the wiring, end to end through route_and_execute ─────────────
