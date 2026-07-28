@@ -78,7 +78,20 @@ class ReActAgent:
         self.router = router
 
     # ── public entry ────────────────────────────────────────────
-    def run(self, query: str, doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    def run(self, query: str, doc_ids: Optional[List[str]] = None,
+            max_iterations: Optional[int] = None,
+            time_budget_sec: Optional[float] = None,
+            llm_call_budget: Optional[int] = None) -> Dict[str, Any]:
+        """Run the bounded loop. The three optional budgets let a caller run a
+        cheaper or deeper variant — the router's negative-answer escalation pass
+        needs more LLM headroom than the module defaults, because by the time it
+        starts, the shallow pass has already spent most of the per-query budget.
+        Passing them as arguments rather than reading config keeps the defaults
+        (and every existing caller) untouched."""
+        max_steps = max(1, int(REACT_MAX_ITERATIONS if max_iterations is None
+                               else max_iterations))
+        time_budget = float(REACT_TIME_BUDGET_SEC if time_budget_sec is None
+                            else time_budget_sec)
         _emit("thinking", "planning the approach…")
         scratchpad: List[Dict[str, str]] = []
         sources: List[Dict[str, Any]] = []
@@ -97,10 +110,10 @@ class ReActAgent:
         empty_obs_streak = 0
         t_start = time.monotonic()
 
-        for i in range(max(1, REACT_MAX_ITERATIONS)):
+        for i in range(max_steps):
             # Wall-clock guard: don't start another step once over budget — bounds
             # rare provider-contention spikes. We still synthesize what we have.
-            if i > 0 and (time.monotonic() - t_start) > REACT_TIME_BUDGET_SEC:
+            if i > 0 and (time.monotonic() - t_start) > time_budget:
                 logger.info("[ReActAgent] time budget exceeded — synthesizing from current observations")
                 break
             action = self._decide(query, scratchpad, corpus_map, seen_files)
@@ -147,7 +160,7 @@ class ReActAgent:
                 result_columns = extra.get("result_columns")
             scratchpad.append({"action": act, "input": ainput, "observation": obs[:1500]})
 
-            if self._budget_exhausted():
+            if self._budget_exhausted(llm_call_budget):
                 logger.info("[ReActAgent] hard budget reached — synthesizing from current observations")
                 break
 
@@ -381,12 +394,17 @@ class ReActAgent:
 
     # ── helpers ─────────────────────────────────────────────────
     @staticmethod
-    def _budget_exhausted() -> bool:
+    def _budget_exhausted(limit: Optional[int] = None) -> bool:
+        """Counts the TRACE's calls, not this run's — so an escalated second pass
+        inherits everything the first pass already spent. That is why the caller
+        can raise the ceiling: with the default 8, an escalation starting at ~5
+        would get two or three steps and stop."""
+        cap = MAX_LLM_CALLS_PER_QUERY if limit is None else int(limit)
         try:
             from .telemetry import get_current_trace
             tr = get_current_trace()
             if tr is not None:
-                return max(0, tr.llm_calls - tr.cache_hits) >= MAX_LLM_CALLS_PER_QUERY
+                return max(0, tr.llm_calls - tr.cache_hits) >= cap
         except Exception:
             pass
         return False

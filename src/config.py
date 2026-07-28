@@ -212,6 +212,35 @@ ROUTE_AGENT_CONF = float(os.getenv("ROUTE_AGENT_CONF", "0.55"))
 # can't run for minutes. The per-call LLM timeout still applies within a step.
 REACT_TIME_BUDGET_SEC = float(os.getenv("REACT_TIME_BUDGET_SEC", "90"))
 
+# ── Negative-answer auto-escalation ─────────────────────────
+# A shallow route that lands on "that isn't in the corpus" gets re-run through
+# the ReAct agent when the cheap verifier says the question IS answerable
+# (WEAK, not OFFTOPIC). This exists because the system's failure mode is the
+# false negative, not the hallucination: it denies the corpus in the same
+# confident register it uses when it is right, and a denial doesn't invite the
+# reader to check.
+#
+# The second pass is not merely longer, it searches a DIFFERENT space: the
+# shallow document path retrieves once at top_k=10 through an LLM-derived
+# doc_type/project payload filter, while the agent's tools retrieve unfiltered
+# at top_k=24 and issue several differently-worded searches. Over-tight scope is
+# where these negatives come from, so widening it is the point.
+#
+# Budgets are deliberately separate from the first-class agent's: this is a
+# second pass stacked on a query that has already spent its latency.
+# ESCALATION_LLM_BUDGET is the one that actually binds — ReActAgent stops on the
+# TRACE's cumulative call count, and the first pass has already burned ~5 of
+# MAX_LLM_CALLS_PER_QUERY(8), so without extra headroom an escalated run would
+# be shallower than the pass it was sent to rescue. Note llm_client's own soft
+# cap still degrades everything past 8 calls to the lite tier, so this headroom
+# buys cheap-tier calls, which is the right trade on a 2 GB box.
+#
+# Set ENABLE_NEGATIVE_ESCALATION=false to switch the whole behaviour off.
+ENABLE_NEGATIVE_ESCALATION = os.getenv("ENABLE_NEGATIVE_ESCALATION", "true").lower() in ("1", "true", "yes")
+ESCALATION_MAX_ITERATIONS = int(os.getenv("ESCALATION_MAX_ITERATIONS", "4"))
+ESCALATION_TIME_BUDGET_SEC = float(os.getenv("ESCALATION_TIME_BUDGET_SEC", "45"))
+ESCALATION_LLM_BUDGET = int(os.getenv("ESCALATION_LLM_BUDGET", "16"))
+
 # ── Feature Flags ───────────────────────────────────────────
 ENABLE_AB_TESTING = os.getenv("ENABLE_AB_TESTING", "false").lower() == "true"
 
