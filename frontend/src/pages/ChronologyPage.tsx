@@ -115,15 +115,30 @@ export default function ChronologyPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
+  /* The store holds tens of thousands of events, so the list starts with a
+     screenful and grows on request. A fixed cap would be a cap; this is a
+     starting point, and "show more" walks it to the end of the record. */
+  const PAGE = 200;
+  const [limit, setLimit] = useState(PAGE);
+
   const filters = useMemo(
     () => ({
       eventType,
       actor: actor.trim() || null,
       dateFrom: dateFrom || null,
       dateTo: dateTo || null,
+      limit,
     }),
-    [eventType, actor, dateFrom, dateTo],
+    [eventType, actor, dateFrom, dateTo, limit],
   );
+
+  /* Changing a filter starts the list over — carrying a grown limit into a new
+     filter would load thousands of rows nobody asked to see. Wrapped rather
+     than done in an effect so the change is one fetch, not two. */
+  const pickType = (t: string | null) => { setEventType(t); setLimit(PAGE); };
+  const pickActor = (a: string) => { setActor(a); setLimit(PAGE); };
+  const pickFrom = (d: string) => { setDateFrom(d); setLimit(PAGE); };
+  const pickTo = (d: string) => { setDateTo(d); setLimit(PAGE); };
 
   const { data: page, isLoading, isError } = useChronologyEvents(filters);
   const { data: facets } = useChronologyFacets();
@@ -163,11 +178,11 @@ export default function ChronologyPage() {
           Event type
         </p>
         <div className="mt-2 flex flex-wrap gap-1.5">
-          <button type="button" onClick={() => setEventType(null)}>
+          <button type="button" onClick={() => pickType(null)}>
             <MonoTag tone={eventType === null ? 'accent' : 'default'}>all · {total}</MonoTag>
           </button>
           {chips.map((t) => (
-            <button key={t} type="button" onClick={() => setEventType(t === eventType ? null : t)}>
+            <button key={t} type="button" onClick={() => pickType(t === eventType ? null : t)}>
               <MonoTag tone={t === eventType ? 'accent' : 'default'}>
                 {t} · {facets?.[t]}
               </MonoTag>
@@ -184,7 +199,7 @@ export default function ChronologyPage() {
         <input
           id="chron-actor"
           value={actor}
-          onChange={(e) => setActor(e.target.value)}
+          onChange={(e) => pickActor(e.target.value)}
           placeholder="any"
           className="mt-2 w-full px-2 py-1.5 rounded-[2px] bg-[var(--bg-input)] border border-[var(--border)] text-[12px] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-[var(--ink)]"
         />
@@ -197,14 +212,14 @@ export default function ChronologyPage() {
             type="date"
             aria-label="From date"
             value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
+            onChange={(e) => pickFrom(e.target.value)}
             className="w-full px-2 py-1.5 rounded-[2px] bg-[var(--bg-input)] border border-[var(--border)] text-[12px] text-[var(--text-primary)] focus:outline-none focus:border-[var(--ink)]"
           />
           <input
             type="date"
             aria-label="To date"
             value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
+            onChange={(e) => pickTo(e.target.value)}
             className="w-full px-2 py-1.5 rounded-[2px] bg-[var(--bg-input)] border border-[var(--border)] text-[12px] text-[var(--text-primary)] focus:outline-none focus:border-[var(--ink)]"
           />
         </div>
@@ -217,6 +232,7 @@ export default function ChronologyPage() {
               setActor('');
               setDateFrom('');
               setDateTo('');
+              setLimit(PAGE);
             }}
             className="mt-5 font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
           >
@@ -267,9 +283,7 @@ export default function ChronologyPage() {
             <p className="mt-1 text-[12px] text-[var(--text-secondary)]">
               {isLoading
                 ? 'Reading the record…'
-                : events.length < matching
-                  ? `Showing ${events.length} of ${matching} event${matching === 1 ? '' : 's'}${filtered ? ' matching' : ' on file'} — the download carries the rest`
-                  : `${matching} event${matching === 1 ? '' : 's'}${filtered ? ' matching' : ' on file'}`}
+                : `${matching.toLocaleString()} event${matching === 1 ? '' : 's'}${filtered ? ' matching' : ' on file'}`}
             </p>
           </header>
 
@@ -304,14 +318,34 @@ export default function ChronologyPage() {
           )}
 
           {!isLoading && !isError && events.length > 0 && (
-            <ChronologyTimeline
-              events={events}
-              showFilters={false}
-              caption="Project record"
-              onEventClick={(e) =>
-                e.id && openDocument({ docId: e.id, fileName: e.source || e.id })
-              }
-            />
+            <>
+              <ChronologyTimeline
+                events={events}
+                showFilters={false}
+                caption="Project record"
+                onEventClick={(e) =>
+                  e.id && openDocument({ docId: e.id, fileName: e.source || e.id })
+                }
+              />
+
+              {/* The list starts at a screenful and walks to the end of the
+                  record. Nothing here is withheld — the count above is the real
+                  one, and the Word download always carries every event. */}
+              {events.length < matching && (
+                <div className="mt-6 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setLimit((n) => n + PAGE * 4)}
+                    className="px-3 py-1.5 rounded-[2px] border border-[var(--border)] bg-[var(--wash)] font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-secondary)] hover:border-[var(--ink)] hover:text-[var(--text-primary)] transition-colors"
+                  >
+                    show more
+                  </button>
+                  <span className="font-mono text-[10px] tracking-[0.14em] uppercase text-[var(--text-muted)]">
+                    {events.length.toLocaleString()} of {matching.toLocaleString()} shown
+                  </span>
+                </div>
+              )}
+            </>
           )}
           </>
           )}
