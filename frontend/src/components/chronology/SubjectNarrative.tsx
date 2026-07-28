@@ -1,4 +1,6 @@
 import type { ChronologyEntry, ChronologySubject } from '../../api/chronologyApi';
+import { downloadSubjectDocx } from '../../api/chronologyApi';
+import DownloadDocxButton from './DownloadDocxButton';
 
 /**
  * An authored chronology, told in full.
@@ -23,15 +25,18 @@ export default function SubjectNarrative({ subject, entries, onClear }: Props) {
           <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
             Chronology · {subject.ref}
           </p>
-          {/* Without this the narrative is a one-way door — there is no other
-              way back to the events the corpus produced. */}
-          <button
-            type="button"
-            onClick={onClear}
-            className="shrink-0 font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-          >
-            ← all events
-          </button>
+          <div className="shrink-0 flex items-baseline gap-4">
+            <DownloadDocxButton onDownload={() => downloadSubjectDocx(subject.ref)} />
+            {/* Without this the narrative is a one-way door — there is no other
+                way back to the events the corpus produced. */}
+            <button
+              type="button"
+              onClick={onClear}
+              className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+            >
+              ← all events
+            </button>
+          </div>
         </div>
         <h2 className="mt-1.5 text-[17px] font-semibold tracking-tight text-[var(--text-primary)]">
           {subject.title}

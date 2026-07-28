@@ -289,13 +289,49 @@ _lock = threading.Lock()
 # 2007, …" — the authored entries lead with when it happened, so the date is
 # pulled out to be set against the paragraph rather than buried in it. Entries
 # that open with context instead of a date keep their sentence whole.
+#
+# The first version took only a bare date after a small set of prepositions, and
+# measured against the real files it left 16 of 22 undated entries showing "—"
+# in the date column while their own first words gave the period:
+#
+#   "By late 2008, after the Infraco Contract was let…"    → qualifier
+#   "In 2010–2011, tie issued a Remediable Termination…"   → year range
+#   "In June–July 2010, tie pursued an RTN strategy…"      → month range
+#   "In December 2008 and January 2009, the TPB…"          → paired months
+#   "From late 2009, tie's management of the Infraco…"     → qualifier
+#   "Between June and December 2010, the Project…"         → unlisted preposition
+#
+# A chronology that prints "—" against a paragraph beginning "By late 2008" is
+# hiding a date it was handed, so the pattern now covers qualifiers, ranges and
+# pairs. The trailing comma is kept as the structural signal: without it, a
+# sentence merely *containing* a year would be mistaken for a dated entry.
+_MONTH = ("January|February|March|April|May|June|July|August|September|"
+          "October|November|December")
+# One point in time: "29 March 2005", "March 2007", "2007" — and a day range
+# inside a single month, "28–30 April 2008", which the authored files use for
+# meetings that ran over consecutive days.
+_DAY = r"\d{1,2}(?:st|nd|rd|th)?"
+_ATOM = (rf"(?:{_DAY}(?:\s*[–—-]\s*{_DAY})?\s+)?(?:{_MONTH})(?:\s+\d{{4}})?"
+         rf"|\d{{4}}")
+# "late 2008", "early 2007", "mid-2009", "the end of 2010".
+_QUAL = (r"(?:(?:late|early|mid)[-\s]+|"
+         r"the\s+(?:end|start|beginning)\s+of\s+)")
+_POINT = rf"(?:{_QUAL})?(?:{_ATOM})"
+# "2010–2011", "June–July 2010", "December 2008 and January 2009".
+_JOIN = r"\s*(?:–|—|-|to|and|through|until)\s*"
+_DATE_PHRASE = rf"{_POINT}(?:{_JOIN}{_POINT})?"
+
+# "On 29 March 2005" reads better in a date column as "29 March 2005" — the
+# preposition is grammar. "By late 2008" and "Between June and December 2010" do
+# not: drop the word and the column claims a point in time where the source
+# gave a boundary or a span. So point markers are dropped and span markers kept.
+_POINT_PREP = "On|In|At"
+_SPAN_PREP = ("By|From|During|Between|Throughout|Over|Since|Until|"
+              "Following|After|Before|Around")
+
 _DATE_LEAD_RE = re.compile(
-    r"^(?:On|In|By|From|During|At)\s+"
-    r"((?:\d{1,2}\s+)?"
-    r"(?:January|February|March|April|May|June|July|August|September|October|"
-    r"November|December)"
-    r"(?:\s+\d{4})?|\d{4})"
-    r"\s*,\s*(.+)$",
+    rf"^(?:(?:{_POINT_PREP})|(?P<span>{_SPAN_PREP}))\s+"
+    rf"(?P<date>{_DATE_PHRASE})\s*,\s*(?P<rest>.+)$",
     re.I,
 )
 
@@ -305,12 +341,16 @@ def _split_date(text: str) -> tuple:
     m = _DATE_LEAD_RE.match(text)
     if not m:
         return "", text
-    rest = m.group(2).strip()
+    when = m.group("date").strip()
+    span = m.group("span")
+    if span:
+        when = f"{span} {when}"
+    rest = m.group("rest").strip()
     # Left as written. Recapitalising the first word looks tidier until it hits
     # "tie" — the delivery company's name is lowercase by design throughout
     # these documents, and "Tie issued…" is simply wrong. The date sits in its
     # own column anyway, so the sentence reads fine starting mid-clause.
-    return m.group(1).strip(), rest or text
+    return when, rest or text
 
 
 def _parse_docx(path: Path) -> List[Dict]:

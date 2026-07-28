@@ -13,7 +13,7 @@ this module is a thin, honest wrapper over them.
 
 from typing import Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
 from backend.core.security import get_current_user, UserContext
@@ -202,3 +202,73 @@ async def chronology_subject(
     if doc is None:
         raise HTTPException(status_code=404, detail="No such chronology")
     return {"status": "match", "subject": _doc_out(doc), "entries": get_entries(ref)}
+
+
+# ── downloads ───────────────────────────────────────────────────────────
+# A chronology is read and then handed on — to a solicitor, into a bundle, as an
+# appendix. Copying it out of the browser loses the date column, which is the
+# one thing that makes it a chronology, so both views export as .docx laid out
+# the way the page lays them out.
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _docx_response(blob: bytes, filename: str) -> Response:
+    return Response(
+        content=blob,
+        media_type=_DOCX_MIME,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # The browser fetches this with XHR to attach the bearer token, so
+            # the header has to be readable from script to name the file.
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+@router.get("/chronology/subjects/{ref}/document")
+async def chronology_subject_docx(
+    ref: str, _: UserContext = Depends(get_current_user),
+) -> Response:
+    """One authored chronology as a Word document."""
+    from fastapi import HTTPException
+
+    from src.chronology_docx import build_subject_docx, safe_filename
+    from src.chronology_library import COLLECTION, get_doc, get_entries
+
+    doc = get_doc(ref)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="No such chronology")
+    blob = build_subject_docx(_doc_out(doc), get_entries(ref), COLLECTION)
+    return _docx_response(blob, safe_filename("Chronology", doc.ref, doc.title) + ".docx")
+
+
+@router.get("/chronology/events/document")
+async def chronology_events_docx(
+    event_type: Optional[str] = Query(None),
+    actor: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    limit: int = Query(_MAX_LIMIT, ge=1, le=_MAX_LIMIT),
+    user: UserContext = Depends(get_current_user),
+) -> Response:
+    """The event list as a Word document, under the same filters and the same
+    corpus scoping as /chronology/events — an export that could show rows the
+    page cannot would be worse than no export.
+
+    The default limit is the maximum rather than the page's 200: someone asking
+    for a document wants the whole record, not the first screen of it.
+    """
+    from src.chronology_docx import build_events_docx, safe_filename
+    from src.event_timeline import get_event_timeline
+
+    rows = get_event_timeline().timeline_context(
+        event_type=event_type, actor=actor,
+        date_from=date_from, date_to=date_to, limit=_MAX_LIMIT,
+    )
+    rows = _scope_to_corpus(rows, user)[:limit]
+    blob = build_events_docx(rows, {
+        "event_type": event_type, "actor": actor,
+        "date_from": date_from, "date_to": date_to,
+    })
+    return _docx_response(blob, safe_filename("Chronology", "project-record") + ".docx")

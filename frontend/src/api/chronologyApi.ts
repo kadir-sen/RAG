@@ -88,3 +88,47 @@ export async function getChronologySubject(ref: string): Promise<SubjectMatch> {
   const { data } = await apiClient.get<SubjectMatch>(`/chronology/subjects/${ref}`);
   return data;
 }
+
+/* ── Word downloads ────────────────────────────────────────────────────
+   Fetched with XHR rather than a plain link because the endpoints need the
+   bearer token, so the response arrives as a blob and is handed to the browser
+   here. Same pattern the CSV exports already use. */
+
+/** Save a blob under `fallback`, preferring the name the server sent. */
+function saveBlob(blob: Blob, headers: Record<string, unknown>, fallback: string) {
+  const disposition = String(headers['content-disposition'] ?? '');
+  const named = /filename="?([^"]+)"?/.exec(disposition)?.[1];
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = named || fallback;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoking immediately can cancel the download in Safari; one tick is enough.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function downloadSubjectDocx(ref: string): Promise<void> {
+  const res = await apiClient.get(`/chronology/subjects/${ref}/document`, {
+    responseType: 'blob',
+  });
+  saveBlob(res.data as Blob, res.headers as Record<string, unknown>, `Chronology-${ref}.docx`);
+}
+
+export async function downloadEventsDocx(f: ChronologyFilters = {}): Promise<void> {
+  const res = await apiClient.get('/chronology/events/document', {
+    responseType: 'blob',
+    params: {
+      event_type: f.eventType || undefined,
+      actor: f.actor || undefined,
+      date_from: f.dateFrom || undefined,
+      date_to: f.dateTo || undefined,
+    },
+  });
+  saveBlob(
+    res.data as Blob,
+    res.headers as Record<string, unknown>,
+    'Chronology-project-record.docx',
+  );
+}
