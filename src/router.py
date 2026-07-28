@@ -1736,12 +1736,28 @@ class QueryRouter:
         Using the whole sentence ("which documents are related to X") makes
         metadata search match generic words like "documents" and "related".
         This keeps search focused on X, and also strips chat-history wrappers.
+
+        The leading \b is load-bearing. Without it the `on` alternative matched
+        the "on" INSIDE any -ion word and threw away everything before it, which
+        in a construction corpus is most questions:
+
+            "…practical completion for Phase 1b?"      → "for Phase 1b"
+            "…delay to construction of the depot?"     → "of the depot"
+            "…decision on the tram programme?"         → "on the tram programme"
+            "Which variation orders affected …?"       → "orders affected …"
+            "What information was provided about …?"   → "was provided about …"
+
+        Retrieval then searched for the fragment, so the answer denied a corpus
+        it had never really looked in. Measured against production: "Who signed
+        the certificate of practical completion for Phase 1b?" searched for
+        "for Phase 1b" and came back "not in the documents", while five
+        documents named Phase 1b — Roseburn to Granton.
         """
         q = QueryRouter._current_question(query)
         q = re.sub(r"\s+", " ", q).strip()
 
         patterns = [
-            r"(?:related\s+to|about|mention(?:ing)?|regarding|on)\s+(.+?)(?:\?|$)",
+            r"\b(?:related\s+to|about|mention(?:ing)?|regarding|on)\s+(.+?)(?:\?|$)",
             r"(?:hakkında|ilgili|konulu|konusunda|ile\s+ilgili)\s+(.+?)(?:\?|$)",
         ]
         for pattern in patterns:

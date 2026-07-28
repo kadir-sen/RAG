@@ -49,6 +49,7 @@ jobs:
             tests/test_router_rebalance.py \
             tests/test_negative_escalation.py \
             tests/test_semantic_cache_routing.py \
+            tests/test_search_topic_extraction.py \
             tests/test_response_builder.py \
             tests/test_response_builder_dedupe.py \
             tests/test_api_embedding.py
