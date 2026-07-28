@@ -130,10 +130,17 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
         <Avatar variant="assistant" />
         <div className="min-w-0 flex-1">
           {/* Hover-only metadata strip */}
+          {/* ESCALATED_AGENT is an agent run too — one the router started after
+              the first pass came back empty. It keeps the agent badge and adds
+              "deep search", so an answer that took the long way says so. */}
           {(response?.route === 'AGENT' ||
+            response?.route === 'ESCALATED_AGENT' ||
             (response?.routing_confidence != null && response.routing_confidence < 0.6)) && (
             <div className="mb-1.5 flex items-center gap-2">
-              {response?.route === 'AGENT' && <Badge label="agent" />}
+              {(response?.route === 'AGENT' || response?.route === 'ESCALATED_AGENT') && (
+                <Badge label="agent" />
+              )}
+              {response?.route === 'ESCALATED_AGENT' && <Badge label="deep search" />}
               {response?.routing_confidence != null && response.routing_confidence < 0.6 && (
                 <Badge label="low confidence" />
               )}

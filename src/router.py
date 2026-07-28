@@ -1374,6 +1374,163 @@ class QueryRouter:
             pass
         return False
 
+    @staticmethod
+    def _report(kind: str, label: str, detail: str = "") -> None:
+        """Publish a live activity step. Never raises — the feed is a nicety, and
+        a query must not fail because nobody is listening to it."""
+        try:
+            from backend.tasks.query_progress import report_step
+            report_step(kind, label, detail)
+        except Exception:
+            pass
+
+    # ── Negative-answer escalation ────────────────────────────
+    # Routes where "nothing found" is a failure worth digging for. FILE_LIST is
+    # excluded deliberately: there "no files match" IS the answer — the UI draws
+    # it as an empty document table, not as a claim about the corpus — and the
+    # agent owns no better tool for it. DATA/THREAD/DRAFT negatives are about
+    # tables and mailboxes, not retrieval depth.
+    _ESCALATABLE_TYPES = (QueryType.DOCUMENT, QueryType.HYBRID)
+
+    # Mirrors response_builder._is_bare_refusal: under this length, an answer
+    # matching the negative patterns is a bare refusal and loses its citations.
+    _BARE_REFUSAL_CHARS = 220
+
+    def _is_negative_shallow(self, result: Dict[str, Any]) -> bool:
+        """True when an answer denies the corpus without citing a single real
+        document. Structured-data sources do NOT count: _handle_document_query
+        attaches related Excel tables even when retrieval returned nothing, so a
+        false negative can arrive carrying a source list that looks non-empty.
+        That is the most common shape of the bug we are chasing."""
+        if self._count_document_sources(result.get("sources") or []):
+            return False
+        answer = (result.get("answer") or "").strip()
+        return (not answer) or self._looks_like_no_document_answer(answer)
+
+    def _should_escalate(self, decision, verdict: str, trace) -> bool:
+        from .config import ENABLE_NEGATIVE_ESCALATION, ENABLE_REACT_AGENT
+        if not (ENABLE_NEGATIVE_ESCALATION and ENABLE_REACT_AGENT):
+            return False
+        # Never escalate a run that WAS the agent, or one already escalated. The
+        # agent gates return early today, so this is defence in depth against a
+        # future edit that removes those early returns.
+        route = str(getattr(trace, "route", "") or "")
+        if route.startswith("AGENT") or "ESCALAT" in route:
+            return False
+        if decision.query_type not in self._ESCALATABLE_TYPES:
+            return False
+        # WEAK means "answerable from the corpus, the draft is just incomplete" —
+        # the only verdict worth a second pass. OFFTOPIC is an honest refusal and
+        # must stay fast. OK means grounded. EMPTY means the verifier itself
+        # failed, and an unknown is not worth an agent run.
+        return verdict == "WEAK"
+
+    def _pick_escalated(self, shallow: Dict[str, Any], deep: Dict[str, Any]):
+        """Adopt the agent's answer ONLY when it is demonstrably better grounded.
+        Deliberately asymmetric: a second, longer "I couldn't find it" is strictly
+        worse than the first — slower, vaguer, and it launders a clean refusal
+        into a hedge. When in doubt, keep the honest refusal."""
+        answer = (deep.get("answer") or "").strip()
+        if not self._count_document_sources(deep.get("sources") or []):
+            return None          # found no real document → keep the refusal
+        if (len(answer) < self._BARE_REFUSAL_CHARS
+                and self._looks_like_no_document_answer(answer)):
+            # Still a refusal, just longer — and short enough that response_builder
+            # would strip its citations, so adopting it would trade a clean "not
+            # found" for a vaguer one with nothing to check.
+            return None
+        if len(answer) < 80:
+            return None          # too thin to count as an improvement
+        return deep
+
+    def _escalate_to_agent(self, expanded: str, doc_ids, trace,
+                           shallow: Dict[str, Any], verdict: str):
+        """Second, DEEPER pass over a shallow false negative.
+
+        Deliberately not _try_react_agent: that one stamps trace.route='AGENT',
+        which would erase the fact that this was an escalation and defeat the
+        re-entry guard in _should_escalate.
+        """
+        import time as _time
+        from .config import (ENABLE_REACT_AGENT, ESCALATION_MAX_ITERATIONS,
+                             ESCALATION_TIME_BUDGET_SEC, ESCALATION_LLM_BUDGET)
+        if not ENABLE_REACT_AGENT:
+            return None
+        base = str(getattr(trace, "route", "") or "UNKNOWN")
+        shallow_chars = len((shallow.get("answer") or "").strip())
+        logger.info(f"   Negative answer + verdict={verdict} → escalating to ReAct agent "
+                    f"(iters={ESCALATION_MAX_ITERATIONS}, "
+                    f"{ESCALATION_TIME_BUDGET_SEC}s, llm<={ESCALATION_LLM_BUDGET})")
+        self._report("analysing", "first pass found nothing → searching harder",
+                     "multi-document deep search")
+        t0 = _time.monotonic()
+        try:
+            deep = self._get_react_agent().run(
+                expanded, doc_ids=doc_ids,
+                max_iterations=ESCALATION_MAX_ITERATIONS,
+                time_budget_sec=ESCALATION_TIME_BUDGET_SEC,
+                llm_call_budget=ESCALATION_LLM_BUDGET,
+            )
+        except Exception as e:
+            logger.error(f"   Escalation agent failed → keeping first-pass answer: {e}")
+            trace.record_error(f"escalation: {e}")
+            trace.route = f"{base}_ESCALATION_FAILED"
+            self._report("analysing", "deep search unavailable → keeping first answer")
+            return None
+
+        elapsed = _time.monotonic() - t0
+        picked = self._pick_escalated(shallow, deep)
+        deep_docs = self._count_document_sources(deep.get("sources") or [])
+        deep_steps = len((deep.get("routing") or {}).get("tools_used") or [])
+        outcome = "adopted" if picked is not None else "kept_shallow"
+        trace.route = (f"{base}_ESCALATED_AGENT" if picked is not None
+                       else f"{base}_ESCALATED_KEPT")
+        try:
+            trace.record_routing(
+                escalated=True, escalation_verdict=verdict,
+                escalation_outcome=outcome, escalation_steps=deep_steps,
+                escalation_secs=round(elapsed, 1), escalation_deep_docs=deep_docs,
+                shallow_answer_chars=shallow_chars,
+            )
+        except Exception:
+            pass
+        logger.info(f"[Escalation] verdict={verdict} outcome={outcome} "
+                    f"deep_docs={deep_docs} deep_steps={deep_steps} "
+                    f"secs={elapsed:.1f} shallow_chars={shallow_chars} "
+                    f"q={expanded[:80]!r}")
+        if picked is not None:
+            self._report("answer", f"deep search found {deep_docs} document(s)")
+        else:
+            # The most valuable line here: it turns a bare "not in the corpus"
+            # into an audited refusal the reader can weigh.
+            self._report("analysing", "deep search confirmed: no matching documents")
+        return picked
+
+    def _maybe_escalate_negative(self, query: str, expanded: str, doc_ids,
+                                 decision, result: Dict[str, Any], verdict: str,
+                                 trace) -> Tuple[Optional[Dict[str, Any]], str]:
+        """Gate + run. Returns (escalated_result_or_None, verdict).
+
+        Never raises: a failure here must leave the first-pass answer intact.
+        """
+        try:
+            if not self._is_negative_shallow(result):
+                return None, verdict
+            # _verify_answer short-circuits to a free "OK" whenever `sources` is
+            # non-empty — including when the only sources are Excel tables that
+            # the document handler attached to an otherwise empty result. Spend
+            # the lite call we did not spend, on a document-only view.
+            if not self._verify_looks_weak(result.get("answer") or "",
+                                           result.get("sources") or []):
+                verdict = self._verify_answer(
+                    query, {"answer": result.get("answer") or "", "sources": []})
+            if not self._should_escalate(decision, verdict, trace):
+                return None, verdict
+            return self._escalate_to_agent(expanded, doc_ids, trace, result, verdict), verdict
+        except Exception as e:
+            logger.warning(f"   Escalation gate failed (keeping first pass): {e}")
+            return None, verdict
+
     def _try_react_agent(self, expanded: str, doc_ids, trace, reason: str):
         """Run the ReAct agent when enabled. Returns its result, or None when the
         agent is disabled or raised (the caller then uses its own fallback). Never
@@ -2977,19 +3134,15 @@ class QueryRouter:
                 out[k] = str(v).strip()
         return out
 
-    def _verify_answer(self, query: str, result: Dict[str, Any]) -> str:
-        """Cheap, CONDITIONAL answer self-check → a verdict that (a) feeds the
-        feedback-free learning loop and the teacher's curriculum, and (b) lets the
-        UI/refusal logic stay clean. Token-efficient: a strong answer (real sources
-        + substantial text) returns 'OK' with NO LLM call; only a weak/empty answer
-        spends one cheap lite call to tell EKSIK (answerable, just incomplete) from
-        KONU-DIŞI (out of corpus → honest refusal).
-        Verdicts: OK | WEAK | OFFTOPIC | EMPTY.
-        """
-        answer = (result.get("answer") or "").strip()
-        sources = result.get("sources") or []
+    @staticmethod
+    def _verify_looks_weak(answer: str, sources: List[Dict[str, Any]]) -> bool:
+        """The LLM-free half of the verify decision, extracted so a caller can
+        tell "verify returned OK for free" from "verify spent its lite call and
+        the judge said OK". The escalation gate needs exactly that distinction to
+        guarantee it never spends more than one lite call per query."""
+        answer = (answer or "").strip()
         a_low = answer.lower()
-        looks_weak = (
+        return (
             not sources and (
                 len(answer) < 40
                 or "not found" in a_low
@@ -2999,7 +3152,21 @@ class QueryRouter:
                 or "could not find" in a_low
             )
         )
-        if not looks_weak:
+
+    def _verify_answer(self, query: str, result: Dict[str, Any]) -> str:
+        """Cheap, CONDITIONAL answer self-check → a verdict that (a) feeds the
+        feedback-free learning loop and the teacher's curriculum, (b) lets the
+        UI/refusal logic stay clean, and (c) decides whether a negative answer is
+        worth a second, deeper pass (see _maybe_escalate_negative).
+        Token-efficient: a strong answer (real sources + substantial text) returns
+        'OK' with NO LLM call; only a weak/empty answer spends one cheap lite call
+        to tell EKSIK (answerable, just incomplete) from KONU-DIŞI (out of corpus
+        → honest refusal).
+        Verdicts: OK | WEAK | OFFTOPIC | EMPTY.
+        """
+        answer = (result.get("answer") or "").strip()
+        sources = result.get("sources") or []
+        if not self._verify_looks_weak(answer, sources):
             return "OK"  # strong answer — no verify call spent
         try:
             from . import llm_client
@@ -3451,6 +3618,46 @@ class QueryRouter:
                     )
                     trace.route = "DATA_FALLBACK_FROM_HYBRID"
 
+            # Cheap, conditional self-verify → feeds the feedback-free learning
+            # loop (logged by the orchestrator) and marks out-of-corpus answers.
+            # Strong answers cost nothing here. This sits ABOVE the routing attach
+            # because the escalation below consumes the verdict; both DATA
+            # fallbacks have already run, so it still judges the final shallow
+            # result exactly as it did before.
+            try:
+                verdict = self._verify_answer(query, result)
+            except Exception:
+                verdict = ""
+
+            # A negative answer that the verifier says is actually answerable gets
+            # one deeper pass. The agent searches unscoped and wider, which is
+            # where these false negatives come from.
+            escalated, verdict = self._maybe_escalate_negative(
+                query, expanded, doc_ids, decision, result, verdict, trace)
+            if escalated is not None:
+                # The agent carries its own routing dict (route=AGENT,
+                # tools_used); keep it and annotate rather than overwrite. Its
+                # query_type stays "hybrid" on purpose — response_builder only
+                # strips citations from document/file_list answers, so an adopted
+                # answer keeps the documents it found.
+                esc_routing = escalated.setdefault("routing", {})
+                # Surfaced to the API as `route`, so an escalation is visible
+                # without reading the telemetry file — and so the UI can say the
+                # answer came from a deep search rather than the first pass.
+                esc_routing["route"] = "ESCALATED_AGENT"
+                esc_routing["escalated"] = True
+                esc_routing["escalated_from"] = decision.query_type.value
+                esc_routing["reasons"] = (esc_routing.get("reasons") or []) + [
+                    "escalated: first pass found no matching documents"]
+                # The verdict describes the FIRST pass, not this answer — that is
+                # what the learning loop should learn from. Anything reading it as
+                # a label for the returned answer will mislabel a rescue.
+                escalated["verify_verdict"] = verdict
+                logger.info(f"Query complete (escalated) - "
+                            f"{len(escalated.get('sources', []))} sources "
+                            f"[verify={verdict}]")
+                return escalated
+
             # Attach routing metadata
             result["routing"] = {
                 "decision": decision.query_type.value,
@@ -3458,14 +3665,7 @@ class QueryRouter:
                 "reasons": decision.reasons,
                 "used_llm": decision.used_llm,
             }
-
-            # Cheap, conditional self-verify → feeds the feedback-free learning loop
-            # (logged by the orchestrator) and marks out-of-corpus answers. Strong
-            # answers cost nothing here.
-            try:
-                result["verify_verdict"] = self._verify_answer(query, result)
-            except Exception:
-                result["verify_verdict"] = ""
+            result["verify_verdict"] = verdict
 
             logger.info(f"Query complete - {len(result.get('sources', []))} sources "
                         f"[verify={result.get('verify_verdict','')}]")
