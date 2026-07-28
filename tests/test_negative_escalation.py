@@ -254,9 +254,23 @@ def test_a_nuanced_refusal_keeps_its_explanation():
     assert QueryRouter._looks_like_no_document_answer(_PHASE_1B["answer"]) is True
 
 
-def test_document_answers_are_always_judged_but_other_routes_are_not(monkeypatch):
-    """A document refusal reads as fluent, cited prose, so nothing cheap can spot
-    it — those always spend the lite call. DATA/FILE_LIST keep the free path."""
+_ANSWERED = {
+    "query_type": "document",
+    "answer": ("The delay to the construction of the depot was caused by a water main "
+               "restricting site access from 01/08/08 until 18/02/09, and by outstanding "
+               "MUDFA works in the same area." + " Further detail follows." * 6),
+    "sources": [{"file_name": f"CEC0044340{i}.pdf", "page_number": i} for i in range(1, 10)],
+}
+
+
+def test_only_a_denial_is_judged(monkeypatch):
+    """Both halves of the gate, and each was learned the expensive way.
+
+    A denial WITH citations must reach the judge — that is the shape of the real
+    false negatives. An answer that actually answers must not: judging those had
+    the judge calling them incomplete, and every one cost a ~45s deep pass that
+    was then discarded. Measured on production: 21s → 125s on a correct answer.
+    """
     r = QueryRouter.__new__(QueryRouter)
     spent = {"n": 0}
 
@@ -271,14 +285,29 @@ def test_document_answers_are_always_judged_but_other_routes_are_not(monkeypatch
 
     monkeypatch.setattr(llm, "generate_text", _judge)
 
-    # a strong-looking document answer is still judged
+    # denies the corpus while citing ten documents → judged
     assert r._verify_answer("q", _PHASE_1B) == "WEAK"
     assert spent["n"] == 1
 
-    # the same answer on a DATA route takes the free path
-    data_result = dict(_PHASE_1B, query_type="data")
-    assert r._verify_answer("q", data_result) == "OK"
-    assert spent["n"] == 1, "no call spent on a non-document route with sources"
+    # answers the question with nine citations → not judged, costs nothing
+    assert r._verify_answer("q", _ANSWERED) == "OK"
+    assert spent["n"] == 1, "a substantive answer must not spend a verify call"
+
+    # the same denial on a DATA route takes the old free path
+    assert r._verify_answer("q", dict(_PHASE_1B, query_type="data")) == "OK"
+    assert spent["n"] == 1
+
+
+def test_reads_as_denial():
+    r = QueryRouter.__new__(QueryRouter)
+    assert r._reads_as_denial(_PHASE_1B) is True          # cited, but denies
+    assert r._reads_as_denial(_BOREHOLES) is True
+    assert r._reads_as_denial({"answer": "x", "sources": []}) is True   # cites nothing
+    assert r._reads_as_denial(_ANSWERED) is False
+    # Excel-only citations are not documents, so this is still a denial
+    assert r._reads_as_denial({
+        "answer": "Here are the totals." * 20,
+        "sources": [{"file_name": "boq.xlsx", "type": "structured_data"}]}) is True
 
 
 def test_verdict_tokens_map_both_old_and_new(monkeypatch):
