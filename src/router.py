@@ -3169,15 +3169,34 @@ class QueryRouter:
             )
         )
 
-    # Routes whose answers are ALWAYS judged by the LLM rather than by the free
-    # text shortcut. Measured reason: production refusals arrive with citations
-    # attached and phrasings no regex list had — "the provided document excerpts
-    # do not contain information explicitly labeled 'Phase 1b'", 351 characters,
-    # 10 citations, while five documents discussed Phase 1b by name. Nothing
-    # cheap can see that; only reading the answer against the question can. The
-    # other routes keep the free path — a DATA or FILE_LIST negative is about
-    # tables and filenames, not retrieval depth.
+    # Routes whose answers are judged by the LLM rather than by the free text
+    # shortcut — but only when the answer actually reads as a denial. Both
+    # halves are load-bearing, and each was learned the expensive way:
+    #
+    #   * The regex-only gate missed the real refusals, which arrive WITH
+    #     citations ("the provided document excerpts do not contain information
+    #     explicitly labeled 'Phase 1b'" — 351 characters, 10 citations, while
+    #     five documents named Phase 1b). Hence the LLM judge.
+    #   * Judging every document answer made the judge call substantive answers
+    #     incomplete, and each of those cost the user a ~45s deep pass for
+    #     nothing. Measured on production: a question that answered correctly in
+    #     21s with 9 citations took 125s, and the deep pass was discarded.
+    #
+    # So the structural check decides whether this is a denial at all, and the
+    # judge decides whether a denial is worth digging into. A good answer costs
+    # nothing, which is what it should cost.
     _ALWAYS_VERIFIED_TYPES = ("document", "hybrid")
+
+    def _reads_as_denial(self, result: Dict[str, Any]) -> bool:
+        """Does this answer tell the user the corpus does not have it?
+
+        Cites nothing, or says so in words. The word test carries the phrasings
+        measured on production, shared with the response builder via
+        src/answer_signals so the two cannot drift apart again.
+        """
+        if not self._count_document_sources(result.get("sources") or []):
+            return True
+        return self._looks_like_no_document_answer(result.get("answer") or "")
 
     def _verify_answer(self, query: str, result: Dict[str, Any]) -> str:
         """Answer self-check → a verdict that (a) feeds the feedback-free
@@ -3185,18 +3204,23 @@ class QueryRouter:
         stay clean, and (c) decides whether an answer is worth a second, deeper
         pass (see _maybe_escalate_negative).
 
-        Document and hybrid answers always spend one cheap lite call, because the
-        false negatives we are hunting look grounded and read as fluent prose.
-        Every other route keeps the old shortcut: a strong answer returns 'OK'
-        for free, and only a visibly weak one is judged.
+        A document or hybrid answer that reads as a denial is judged by the LLM,
+        because the false negatives we are hunting deny the corpus in fluent
+        prose while citing documents — no text test can tell those from a
+        correct refusal. An answer that is not a denial is not judged at all:
+        it has nothing to escalate, and spending a call plus a deep pass on it
+        costs the user a minute and a half for nothing. Every other route keeps
+        the old shortcut.
 
         Verdicts: OK | WEAK | OFFTOPIC | EMPTY.
         """
         answer = (result.get("answer") or "").strip()
         sources = result.get("sources") or []
         qtype = str(result.get("query_type") or "").lower()
-        if (qtype not in self._ALWAYS_VERIFIED_TYPES
-                and not self._verify_looks_weak(answer, sources)):
+        if qtype in self._ALWAYS_VERIFIED_TYPES:
+            if not self._reads_as_denial(result):
+                return "OK"  # answered the question — nothing to dig for
+        elif not self._verify_looks_weak(answer, sources):
             return "OK"  # strong answer on a cheap route — no verify call spent
         try:
             from . import llm_client
