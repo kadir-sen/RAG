@@ -1396,17 +1396,6 @@ class QueryRouter:
     # matching the negative patterns is a bare refusal and loses its citations.
     _BARE_REFUSAL_CHARS = 220
 
-    def _is_negative_shallow(self, result: Dict[str, Any]) -> bool:
-        """True when an answer denies the corpus without citing a single real
-        document. Structured-data sources do NOT count: _handle_document_query
-        attaches related Excel tables even when retrieval returned nothing, so a
-        false negative can arrive carrying a source list that looks non-empty.
-        That is the most common shape of the bug we are chasing."""
-        if self._count_document_sources(result.get("sources") or []):
-            return False
-        answer = (result.get("answer") or "").strip()
-        return (not answer) or self._looks_like_no_document_answer(answer)
-
     def _should_escalate(self, decision, verdict: str, trace) -> bool:
         from .config import ENABLE_NEGATIVE_ESCALATION, ENABLE_REACT_AGENT
         if not (ENABLE_NEGATIVE_ESCALATION and ENABLE_REACT_AGENT):
@@ -1433,9 +1422,8 @@ class QueryRouter:
         answer = (deep.get("answer") or "").strip()
         if not self._count_document_sources(deep.get("sources") or []):
             return None          # found no real document → keep the refusal
-        if (len(answer) < self._BARE_REFUSAL_CHARS
-                and self._looks_like_no_document_answer(answer)):
-            # Still a refusal, just longer — and short enough that response_builder
+        if self._is_bare_denial(answer):
+            # Still a refusal, just longer — and bare enough that response_builder
             # would strip its citations, so adopting it would trade a clean "not
             # found" for a vaguer one with nothing to check.
             return None
@@ -1511,19 +1499,16 @@ class QueryRouter:
                                  trace) -> Tuple[Optional[Dict[str, Any]], str]:
         """Gate + run. Returns (escalated_result_or_None, verdict).
 
+        There is no text pre-filter here on purpose. The first version required
+        the answer to *look* like a denial and to carry no document citations,
+        and measurement against production showed both halves were wrong: the
+        real false negatives arrive with citations attached and in phrasings no
+        pattern list had. The verdict — a judgement made by reading the answer
+        against the question — is the whole gate.
+
         Never raises: a failure here must leave the first-pass answer intact.
         """
         try:
-            if not self._is_negative_shallow(result):
-                return None, verdict
-            # _verify_answer short-circuits to a free "OK" whenever `sources` is
-            # non-empty — including when the only sources are Excel tables that
-            # the document handler attached to an otherwise empty result. Spend
-            # the lite call we did not spend, on a document-only view.
-            if not self._verify_looks_weak(result.get("answer") or "",
-                                           result.get("sources") or []):
-                verdict = self._verify_answer(
-                    query, {"answer": result.get("answer") or "", "sources": []})
             if not self._should_escalate(decision, verdict, trace):
                 return None, verdict
             return self._escalate_to_agent(expanded, doc_ids, trace, result, verdict), verdict
@@ -1699,22 +1684,29 @@ class QueryRouter:
 
     @staticmethod
     def _looks_like_no_document_answer(answer: str) -> bool:
-        """Detect synthesized answers that deny document matches."""
-        text = (answer or "").strip().lower()
+        """Detect synthesized answers that deny document matches.
+
+        Patterns live in src/answer_signals so the router and the response
+        builder cannot drift apart again. Here an empty answer counts as a
+        denial (the response builder takes the opposite view for its own case).
+        """
+        from .answer_signals import denies_corpus
+        text = (answer or "").strip()
         if not text:
             return True
-        negative_patterns = [
-            r"\bno\s+(?:relevant\s+)?(?:documents?|files?|sources?)\b",
-            r"\bno\s+documents?\s+(?:are\s+)?related\b",
-            r"\bnot\s+found\b",
-            r"\bwas\s+not\s+found\b",
-            r"\bwere\s+not\s+found\b",
-            r"\bnot\s+available\b",
-            r"\bnot\s+mentioned\b",
-            r"\bdoes\s+not\s+appear\b",
-            r"\bcould\s+not\s+find\b",
-        ]
-        return any(re.search(p, text) for p in negative_patterns)
+        return denies_corpus(text)
+
+    @classmethod
+    def _is_bare_denial(cls, answer: str) -> bool:
+        """A denial with nothing else in it — safe to replace or to strip
+        citations from. Mirrors response_builder._is_bare_refusal, including its
+        length threshold, so the router and the response builder agree on which
+        answers carry real content."""
+        text = (answer or "").strip()
+        if not text:
+            return True
+        return (len(text) < cls._BARE_REFUSAL_CHARS
+                and cls._looks_like_no_document_answer(text))
 
     @staticmethod
     def _count_document_sources(sources: List[Dict[str, Any]]) -> int:
@@ -1918,10 +1910,18 @@ class QueryRouter:
         except Exception as e:
             logger.warning(f"Excel enrichment for doc query failed: {e}")
 
-        # 4. If RAG answer is empty/negative but we have sources, generate a
-        # deterministic summary so the answer and citations cannot contradict.
+        # 4. If the RAG answer is empty or a bare denial but we have sources,
+        # generate a deterministic summary so the answer and citations cannot
+        # contradict each other.
+        #
+        # Only BARE denials. A nuanced refusal that explains what it did find —
+        # "the excerpts do not mention Phase 1b; they refer to Phase 1 and
+        # Phase 2 in the context of the Servicing Access Strategy" — carries
+        # real information, and replacing it with "Found 10 related document(s)"
+        # would throw that away for a bare count. That distinction matters more
+        # now that the denial patterns are shared and broader than they were.
         answer = result.get("answer", "")
-        if metadata_doc_ids and final_sources and self._looks_like_no_document_answer(answer):
+        if metadata_doc_ids and final_sources and self._is_bare_denial(answer):
             answer = self._found_documents_answer(final_sources)
 
         return {
@@ -3153,36 +3153,63 @@ class QueryRouter:
             )
         )
 
+    # Routes whose answers are ALWAYS judged by the LLM rather than by the free
+    # text shortcut. Measured reason: production refusals arrive with citations
+    # attached and phrasings no regex list had — "the provided document excerpts
+    # do not contain information explicitly labeled 'Phase 1b'", 351 characters,
+    # 10 citations, while five documents discussed Phase 1b by name. Nothing
+    # cheap can see that; only reading the answer against the question can. The
+    # other routes keep the free path — a DATA or FILE_LIST negative is about
+    # tables and filenames, not retrieval depth.
+    _ALWAYS_VERIFIED_TYPES = ("document", "hybrid")
+
     def _verify_answer(self, query: str, result: Dict[str, Any]) -> str:
-        """Cheap, CONDITIONAL answer self-check → a verdict that (a) feeds the
-        feedback-free learning loop and the teacher's curriculum, (b) lets the
-        UI/refusal logic stay clean, and (c) decides whether a negative answer is
-        worth a second, deeper pass (see _maybe_escalate_negative).
-        Token-efficient: a strong answer (real sources + substantial text) returns
-        'OK' with NO LLM call; only a weak/empty answer spends one cheap lite call
-        to tell EKSIK (answerable, just incomplete) from KONU-DIŞI (out of corpus
-        → honest refusal).
+        """Answer self-check → a verdict that (a) feeds the feedback-free
+        learning loop and the teacher's curriculum, (b) lets the UI/refusal logic
+        stay clean, and (c) decides whether an answer is worth a second, deeper
+        pass (see _maybe_escalate_negative).
+
+        Document and hybrid answers always spend one cheap lite call, because the
+        false negatives we are hunting look grounded and read as fluent prose.
+        Every other route keeps the old shortcut: a strong answer returns 'OK'
+        for free, and only a visibly weak one is judged.
+
         Verdicts: OK | WEAK | OFFTOPIC | EMPTY.
         """
         answer = (result.get("answer") or "").strip()
         sources = result.get("sources") or []
-        if not self._verify_looks_weak(answer, sources):
-            return "OK"  # strong answer — no verify call spent
+        qtype = str(result.get("query_type") or "").lower()
+        if (qtype not in self._ALWAYS_VERIFIED_TYPES
+                and not self._verify_looks_weak(answer, sources)):
+            return "OK"  # strong answer on a cheap route — no verify call spent
         try:
             from . import llm_client
             from .prompt_security import build_system_prompt
+            # Neutral wording on purpose. The previous prompt opened with "the
+            # system produced a weak/empty draft", which told the judge the
+            # conclusion before it read anything — fine when it only ran on
+            # already-weak answers, wrong now that it judges every document
+            # answer. INCOMPLETE is deliberately narrow: an answer that is merely
+            # brief is COMPLETE; it has to actually fail to answer, because every
+            # INCOMPLETE costs the user a ~45s second pass.
             prompt = (
-                "A user asked a question; the system produced a weak/empty draft. "
+                "Judge whether the ANSWER actually answers the QUESTION using the "
+                "project's documents. The corpus is construction-project and public-"
+                "inquiry material: contracts, correspondence, witness statements, "
+                "board papers, programmes, reports.\n\n"
                 "Reply with EXACTLY ONE token:\n"
-                "EKSIK — the question is answerable from construction-project documents "
-                "but the draft is incomplete;\n"
-                "KONU_DISI — the question is outside the document corpus (should be refused);\n"
-                "TAMAM — the draft is actually acceptable.\n\n"
-                f"QUESTION: {query}\n\nDRAFT: {answer[:600] or '(empty)'}"
+                "COMPLETE — it answers the question, even if briefly.\n"
+                "INCOMPLETE — it denies, deflects, or asks the user to rephrase, but "
+                "the question is the kind of thing this corpus would cover, so a "
+                "deeper search is worth trying.\n"
+                "OUTSIDE — the question is outside the corpus entirely (live weather, "
+                "general knowledge, another project), so refusing is correct.\n\n"
+                f"QUESTION: {query}\n\nANSWER: {answer[:900] or '(empty)'}"
             )
             resp = llm_client.generate_text(
                 prompt,
-                system=build_system_prompt("You judge answer completeness. One token."),
+                system=build_system_prompt(
+                    "You judge whether an answer answers the question. One token."),
                 max_tokens=8, model=GEMINI_MODEL_LITE,
             )
             try:
@@ -3193,9 +3220,13 @@ class QueryRouter:
             except Exception:
                 pass
             v = resp.text.strip().upper()
-            if "KONU" in v:
+            # The older Turkish tokens are still accepted: a cached response or a
+            # model that has seen the previous prompt can still emit them, and
+            # silently reading KONU_DISI as "OK" would send an out-of-corpus
+            # question into a deep search.
+            if "OUTSIDE" in v or "KONU" in v:
                 return "OFFTOPIC"
-            if "EKSIK" in v:
+            if "INCOMPLETE" in v or "EKSIK" in v:
                 return "WEAK"
             return "OK"
         except Exception:

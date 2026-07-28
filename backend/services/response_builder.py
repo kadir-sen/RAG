@@ -147,23 +147,11 @@ def _is_bare_refusal(answer: str) -> bool:
 
 
 def _looks_like_no_document_answer(answer: str) -> bool:
-    text = (answer or "").strip().lower()
-    if not text:
-        return False
-    patterns = [
-        r"\bno\s+(?:relevant\s+)?(?:documents?|files?|sources?)\b",
-        r"\bno\s+documents?\s+(?:are\s+)?related\b",
-        r"\bnot\s+found\b",
-        r"\bwas\s+not\s+found\b",
-        r"\bwere\s+not\s+found\b",
-        r"\bcould\s+not\s+find\b",
-        r"\bprovided\s+(?:context|information)\s+does\s+not\s+contain\b",
-        r"\bdoes\s+not\s+contain\s+(?:information|details)\b",
-        r"\bno\s+information\s+(?:related\s+to|about|regarding)\b",
-        r"\bcannot\s+provide\s+information\b",
-        r"\bcan't\s+provide\s+information\b",
-    ]
-    return any(re.search(p, text) for p in patterns)
+    """Shared with the router — see src/answer_signals. The two used to be
+    separate lists with different patterns, which meant each recognised
+    refusals the other let through."""
+    from src.answer_signals import denies_corpus
+    return denies_corpus(answer)
 
 
 def _is_empty_response(answer: str) -> bool:
