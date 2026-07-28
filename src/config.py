@@ -291,45 +291,101 @@ TELEMETRY_LOG_DIR = str(BASE_DIR / "logs" / "telemetry")
 Path(TELEMETRY_LOG_DIR).mkdir(parents=True, exist_ok=True)
 
 
-def normalize_stored_paths():
-    """Auto-fix Windows paths in JSON registry files at startup.
-    Ensures the app works in Docker/Linux regardless of where files were originally indexed."""
+# ── Windows-path normalization (opt-in, structure-preserving) ──────────────
+# This used to run at import time — on every process start — and rewrote every
+# JSON file under storage/ and data/ as RAW TEXT ("\\" -> "/"). Because it never
+# parsed the JSON it destroyed the escapes the format is built on: \" became /"
+# and the file stopped parsing, \n became /n. 97 files under storage/ and 11
+# under data/ were unparseable when this was found, including more than half of
+# one account's chat history — that, not any storage loss, is what "history
+# resets on every deploy" was. See src/json_repair.py for the damage and the
+# recovery.
+#
+# It exists to fix registry entries indexed on a Windows host
+# (C:\projects\ML_project\data\...). There are none left: every file_path in
+# document_registry.json and parquet/catalog.json is already POSIX, and
+# DocumentService._resolve_path already rescues a Windows-style path by basename
+# search at read time. So this is OFF by default; NORMALIZE_STORED_PATHS=1 runs
+# it.
+#
+# The rewrite now works on the PARSED document — only string *values*, only
+# under path-bearing keys, only in a fixed list of registry files. Structural
+# corruption is impossible by construction: json.loads in, json.dumps out. And
+# storage/conversations/** is not in the list at all; it is user prose and holds
+# no path this application owns.
+NORMALIZE_STORED_PATHS = os.getenv("NORMALIZE_STORED_PATHS", "false").lower() in ("1", "true", "yes")
+
+_PATH_KEYS = frozenset({
+    "file_path", "source_file", "path", "local_path", "source_path", "output_path",
+})
+
+
+def _normalize_path_value(value: str) -> str:
+    """Map a Windows absolute path onto this installation's root."""
+    from pathlib import PureWindowsPath
+    posix = PureWindowsPath(value).as_posix()
+    for marker in ("/data/", "/storage/"):
+        idx = posix.find(marker)
+        if idx != -1:
+            return str(BASE_DIR) + posix[idx:]
+    return posix
+
+
+def _normalize_node(node):
+    """Rewrite path-shaped values under path keys. Returns (node, changed)."""
     import re as _re
+    win_abs = _re.compile(r"^[A-Za-z]:[\\/]")
+    changed = False
+    if isinstance(node, dict):
+        for key, val in node.items():
+            if isinstance(val, str) and key in _PATH_KEYS and win_abs.match(val):
+                new = _normalize_path_value(val)
+                if new != val:
+                    node[key] = new
+                    changed = True
+            else:
+                _, sub = _normalize_node(val)
+                changed = changed or sub
+    elif isinstance(node, list):
+        for item in node:
+            _, sub = _normalize_node(item)
+            changed = changed or sub
+    return node, changed
+
+
+def normalize_stored_paths() -> int:
+    """Normalize Windows absolute paths in the registry files. Returns files changed."""
+    import json as _json
     import logging
     _log = logging.getLogger("app")
-    app_root = str(BASE_DIR)  # e.g. /app
-    # Known Windows prefixes that should map to app_root
-    _WIN_PREFIXES = [
-        r"C:\\projects\\ML_project\\",
-        r"C:/projects/ML_project/",
-        r"C:\\\\projects\\\\ML_project\\\\",
+    targets = [
+        STORAGE_DIR / "document_registry.json",
+        STORAGE_DIR / "parquet" / "catalog.json",
+        CONVERTER_REGISTRY_FILE,
     ]
     count = 0
-    for search_dir in [STORAGE_DIR, DATA_DIR]:
-        if not search_dir.exists():
+    for target in targets:
+        if not target.exists():
             continue
-        for json_file in search_dir.rglob("*.json"):
-            try:
-                raw = json_file.read_text(encoding="utf-8")
-            except Exception:
-                continue
-            original = raw
-            for prefix in _WIN_PREFIXES:
-                raw = raw.replace(prefix, app_root + "/")
-            # Fix remaining backslashes in paths
-            raw = raw.replace("\\\\", "/")
-            raw = raw.replace("\\", "/")
-            # Collapse double slashes (but not in http://)
-            raw = _re.sub(r'(?<!:)//', '/', raw)
-            if raw != original:
-                json_file.write_text(raw, encoding="utf-8")
-                count += 1
+        try:
+            data = _json.loads(target.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _log.warning(f"[PathNorm] skipping unparseable {target}: {exc}")
+            continue
+        data, changed = _normalize_node(data)
+        if not changed:
+            continue
+        tmp = target.with_name(target.name + ".pathnorm.tmp")
+        tmp.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(target)
+        count += 1
     if count:
-        _log.info(f"[PathNorm] Fixed Windows paths in {count} JSON files")
+        _log.info(f"[PathNorm] normalized Windows paths in {count} registry file(s)")
+    return count
 
 
-# Run path normalization at import time (startup)
-normalize_stored_paths()
+if NORMALIZE_STORED_PATHS:
+    normalize_stored_paths()
 
 
 def validate_config() -> tuple[bool, list[str]]:
