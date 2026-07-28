@@ -1213,16 +1213,32 @@ class QueryRouter:
 
             logger.info(f"   LLM rich classified as: {qtype.value} (raw: {result})")
 
-            return RouterDecision(
-                query_type=qtype,
-                confidence=0.85,
-                reasons=[f"LLM classified as {qtype.value}"],
-                used_llm=True,
-                llm_usage={
+            # `resp` only exists on the LLM branch — on a semantic-cache hit we
+            # have the route token but no response object, and no usage to bill.
+            # Reading resp.usage unconditionally here raised UnboundLocalError,
+            # which the except below swallowed into a `None` return: EVERY cache
+            # hit silently threw away the classification it had just found and
+            # fell through to the keyword safety net (confidence 0.5). That made
+            # the cache a net loss — we paid for the embedding and used nothing —
+            # and routed paraphrases of a working question worse than the
+            # original. Keep the usage block on the branch that has a response.
+            # Mirrors the `if _sem_hit:` branch above exactly — `resp` is bound
+            # iff that branch was not taken.
+            llm_usage = None
+            if not _sem_hit:
+                llm_usage = {
                     "prompt_tokens": resp.usage.prompt_tokens,
                     "completion_tokens": resp.usage.completion_tokens,
                     "cost": resp.usage.cost_estimate,
-                },
+                }
+
+            return RouterDecision(
+                query_type=qtype,
+                confidence=0.85,
+                reasons=[f"LLM classified as {qtype.value}"
+                         + (" (semantic cache)" if _sem_hit else "")],
+                used_llm=not _sem_hit,
+                llm_usage=llm_usage,
             )
 
         except Exception as e:
