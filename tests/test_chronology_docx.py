@@ -136,14 +136,29 @@ _ROWS = [
 
 
 def test_event_export_keeps_free_form_dates_whole():
-    doc = _read(build_events_docx(_ROWS, {}))
-    rows = doc.tables[0].rows
-    assert rows[0].cells[0].text.strip().upper() == "DATE"
-    # "1970 to 1975" must not be trimmed to a year — the store keeps what the
+    """Laid out as a hanging indent rather than a table — date, tab, event —
+    which is what makes exporting the whole 28k-event record affordable."""
+    text = "\n".join(p.text for p in _read(build_events_docx(_ROWS, {})).paragraphs)
+    # "1970 to 1975" must not be trimmed to a year: the store keeps what the
     # document said, and so does the export
-    assert rows[1].cells[0].text.strip() == "1970 to 1975"
-    assert "Alex Macaulay" in rows[1].cells[2].text
-    assert rows[1].cells[3].text.strip() == "CVS00000004.pdf"
+    assert "1970 to 1975\tChartered Engineer at Stirling County Council" in text
+    assert "28 March 2006\tMUDFA works delayed" in text
+    # type, party and source travel under their entry
+    assert "milestone · Alex Macaulay · CVS00000004.pdf" in text
+
+
+def test_event_export_has_no_row_ceiling():
+    """The ceiling was removed on purpose: a document that stops at a round
+    number and tells the reader to narrow their filters is refusing to hand over
+    the record while sounding helpful about it."""
+    many = [dict(_ROWS[0], description=f"event {i}") for i in range(6000)]
+    text = "\n".join(p.text for p in _read(build_events_docx(many, {})).paragraphs)
+    assert "event 5999" in text                  # past the old 5,000 cap
+    assert "6000 events on file" in text
+    assert "6000 events · end of chronology" in text
+    # and nothing that reads like an apology for a missing remainder
+    assert "narrow the filters" not in text.lower()
+    assert "continues beyond" not in text.lower()
 
 
 def test_a_filtered_export_says_it_is_filtered():
@@ -156,29 +171,6 @@ def test_a_filtered_export_says_it_is_filtered():
     plain = _read(build_events_docx(_ROWS, {}))
     plain_text = " ".join(p.text for p in plain.paragraphs)
     assert "Filters" not in plain_text and "on file" in plain_text
-
-
-def test_a_truncated_export_says_so_on_its_first_page():
-    """The store holds more events than one document should carry. An extract
-    that ends quietly at a round number reads as the end of the record — and
-    this is a document people hand on."""
-    doc = _read(build_events_docx(_ROWS, {}, total_available=4210))
-    text = " ".join(p.text for p in doc.paragraphs)
-    assert "2 of 4210 events" in text
-    assert "carries the first 2 of 4210" in text
-    assert "continues beyond this extract" in text
-    assert "end of chronology" not in text
-
-
-def test_a_complete_export_does_not_cry_truncation():
-    doc = _read(build_events_docx(_ROWS, {}, total_available=len(_ROWS)))
-    text = " ".join(p.text for p in doc.paragraphs)
-    assert "2 events on file" in text
-    assert "end of chronology" in text
-    assert "continues beyond" not in text
-    # and the same when the caller says nothing about the total
-    plain = " ".join(p.text for p in _read(build_events_docx(_ROWS, {})).paragraphs)
-    assert "end of chronology" in plain and "continues beyond" not in plain
 
 
 def test_describe_filters():

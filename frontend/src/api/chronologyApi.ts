@@ -105,6 +105,12 @@ export async function getChronologySubject(ref: string): Promise<SubjectMatch> {
    bearer token, so the response arrives as a blob and is handed to the browser
    here. Same pattern the CSV exports already use. */
 
+/* The unfiltered export builds a document for the whole record — tens of
+   thousands of events — which takes the server a while. The client's default
+   120s would abandon a request the server was going to answer, and the user
+   would see a failure over a file that then never arrives. */
+const DOWNLOAD_TIMEOUT = 10 * 60 * 1000;
+
 /** Save a blob under `fallback`, preferring the name the server sent. */
 function saveBlob(blob: Blob, headers: Record<string, unknown>, fallback: string) {
   const disposition = String(headers['content-disposition'] ?? '');
@@ -123,6 +129,7 @@ function saveBlob(blob: Blob, headers: Record<string, unknown>, fallback: string
 export async function downloadSubjectDocx(ref: string): Promise<void> {
   const res = await apiClient.get(`/chronology/subjects/${ref}/document`, {
     responseType: 'blob',
+    timeout: DOWNLOAD_TIMEOUT,
   });
   saveBlob(res.data as Blob, res.headers as Record<string, unknown>, `Chronology-${ref}.docx`);
 }
@@ -130,6 +137,7 @@ export async function downloadSubjectDocx(ref: string): Promise<void> {
 export async function downloadEventsDocx(f: ChronologyFilters = {}): Promise<void> {
   const res = await apiClient.get('/chronology/events/document', {
     responseType: 'blob',
+    timeout: DOWNLOAD_TIMEOUT,
     params: {
       event_type: f.eventType || undefined,
       actor: f.actor || undefined,

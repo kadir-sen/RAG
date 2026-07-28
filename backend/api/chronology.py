@@ -20,10 +20,6 @@ from backend.core.security import get_current_user, UserContext
 
 router = APIRouter()
 
-# Whatever the caller asks for, never return more than this in one response.
-# The store's own default is 60; the area pages rather than scrolls forever.
-_MAX_LIMIT = 500
-
 # How much of the store we are willing to READ before scoping. This is a memory
 # backstop, not a business rule — it exists only so a runaway store cannot pull
 # the 2 GB box over. Counting and exporting must see the whole record, and
@@ -33,11 +29,13 @@ _MAX_LIMIT = 500
 # "499 events on file" and drew a chip reading "delay · 1".
 _READ_CEILING = 100_000
 
-# A single Word document is not the right container for an unbounded record, so
-# the export stops here — and says so in the document when it does. Silence
-# would be worse than the limit: an extract that does not admit it is one gets
-# handed on as the whole chronology.
-_EXPORT_MAX = 5_000
+# The export has no row ceiling of its own. There was one, and it was the wrong
+# shape: a document that stops at a round number and tells the reader to narrow
+# their filters is refusing to hand over the record while sounding helpful about
+# it. What made "whole" affordable was the layout — indented paragraphs instead
+# of a Word table — which builds ~28k events in seconds rather than minutes.
+# _READ_CEILING above is the only bound left, and it is a memory backstop set far
+# above the real store, not a product rule.
 
 
 def _scoped_rows(user: UserContext, **filters) -> List[Dict]:
@@ -51,6 +49,15 @@ def _scoped_rows(user: UserContext, **filters) -> List[Dict]:
     from src.event_timeline import get_event_timeline
 
     rows = get_event_timeline().timeline_context(limit=_READ_CEILING, **filters)
+    if len(rows) >= _READ_CEILING:
+        # Never expected — the ceiling sits far above the store — but if it ever
+        # bites, every count and every export below it is quietly short, so say
+        # so somewhere rather than let it pass as a total.
+        from src.logger import logger
+        logger.warning(
+            f"[Chronology] read ceiling {_READ_CEILING} reached — counts and "
+            f"exports are truncated. Raise _READ_CEILING or page the store."
+        )
     return _scope_to_corpus(rows, user)
 
 
@@ -131,7 +138,10 @@ async def chronology_events(
     actor: Optional[str] = Query(None, description="substring match on the acting party"),
     date_from: Optional[str] = Query(None, description="ISO date, inclusive"),
     date_to: Optional[str] = Query(None, description="ISO date, inclusive"),
-    limit: int = Query(200, ge=1, le=_MAX_LIMIT),
+    # No product ceiling: the list starts at a screenful and the caller walks it
+    # to the end of the record. The bound is the same memory backstop the reads
+    # use, so nothing here refuses a page the store could actually serve.
+    limit: int = Query(200, ge=1, le=_READ_CEILING),
     user: UserContext = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """Events oldest-first, filtered.
@@ -278,10 +288,7 @@ async def chronology_events_docx(
     corpus scoping as /chronology/events — an export that could show rows the
     page cannot would be worse than no export.
 
-    Deliberately unpaged: someone asking for a document wants the record, not
-    the first screen of it. `_EXPORT_MAX` is the only ceiling, and when it bites
-    the document says so on its first page rather than ending quietly at a round
-    number that reads like the end of the record.
+    Unpaged and uncapped: someone asking for a document wants the record.
     """
     from src.chronology_docx import build_events_docx, safe_filename
 
@@ -289,9 +296,8 @@ async def chronology_events_docx(
         user, event_type=event_type, actor=actor,
         date_from=date_from, date_to=date_to,
     )
-    total = len(rows)
-    blob = build_events_docx(rows[:_EXPORT_MAX], {
+    blob = build_events_docx(rows, {
         "event_type": event_type, "actor": actor,
         "date_from": date_from, "date_to": date_to,
-    }, total_available=total)
+    })
     return _docx_response(blob, safe_filename("Chronology", "project-record") + ".docx")

@@ -231,40 +231,80 @@ def describe_filters(f: Dict[str, Optional[str]]) -> str:
     return " · ".join(bits)
 
 
-def build_events_docx(rows: List[Dict[str, Any]],
-                      filters: Optional[Dict[str, Optional[str]]] = None,
-                      total_available: Optional[int] = None) -> bytes:
-    """The event list, with whatever filters produced it stated up front.
+_DATE_COL_CM = 3.4
 
-    `total_available` is how many events the filters actually select. When it
-    exceeds the rows handed over, the document says so on its first page: a
-    truncated chronology that ends quietly at a round number reads like the end
-    of the record, and this one is meant to be handed on.
+
+def _entry_styles(doc):
+    """Two paragraph styles, defined once and reused by every event.
+
+    This is the difference between an export that finishes and one that times
+    out. Setting indents, a tab stop and fonts on each paragraph individually
+    rebuilds the same XML tens of thousands of times.
+
+    Returns style *ids*, not style objects, and the caller writes them straight
+    onto the paragraph. Assigning `paragraph.style = <style>` looks like the
+    obvious way and is a trap at this size: the setter resolves the id through
+    `styles.default_for()`, which walks every style in the document on every
+    call. Profiling 5,000 events put 67% of the run inside that lookup alone.
     """
-    Pt, RGBColor, _ = _shared()
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    from docx.enum.style import WD_STYLE_TYPE
+
+    Pt, RGBColor, Cm = _shared()
+    styles = doc.styles
+
+    entry = styles.add_style("ChronologyEntry", WD_STYLE_TYPE.PARAGRAPH)
+    entry.font.size = Pt(9)
+    entry.font.color.rgb = RGBColor.from_string("111827")
+    pf = entry.paragraph_format
+    pf.left_indent = Cm(_DATE_COL_CM)
+    pf.first_line_indent = Cm(-_DATE_COL_CM)   # the date hangs in its own column
+    pf.space_after = Pt(1)
+    pf.tab_stops.add_tab_stop(Cm(_DATE_COL_CM), WD_TAB_ALIGNMENT.LEFT)
+
+    meta = styles.add_style("ChronologyMeta", WD_STYLE_TYPE.PARAGRAPH)
+    meta.font.size = Pt(8)
+    meta.font.name = "Consolas"
+    meta.font.color.rgb = RGBColor.from_string(_MUTED)
+    mpf = meta.paragraph_format
+    mpf.left_indent = Cm(_DATE_COL_CM)
+    mpf.space_after = Pt(6)
+
+    resolve = styles.get_style_id
+    return (resolve(entry, WD_STYLE_TYPE.PARAGRAPH),
+            resolve(meta, WD_STYLE_TYPE.PARAGRAPH))
+
+
+def build_events_docx(rows: List[Dict[str, Any]],
+                      filters: Optional[Dict[str, Optional[str]]] = None) -> bytes:
+    """The event list, whole, with whatever filters produced it stated up front.
+
+    There is no row ceiling. There was one, and it was the wrong shape: a
+    document that stops at a round number and tells the reader to narrow their
+    filters is refusing to hand over the record while sounding helpful about it.
+
+    Laid out as a hanging indent — date in a left column, event beside it —
+    rather than a table, which is what makes "whole" affordable. The store holds
+    ~28k events; as a Word table that took 82 seconds to build and opens badly
+    in Word, where very large tables are slow to paginate. The same content as
+    indented paragraphs takes 8 seconds and a third of the file size, and reads
+    the same: date on the left, event on the right, exactly as on the page.
+    """
+    from docx.enum.text import WD_TAB_ALIGNMENT
+
+    Pt, RGBColor, Cm = _shared()
     doc = _new_document()
     described = describe_filters(filters or {})
+    n = len(rows)
 
     _label(doc, "Chronology · project record")
     _title(doc, "Chronology")
-    n = len(rows)
-    total = n if total_available is None else int(total_available)
-    truncated = total > n
-    if truncated:
-        summary = (f"{n} of {total} events"
-                   f"{' matching the filters below' if described else ' on file'}")
-    else:
-        summary = (f"{n} event{'' if n == 1 else 's'}"
-                   f"{' matching the filters below' if described else ' on file'}")
-    _body(doc, summary, size=10, colour="4B5563")
+    _body(doc, f"{n} event{'' if n == 1 else 's'}"
+               f"{' matching the filters below' if described else ' on file'}",
+          size=10, colour="4B5563")
     if described:
         p = doc.add_paragraph()
         _mono(p.add_run(f"Filters — {described}"), size=8, colour=_MUTED)
-    if truncated:
-        p = doc.add_paragraph()
-        _mono(p.add_run(
-            f"This document carries the first {n} of {total} events. "
-            f"Narrow the filters to export the remainder."), size=8, colour=_ACCENT)
     _rule(doc)
 
     if not rows:
@@ -272,41 +312,35 @@ def build_events_docx(rows: List[Dict[str, Any]],
         _stamp(doc)
         return _save(doc)
 
-    table = doc.add_table(rows=1, cols=4)
-    table.style = "Table Grid"
-    for cell, head in zip(table.rows[0].cells,
-                          ("Date", "Type", "Event", "Source document")):
-        cell.paragraphs[0].paragraph_format.space_after = Pt(0)
-        _mono(cell.paragraphs[0].add_run(head.upper()), size=8,
-              colour="111827", bold=True)
+    entry_id, meta_id = _entry_styles(doc)
+    add = doc.add_paragraph          # bound once; called ~2x per event
 
     for r in rows:
-        cells = table.add_row().cells
+        p = add()
+        p._p.get_or_add_pPr().style = entry_id
         # Shown exactly as extracted — the store's dates are free-form because
         # the ingest kept whatever the document said ("1905", "1970 to 1975").
-        cells[0].paragraphs[0].paragraph_format.space_after = Pt(0)
-        _mono(cells[0].paragraphs[0].add_run(str(r.get("date") or "—")),
-              size=8, colour="111827", bold=True)
+        # The date and the meta line are the only runs that need their own
+        # formatting; the body takes the style's.
+        _mono(p.add_run(f"{r.get('date') or '—'}\t"), size=8,
+              colour="111827", bold=True)
+        p.add_run(str(r.get("description") or r.get("reason") or ""))
 
-        _mono(cells[1].paragraphs[0].add_run(str(r.get("event_type") or "")),
-              size=8, colour=_MUTED)
+        # Type, party and source under the entry, in the same muted register the
+        # page uses. Carried on a line break inside the same paragraph rather
+        # than a paragraph of its own: at 28k events that halves the paragraph
+        # count, and the hanging indent keeps it aligned under the entry either
+        # way.
+        meta = " · ".join(str(x) for x in (
+            r.get("event_type"), r.get("actor"), r.get("file_name")) if x)
+        if meta:
+            run = p.add_run()
+            run.add_break()
+            run.add_text(meta)
+            _mono(run, size=8, colour=_MUTED)
 
-        body = str(r.get("description") or r.get("reason") or "")
-        run = cells[2].paragraphs[0].add_run(body)
-        run.font.size = Pt(9)
-        run.font.color.rgb = RGBColor.from_string("111827")
-        if r.get("actor"):
-            ap = cells[2].add_paragraph()
-            ap.paragraph_format.space_before = Pt(1)
-            _mono(ap.add_run(str(r["actor"])), size=8, colour=_MUTED)
-
-        _mono(cells[3].paragraphs[0].add_run(str(r.get("file_name") or "")),
-              size=8, colour=_MUTED)
-
-    _fit(table, [2.6, 2.0, 7.4, 4.2])
-    _footer_note(doc, f"{n} of {total} events · continues beyond this extract"
-                 if truncated
-                 else f"{n} event{'' if n == 1 else 's'} · end of chronology")
+    _rule(doc)
+    _footer_note(doc, f"{n} event{'' if n == 1 else 's'} · end of chronology")
     _stamp(doc)
     return _save(doc)
 
