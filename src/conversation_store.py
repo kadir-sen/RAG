@@ -64,29 +64,134 @@ class ConversationStore:
         self.user_dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.user_dir / "conversations.json"
         self._index: List[ConversationMeta] = []
+        # False means "we could not establish what is on disk this request".
+        # _save_index refuses to write in that state, so a read error can never
+        # truncate the index.
+        self._index_loaded = False
         self._load_index()
 
     def _load_index(self) -> None:
-        """Load conversation index from disk."""
-        if self.index_path.exists():
-            try:
-                data = json.loads(self.index_path.read_text(encoding="utf-8"))
-                self._index = [self._meta_from_dict(item) for item in data]
-                self._prune_index()
-            except Exception as e:
-                logger.warning(f"[ConvStore] Failed to load index for {self.username}: {e}")
-                self._index = []
-        else:
-            # Try GCS sync if local is empty
+        """Load the conversation index, tolerating damage rather than erasing it.
+
+        Four outcomes, none of which loses a conversation:
+          * parses              → per-record load; a bad record costs one entry
+          * parses after repair → repaired copy written, original kept as .corrupt.bak
+          * unrepairable        → quarantined, index rebuilt from the files on disk
+          * unreadable (I/O)    → _index_loaded stays False; nothing may be written
+
+        The old version set ``self._index = []`` on ANY exception and left saving
+        enabled, so a single quoted character in a title (auto_title takes the
+        user's first 50 characters) would delist every prior conversation on the
+        next create/rename/delete. Same shape the registry loader already fixed.
+        """
+        if not self.index_path.exists():
             try:
                 from .gcs_storage import sync_user_conversations_from_gcs
                 sync_user_conversations_from_gcs(self.username)
-                if self.index_path.exists():
-                    data = json.loads(self.index_path.read_text(encoding="utf-8"))
-                    self._index = [self._meta_from_dict(item) for item in data]
-                    self._prune_index()
             except Exception:
+                pass
+            if not self.index_path.exists():
                 self._index = []
+                self._index_loaded = True      # a genuinely absent index IS empty
+                return
+
+        try:
+            raw = self.index_path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.error(f"[ConvStore] Cannot read index for {self.username}: {e}")
+            self._index = []
+            self._index_loaded = False         # refuse to write over what we cannot read
+            return
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            from .json_repair import repair_file, repair_json_text
+            data, _ = repair_json_text(raw)
+            if data is None or not isinstance(data, list):
+                logger.error(
+                    f"[ConvStore] Index for {self.username} is unrepairable ({e}); "
+                    f"quarantining it and rebuilding from the files on disk"
+                )
+                self._quarantine_index()
+                self._index = self._rebuild_index_from_files()
+                self._index_loaded = True
+                self._save_index()
+                return
+            repair_file(self.index_path)       # persist the repair + .corrupt.bak
+            logger.warning(f"[ConvStore] Recovered corrupt index for {self.username}")
+
+        if not isinstance(data, list):
+            logger.error(
+                f"[ConvStore] Index for {self.username} is not a list "
+                f"({type(data).__name__}) — rebuilding from disk"
+            )
+            self._quarantine_index()
+            self._index = self._rebuild_index_from_files()
+            self._index_loaded = True
+            self._save_index()
+            return
+
+        kept, failed = [], 0
+        for item in data:
+            # Per record, so one malformed entry costs one conversation rather
+            # than every conversation in the file.
+            try:
+                meta = self._meta_from_dict(item)
+            except Exception as e:
+                failed += 1
+                logger.warning(f"[ConvStore] Skipping unreadable index record: {e}")
+                continue
+            if meta is not None:
+                kept.append(meta)
+            else:
+                failed += 1
+        self._index = kept
+        self._index_loaded = True
+        if failed:
+            logger.warning(
+                f"[ConvStore] {failed} index record(s) could not be loaded for "
+                f"{self.username}; {len(kept)} kept"
+            )
+        self._prune_index()
+
+    def _quarantine_index(self) -> None:
+        """Move an unusable index aside instead of overwriting it."""
+        try:
+            import shutil
+            from .json_repair import BACKUP_SUFFIX
+            dest = self.index_path.with_name(self.index_path.name + BACKUP_SUFFIX)
+            if not dest.exists():
+                shutil.copy2(self.index_path, dest)
+                logger.warning(f"[ConvStore] Original index preserved at {dest.name}")
+        except Exception as e:
+            logger.error(f"[ConvStore] Could not quarantine index: {e}")
+
+    def _rebuild_index_from_files(self) -> List[ConversationMeta]:
+        """Reconstruct the index from the per-conversation files themselves.
+
+        Every field ConversationMeta needs is already in each conversation file,
+        so an unusable index is a recoverable condition rather than data loss.
+        `pinned`/`archived` are not stored per conversation and fall back to
+        their defaults.
+        """
+        rebuilt: List[ConversationMeta] = []
+        for path in sorted(self.user_dir.glob("conv_*.json")):
+            conv = self._load_conversation(path.stem)
+            if conv is None:
+                continue
+            rebuilt.append(ConversationMeta(
+                conversation_id=conv.conversation_id or path.stem,
+                title=conv.title or "Recovered chat",
+                created_at=conv.created_at or "",
+                updated_at=conv.updated_at or conv.created_at or "",
+                message_count=len(conv.messages),
+            ))
+        logger.warning(
+            f"[ConvStore] Rebuilt index for {self.username} from disk: "
+            f"{len(rebuilt)} conversation(s)"
+        )
+        return rebuilt
 
     def _prune_index(self) -> None:
         """Drop index entries whose conversation file no longer exists.
@@ -99,6 +204,17 @@ class ConversationStore:
         ghosts = [m for m in self._index if not self._conv_path(m.conversation_id).exists()]
         if not ghosts:
             return
+        # An index with entries but a directory holding no conversation files at
+        # all is not "the user deleted everything" — it is a storage volume that
+        # did not mount (docker-compose.prod.yml binds ./storage:/app/storage).
+        # Pruning here would erase every user's history on the first request.
+        if not any(self.user_dir.glob("conv_*.json")):
+            logger.error(
+                f"[ConvStore] {len(self._index)} indexed conversations for "
+                f"{self.username} but no conversation files on disk — refusing "
+                f"to prune (the storage volume is probably not mounted)"
+            )
+            return
         for meta in ghosts:
             logger.warning(
                 f"[ConvStore] Pruning ghost conversation {meta.conversation_id} "
@@ -109,26 +225,50 @@ class ConversationStore:
         self.sync_to_gcs()
 
     @staticmethod
-    def _meta_from_dict(item: Dict[str, Any]) -> ConversationMeta:
-        """Backward-compatible ConversationMeta loader (ignores unknown keys, defaults missing ones)."""
+    def _meta_from_dict(item: Dict[str, Any]) -> Optional[ConversationMeta]:
+        """Backward-compatible loader. Returns None for a record with no id.
+
+        The hard ``item["conversation_id"]`` used to raise out of the enclosing
+        list comprehension, so one bad record emptied the entire index.
+        """
+        if not isinstance(item, dict):
+            return None
+        conv_id = item.get("conversation_id")
+        if not conv_id:
+            return None
         return ConversationMeta(
-            conversation_id=item["conversation_id"],
-            title=item.get("title", ""),
-            created_at=item.get("created_at", ""),
-            updated_at=item.get("updated_at", ""),
-            message_count=item.get("message_count", 0),
-            pinned=item.get("pinned", False),
-            archived=item.get("archived", False),
+            conversation_id=conv_id,
+            title=item.get("title", "") or "",
+            created_at=item.get("created_at", "") or "",
+            updated_at=item.get("updated_at", "") or "",
+            message_count=item.get("message_count", 0) or 0,
+            pinned=bool(item.get("pinned", False)),
+            archived=bool(item.get("archived", False)),
         )
 
     def _save_index(self) -> None:
-        """Save conversation index to disk."""
+        """Save the index. Refuses when the load did not succeed.
+
+        This file is rewritten in full every time, so saving over an index we
+        failed to read would truncate it — a read error must never become a
+        write. Written through a temp file so a crash mid-write cannot leave a
+        torn index either.
+        """
+        if not self._index_loaded:
+            logger.error(
+                f"[ConvStore] Refusing to save the index for {self.username}: "
+                f"the on-disk index could not be read, and writing now would "
+                f"truncate it"
+            )
+            return
         try:
             data = [asdict(meta) for meta in self._index]
-            self.index_path.write_text(
+            tmp = self.index_path.with_name(self.index_path.name + ".tmp")
+            tmp.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            tmp.replace(self.index_path)       # atomic
         except Exception as e:
             logger.error(f"[ConvStore] Failed to save index: {e}")
 
@@ -147,20 +287,48 @@ class ConversationStore:
                 "messages": [asdict(m) for m in conv.messages],
                 "document_ids": conv.document_ids,
             }
-            self._conv_path(conv.conversation_id).write_text(
+            # Written through a temp file and moved into place: a crash partway
+            # through a large answer would otherwise leave a half-written file,
+            # which reads exactly like the corruption this release repairs.
+            dest = self._conv_path(conv.conversation_id)
+            tmp = dest.with_name(dest.name + ".tmp")
+            tmp.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            tmp.replace(dest)                  # atomic
         except Exception as e:
             logger.error(f"[ConvStore] Failed to save conversation {conv.conversation_id}: {e}")
 
     def _load_conversation(self, conv_id: str) -> Optional[Conversation]:
-        """Load a full conversation from disk."""
+        """Load a full conversation from disk, repairing it if it is damaged."""
         path = self._conv_path(conv_id)
         if not path.exists():
             return None
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
+        except Exception as e:
+            logger.error(f"[ConvStore] Cannot read conversation {conv_id}: {e}")
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            # A file mangled by the old path normalizer is recoverable data, not
+            # a lost conversation. Repair it (the original is kept beside it)
+            # and carry on; give up only when the repair cannot be verified.
+            from .json_repair import (
+                conversation_looks_sane, repair_file, repair_json_text,
+            )
+            data, _ = repair_json_text(raw)
+            if data is None or not conversation_looks_sane(data):
+                logger.error(
+                    f"[ConvStore] {conv_id} is corrupt and unrepairable ({e}); "
+                    f"the file is left on disk untouched"
+                )
+                return None
+            repair_file(path)
+            logger.warning(f"[ConvStore] Recovered corrupt conversation {conv_id} on read")
+        try:
             raw_msgs = data.get("messages", [])
             # Backward-compatible message loader: files written by older app
             # versions can carry extra keys the current dataclass doesn't
@@ -230,14 +398,24 @@ class ConversationStore:
         return self._load_conversation(conv_id)
 
     def drop_ghost_entry(self, conv_id: str) -> None:
-        """Remove an index entry whose conversation can't be served.
+        """Remove an index entry ONLY when its conversation file is missing.
 
-        Called from the API layer when a detail fetch 404s so the dead entry
-        does not keep reappearing in the sidebar. Covers both a missing file
-        and a file that exists but fails to load (corrupt/incompatible JSON).
-        The file itself — if present — is never deleted, so nothing is lost.
+        This used to also delist a file that existed but failed to parse, and
+        that was the delete path: the old path normalizer corrupted the JSON,
+        _load_conversation returned None, the API called this, the entry left
+        the index — and the file stayed on disk, unreachable, because nothing in
+        the UI can reach an id that is not in the index. Opening an old chat
+        deleted it. Reproduced on production: a list of 7 became 6 by clicking.
+
+        A file that exists is recoverable data (src/json_repair.py). Only a
+        genuinely absent file is a ghost.
         """
-        if self._conv_path(conv_id).exists() and self._load_conversation(conv_id) is not None:
+        if self._conv_path(conv_id).exists():
+            logger.error(
+                f"[ConvStore] {conv_id} exists on disk but could not be served "
+                f"for {self.username} — keeping the index entry; the file is "
+                f"recoverable and must not be delisted"
+            )
             return
         before = len(self._index)
         self._index = [m for m in self._index if m.conversation_id != conv_id]
@@ -245,6 +423,46 @@ class ConversationStore:
             logger.warning(f"[ConvStore] Dropped ghost index entry {conv_id} for {self.username}")
             self._save_index()
             self.sync_to_gcs()
+
+    def adopt_orphans(self) -> int:
+        """Re-list conversation files that exist on disk but are not in the index.
+
+        `drop_ghost_entry` used to delist any conversation whose file failed to
+        parse, leaving the file behind and unreachable. Now that those files
+        parse again, put them back — repairing a file does not make it visible,
+        because nothing in the UI can reach an id that is not in the index.
+
+        Only files that actually hold messages are adopted. On this corpus 179
+        of 181 orphans are empty "New Chat" shells the user never typed into,
+        and re-listing those would bury the real history under empty rows.
+        """
+        if not self._index_loaded:
+            return 0
+        known = {m.conversation_id for m in self._index}
+        adopted = 0
+        for path in sorted(self.user_dir.glob("conv_*.json")):
+            conv_id = path.stem
+            if conv_id in known:
+                continue
+            conv = self._load_conversation(conv_id)
+            if conv is None or not conv.messages:
+                continue
+            self._index.append(ConversationMeta(
+                conversation_id=conv_id,
+                title=conv.title or "Recovered chat",
+                created_at=conv.created_at or "",
+                updated_at=conv.updated_at or conv.created_at or "",
+                message_count=len(conv.messages),
+            ))
+            adopted += 1
+            logger.warning(
+                f"[ConvStore] Re-listed orphaned conversation {conv_id} "
+                f"('{conv.title}', {len(conv.messages)} messages) for {self.username}"
+            )
+        if adopted:
+            self._save_index()
+            self.sync_to_gcs()
+        return adopted
 
     def list_conversations(self, include_archived: bool = False) -> List[ConversationMeta]:
         """

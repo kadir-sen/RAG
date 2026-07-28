@@ -43,6 +43,9 @@ jobs:
           pytest -q \
             tests/test_sql_security.py \
             tests/test_document_registry_load.py \
+            tests/test_json_repair.py \
+            tests/test_conversation_store_recovery.py \
+            tests/test_path_normalizer.py \
             tests/test_chronology_library.py \
             tests/test_chronology_docx.py \
             tests/test_router_document_listing.py \

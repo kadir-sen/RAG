@@ -252,16 +252,23 @@ class TestPersistence:
         store.drop_ghost_entry(ghost.conversation_id)
         assert all(m.conversation_id != ghost.conversation_id for m in store.list_conversations())
 
-    def test_drop_ghost_entry_covers_unloadable_file(self, tmp_conv_dir):
-        # A file that exists but can't be parsed is as dead as a missing one:
-        # the entry must leave the index, the file must stay on disk.
+    def test_drop_ghost_entry_keeps_an_unloadable_file_listed(self, tmp_conv_dir):
+        # This test used to assert the opposite, and the opposite was the bug.
+        # A file that exists but does not parse is not dead — it is damaged, and
+        # damaged is recoverable (src/json_repair.py). Delisting it stranded the
+        # file: it stayed on disk but nothing in the UI could reach an id that is
+        # not in the index, so opening an old chat silently deleted it.
+        # Reproduced on production before the fix: a list of 7 became 6 by
+        # clicking one of them.
         store = ConversationStore("testuser")
         broken = store.create_conversation("Broken")
         path = tmp_conv_dir / "testuser" / f"{broken.conversation_id}.json"
         path.write_text("{ NOT VALID JSON")
 
         store.drop_ghost_entry(broken.conversation_id)
-        assert all(m.conversation_id != broken.conversation_id for m in store.list_conversations())
+
+        assert any(m.conversation_id == broken.conversation_id
+                   for m in store.list_conversations())
         assert path.exists()
 
     def test_legacy_file_missing_toplevel_fields_loads(self, tmp_conv_dir):
@@ -510,13 +517,16 @@ class TestFormatChatContext:
         assert "msg_19" in result
         assert "msg_0" not in result
 
-    def test_long_content_truncated(self):
+    def test_long_content_is_kept_whole(self):
+        # This asserted a 500-character per-message truncation that the function
+        # deliberately does not do — it carries the full assistant text (see its
+        # docstring), and the budget is enforced across the whole block by
+        # max_chars instead. Cutting a single answer mid-sentence loses the very
+        # detail a follow-up question is usually about.
         long_content = "A" * 1000
         msgs = [Message(role="assistant", content=long_content, timestamp="t")]
         result = format_chat_context(msgs)
-        # Content should be truncated to 500 chars + "..."
-        assert "A" * 500 in result
-        assert "A" * 501 not in result
+        assert long_content in result
 
     def test_max_chars_limit(self):
         msgs = [
