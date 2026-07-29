@@ -6,28 +6,69 @@ büyütmeye izin vermez; resmî yol **snapshot alıp o snapshot'tan daha büyük
 vektörler, veritabanları, nginx yapılandırması, SSH anahtarları, hepsi olduğu gibi
 gelir. **Ağ üzerinden tek bir dosya kopyalanmaz.**
 
-> Bu belgedeki adımları çalıştırmak için AWS konsol erişimi ve sunucunun SSH
-> anahtarı gerekiyor; ikisi de bende yok (anahtar bir GitHub secret'ı). Yani
-> taşımayı sizin yapmanız gerekiyor — aşağısı adım adım izlenecek şekilde yazıldı.
+> SSH anahtarı artık elimde (`~/.ssh/lightsail-eu-central-1.pem`), bu yüzden
+> aşağıdaki ölçümler tahmin değil, kutudan okundu. Ama **snapshot alma ve örnek
+> oluşturma AWS konsolundan yapılır** ve bende AWS kimlik bilgisi yok — o iki
+> adım sizin. Sunucu tarafındaki komutları ben çalıştırabilirim.
 
 ---
 
-## Adım 0 — Önce şuna bakın: IP statik mi?
+## Kutunun gerçek hâli (2026-07-29, SSH ile ölçüldü)
 
-Taşımanın tek gerçek karar noktası bu.
+Taşımayı planlarken tahmin etmeyin — ölçüm şu:
 
-Lightsail konsolu → örnek `mvp-api` → **Networking** sekmesi. Public IP'nin yanında
-"Static IP" yazıyor mu?
+```
+Disk    : 58G toplam, 41G dolu (%71)
+Bellek  : 1.9G toplam, 573M kullanılabilir, swap'ın 1.2G'si kullanımda
+/opt/mvp-api : 21G   (data/edinburgh_pdfs tek başına 17G,
+                      qdrant_storage 1.5G, storage 1.2G)
+```
+
+Bellek zaten dibe vurmuş durumda — 8 GB'a geçme gerekçeniz sayılarla doğrulanıyor.
+
+**Ve bu kutuda COAir'den başka dört uygulama daha var:**
+
+| Uygulama | Dizin | Konteynerler |
+|---|---|---|
+| COAir | `/opt/mvp-api` | `mvp-api`, `mvp-qdrant` |
+| dental-clinic-app | `/opt/dental-clinic-app` | `dental-web`, `dental-api`, `dental-postgres` |
+| job-hunter | `/opt/job-hunter` | `job-hunter-ui`, `job-hunter-api` |
+| lovelog | `/opt/lovelog` | `lovelog-api`, `lovelog` (ikisi de *unhealthy* — taşımadan önce de öyleydi) |
+
+Dört TLS sertifikası ve alan adı da burada:
+`dental-clinic-app.duckdns.org`, `lovelog-sude.duckdns.org`,
+`roadmap-remote.duckdns.org`, **`rolehunter.app`**.
+
+Bu yüzden elle dizin kopyalamak yanlış: dört uygulamayı, nginx bloklarını ve
+sertifikaları geride bırakırsınız. **Bütün-makine snapshot'ı tek doğru yol.**
+
+---
+
+## Adım 0 — IP: taşımanın tek gerçek karar noktası
+
+Lightsail konsolu → örnek → **Networking**. Public IP'nin yanında "Static IP"
+yazıyor mu?
 
 | Durum | Sonuç |
 |---|---|
-| **Statik** | IP'yi eski örnekten ayırıp yenisine bağlarsınız. `18.185.38.217` korunur; GitHub secret'ı, nginx, yer imleri, hiçbir şey değişmez. |
-| **Dinamik** (varsayılan) | Yeni örnek **yeni bir IP** alır. `LIGHTSAIL_HOST` GitHub secret'ını güncellemeniz gerekir, yoksa deploy eski kutuya gider. |
+| **Statik** | IP'yi eskiden ayırıp yeniye bağlarsınız. `18.185.38.217` korunur — GitHub secret'ı, dört alan adı, sertifikalar, yer imleri: hiçbiri değişmez. Taşıma 30 dakikalık bir iş olur. |
+| **Dinamik** (varsayılan) | Yeni örnek **yeni bir IP** alır ve peşinden şunlar gelir ↓ |
 
-[LIGHTSAIL_DEPLOYMENT.md](LIGHTSAIL_DEPLOYMENT.md#static-ip) "statik IP oluştur"u
-bir yapılacak olarak yazmış — yani muhtemelen **hâlâ dinamik**. Taşımadan önce
-statik IP oluşturup mevcut örneğe bağlamak en temizi: o zaman taşıma sırasında
-IP hiç değişmez.
+IP değişirse elle düzeltilmesi gerekenler:
+
+1. `LIGHTSAIL_HOST` GitHub secret'ı — yoksa deploy eski kutuya gitmeye devam eder
+2. **Üç DuckDNS kaydı** — duckdns.org'da elle güncellenecek.
+   Sunucuda **otomatik güncelleyici cron'u yok**, kontrol ettim.
+3. **`rolehunter.app`** — A kaydı kayıt firmasında güncellenecek
+4. COAir'in kendi adresi (alan adı yok, ham IP ile erişiliyor)
+
+Sertifikalar alan adına bağlı olduğu için IP değişiminden etkilenmez; ama DNS
+düzelene kadar Certbot yenilemesi başarısız olur.
+
+**Öneri:** statik IP yoksa şimdi oluşturup mevcut örneğe bağlayın. Lightsail'de
+mevcut dinamik IP statiğe *çevrilemez* — yani bir kez IP değişimi yaşayacaksınız.
+Bunu taşımanın ortasında değil, şimdi sakin kafayla yaşamak çok daha ucuz.
+Sonrasında taşıma IP'ye hiç dokunmaz.
 
 ---
 
@@ -47,11 +88,8 @@ Kutu seviyesinde ayrıca: Docker + compose kurulumu, `/etc/nginx/sites-available
 altındaki yapılandırma, `/swapfile`, ve `~/.ssh/authorized_keys` (GitHub Actions'ın
 deploy edebilmesi buna bağlı).
 
-**Dikkat: bu kutuda ikinci bir uygulama var.** `job-hunter`, `/opt/job-hunter`
-altında ve aynı nginx'i paylaşıyor
-([JOB_HUNTER_DEPLOYMENT.md](JOB_HUNTER_DEPLOYMENT.md)). Snapshot onu da taşır —
-sadece COAir dizinlerini kopyalamaya kalkarsanız o uygulamayı geride bırakırsınız.
-Bütün-makine klonunu tercih etmenin bir sebebi daha.
+Bunların hiçbiri COAir'e özel değil: yukarıdaki dört uygulamanın kendi verisi,
+nginx blokları ve sertifikaları da aynı diskte. Snapshot hepsini birden taşır.
 
 ---
 
@@ -73,12 +111,15 @@ geçmişini sessizce siliyordu. Aynı hatayı taşıma sırasında tekrarlamayı
 Lansman sonrası sakin bir saatte yapın.
 
 ```bash
-SSH_KEY=~/.ssh/<anahtar>.pem
+SSH_KEY=~/.ssh/lightsail-eu-central-1.pem
 SRV=ubuntu@18.185.38.217
 
 # 1) Yazmaları durdur — tutarlı bir snapshot için tek gereken bu
 ssh -i $SSH_KEY $SRV "cd /opt/mvp-api && sudo docker compose -f docker-compose.prod.yml down"
-ssh -i $SSH_KEY $SRV "cd /opt/job-hunter && sudo docker compose down 2>/dev/null || true"
+# diğer dört uygulama da yazmayı bıraksın (dental postgres özellikle)
+for d in /opt/job-hunter /opt/dental-clinic-app /opt/lovelog; do
+  ssh -i $SSH_KEY $SRV "cd $d && sudo docker compose down 2>/dev/null || true"
+done
 ssh -i $SSH_KEY $SRV "sync"
 ```
 
@@ -115,7 +156,7 @@ aradaki farkı sonradan senkronlarsınız.
    # eski kutudan yeniye, sadece delta
    ssh -i $SSH_KEY $SRV "sudo rsync -az --delete \
        /opt/mvp-api/storage/ /opt/mvp-api/data/ /opt/mvp-api/qdrant_storage/ \
-       -e 'ssh -i /home/ubuntu/.ssh/<anahtar>' ubuntu@<yeni-ip>:/opt/mvp-api/"
+       -e 'ssh -i /home/ubuntu/.ssh/<sunucudaki-anahtar>' ubuntu@<yeni-ip>:/opt/mvp-api/"
    ```
    (Ya da kendi makinenizden iki ayaklı `rsync`. Delta küçük olur; asıl kütle
    snapshot'la zaten taşındı.)
@@ -126,7 +167,38 @@ yeni kutuda geri dirilir.
 
 ---
 
-## Doğrulama kontrol listesi
+## Doğrulama — tek komut
+
+[`scripts/verify_instance.sh`](../scripts/verify_instance.sh) her şeyi tek seferde
+kontrol eder. Taşımadan **önce** eski kutuda çalıştırıp taban çizgisini alın,
+sonra yenisinde çalıştırıp `diff` alın:
+
+```bash
+./scripts/verify_instance.sh http://18.185.38.217 > baseline.txt
+./scripts/verify_instance.sh http://<yeni-ip>     > after.txt
+diff baseline.txt after.txt
+```
+
+2026-07-29'da alınan taban çizgisi:
+
+```
+health                             {"status":"ok"}
+login                              ok
+documents (library)                7404
+events (chronology)                27676
+authored chronologies              6
+conversations                      110
+pdf viewer                         pdf p.5/32 image=True
+chat (vectors present?)            11 citations, route=document
+```
+
+Son satır en kritiği: diğer her şey doğru gelirken `qdrant_storage/` eksik
+taşınmış olabilir ve tek belirtisi sohbetin sessizce hiçbir şey bulamaması olur.
+(Script kendi kontrolü için bir sohbet açtığından `conversations` sayısı her
+koşuşta 1 artar — diff'teki +1 taşımadan değil, script'ten.)
+
+<details>
+<summary>Elle kontrol etmek isterseniz</summary>
 
 Yeni örnek ayağa kalktıktan sonra, IP'yi taşımadan önce (yeni IP üzerinden):
 
@@ -161,8 +233,19 @@ curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $TOKEN" \
 ```
 
 Beklenen: 7.404 doküman, 106+ sohbet, 27.676 olay, atıf sayısı > 0, PDF 200.
-**Dördüncüsü atlanmamalı** — diğer hepsi geçerken vektör indeksi eksik olabilir ve
-bu, sohbetin sessizce boşa düşmesi demektir.
+
+</details>
+
+**Diğer dört uygulamayı da unutmayın** — snapshot onları da taşır, ama çalıştıklarını
+görmek gerekir:
+
+```bash
+ssh -i ~/.ssh/lightsail-eu-central-1.pem ubuntu@<yeni-ip> \
+  "sudo docker ps --format '{{.Names}}\t{{.Status}}'"
+```
+
+Dokuz konteyner görünmeli. `lovelog-api` ve `lovelog` **taşımadan önce de
+unhealthy'ydi** — bu taşımanın eseri değil, karıştırmayın.
 
 Deploy hattının da hâlâ çalıştığını görün: `main`'e küçük bir commit atıp
 GitHub Actions'ın yeni kutuya deploy ettiğini doğrulayın.
