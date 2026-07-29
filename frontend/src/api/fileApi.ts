@@ -27,17 +27,24 @@ export async function deleteFile(fileId: string) {
   await apiClient.delete(`/files/${fileId}`);
 }
 
+/**
+ * `fileName` is not decoration — it is what makes an old citation openable.
+ * A doc_id minted before a re-ingest is an md5 of the file path at that moment,
+ * so it stops resolving while the document itself is untouched on disk. The
+ * name survives, and every caller already has it.
+ */
 export async function getDocContent(
   docId: string,
   anchor = '',
+  fileName = '',
 ): Promise<DocContent> {
-  if (!docId || !docId.trim()) {
+  if ((!docId || !docId.trim()) && !fileName.trim()) {
     return { type: 'text', error: 'No document ID provided' } as DocContent;
   }
   try {
     const { data } = await apiClient.get<DocContent>(
-      `/docs/${encodeURIComponent(docId)}/content`,
-      { params: { anchor } },
+      `/docs/${encodeURIComponent(docId || fileName)}/content`,
+      { params: { anchor, file_name: fileName || undefined } },
     );
     return data;
   } catch (err) {

@@ -13,5 +13,11 @@ _doc_service = DocumentService()
 async def get_doc_content(
     doc_id: str,
     anchor: str = Query(default="", description="e.g. page_3"),
+    file_name: str = Query(
+        default="",
+        description="Fallback when doc_id no longer resolves. Older ids are an "
+                    "md5 of the file path at ingest time, so they die whenever "
+                    "the corpus is re-ingested or moved — the name does not.",
+    ),
 ):
-    return await _doc_service.get_content(doc_id, anchor)
+    return await _doc_service.get_content(doc_id, anchor, file_name)
