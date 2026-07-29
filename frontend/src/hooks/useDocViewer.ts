@@ -6,13 +6,23 @@ export function useDocViewer() {
   const { rightPanelOpen, rightPanelDoc, openDocument, closeViewer } =
     useUIStore();
 
-  const hasValidDocId = !!rightPanelDoc?.docId && rightPanelDoc.docId.trim().length > 0;
+  // Either identifier is enough. A citation stored before a re-ingest carries a
+  // doc_id that no longer resolves, and the file name is what rescues it.
+  const canFetch =
+    !!rightPanelDoc?.docId?.trim() || !!rightPanelDoc?.fileName?.trim();
 
   const contentQuery = useQuery({
-    queryKey: ['docContent', rightPanelDoc?.docId, rightPanelDoc?.anchor],
+    queryKey: [
+      'docContent', rightPanelDoc?.docId, rightPanelDoc?.anchor,
+      rightPanelDoc?.fileName,
+    ],
     queryFn: () =>
-      getDocContent(rightPanelDoc!.docId, rightPanelDoc?.anchor ?? ''),
-    enabled: rightPanelOpen && hasValidDocId,
+      getDocContent(
+        rightPanelDoc!.docId,
+        rightPanelDoc?.anchor ?? '',
+        rightPanelDoc?.fileName ?? '',
+      ),
+    enabled: rightPanelOpen && canFetch,
     staleTime: Infinity,
   });
 

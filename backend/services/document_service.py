@@ -72,8 +72,10 @@ _DATA_FALLBACK_ROOTS = (
 
 class DocumentService:
 
-    async def get_content(self, doc_id: str, anchor: str = "") -> DocContent:
-        return await asyncio.to_thread(self._get_content_sync, doc_id, anchor)
+    async def get_content(self, doc_id: str, anchor: str = "",
+                          file_name: str = "") -> DocContent:
+        return await asyncio.to_thread(
+            self._get_content_sync, doc_id, anchor, file_name)
 
     def _is_data_file(self, file_path: str) -> bool:
         return Path(file_path).suffix.lower() in _DATA_EXTENSIONS
@@ -137,10 +139,13 @@ class DocumentService:
                     continue
         return file_path  # return original — caller will handle the error
 
-    def _get_content_sync(self, doc_id: str, anchor: str) -> DocContent:
-        # Guard: empty or whitespace-only doc_id
-        if not doc_id or not doc_id.strip():
+    def _get_content_sync(self, doc_id: str, anchor: str,
+                          file_name: str = "") -> DocContent:
+        # Guard: nothing to go on at all. A file name alone is enough, though —
+        # see the fallback at the end of this chain.
+        if (not doc_id or not doc_id.strip()) and not (file_name or "").strip():
             return DocContent(type="text", error="No document ID provided")
+        doc_id = (doc_id or "").strip()
 
         # Try data tables (Excel viewer) first — match by doc_id from file_paths
         try:
@@ -251,6 +256,45 @@ class DocumentService:
                                   total_pages=total, text=text)
         except Exception:
             pass
+
+        # Last resort: the file name the caller already had.
+        #
+        # doc_id for older documents is generate_doc_id() — md5 of the file
+        # *path* at ingest time. That path is a fingerprint of a moment: re-ingest
+        # the corpus, move the data directory, or change host layout and every
+        # id minted before it becomes unresolvable, while the documents sit
+        # untouched on disk. Measured on production: 398 of 932 stored citations
+        # (43%) carry such an id, 20 of 20 sampled failed to open by id, and 20
+        # of 20 opened by name. Every citation carries doc_name, so a viewer that
+        # gives up here is discarding the answer it was handed.
+        #
+        # Kept last on purpose: the id chain above is more specific (it can serve
+        # an extracted table rather than a raw sheet), so this only runs once
+        # that has genuinely failed.
+        name = (file_name or "").strip()
+        if name:
+            try:
+                resolved = self._resolve_path(name)
+                if resolved and Path(resolved).is_file():
+                    return self._serve_by_extension(resolved, anchor)
+            except Exception:
+                pass
+            try:
+                from src.chunk_store import get_chunk_store
+                con = get_chunk_store().connection()
+                rows = con.execute(
+                    "SELECT file_name, page_number, text FROM chunks "
+                    "WHERE file_name = ? ORDER BY page_number", [name],
+                ).fetchall()
+                if rows:
+                    page = self._parse_anchor_page(anchor)
+                    total = max(int(r[1] or 1) for r in rows)
+                    page_rows = [r for r in rows if int(r[1] or 1) == page] or rows
+                    text = "\n\n".join((r[2] or "") for r in page_rows)[:8000]
+                    return DocContent(type="text", file_name=rows[0][0], page=page,
+                                      total_pages=total, text=text)
+            except Exception:
+                pass
 
         return DocContent(type="text", error="Document not found")
 
