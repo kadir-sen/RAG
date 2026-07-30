@@ -205,6 +205,40 @@ class TestCache:
         ev.build("03", "t", "s", ENTRIES, corpus="edinburgh")
         assert ev.cached("03", "demo") is None
 
+    def test_reuse_stops_once_the_window_has_passed(self, monkeypatch):
+        """The window is short on purpose — an instantly returned report reads as
+        one prepared earlier. Past it, the search runs again."""
+        monkeypatch.setattr(ev, "_search", lambda q, k: [])
+        monkeypatch.setattr(ev, "_warm_index", lambda: None)
+        monkeypatch.setattr(ev, "_events_for", lambda w, f: [])
+        ev.clear_cache()
+
+        ev.build("03", "t", "s", ENTRIES)
+        assert ev.cached("03", "") is not None
+
+        # Age the entry past the window rather than sleeping through it. The
+        # offset is read now: ev.time is the time module itself, so a lambda
+        # calling time.time() would call the patched clock and recurse.
+        later = time.time() + ev.CACHE_TTL_S + 1
+        monkeypatch.setattr(ev.time, "time", lambda: later)
+        assert ev.cached("03", "") is None
+
+    def test_zero_ttl_switches_reuse_off(self, monkeypatch):
+        monkeypatch.setattr(ev, "_search", lambda q, k: [])
+        monkeypatch.setattr(ev, "_warm_index", lambda: None)
+        monkeypatch.setattr(ev, "_events_for", lambda w, f: [])
+        monkeypatch.setattr(ev, "CACHE_TTL_S", 0)
+        ev.clear_cache()
+
+        ev.build("03", "t", "s", ENTRIES)
+        assert ev.cached("03", "") is None, "nothing may be reused when the window is 0"
+        assert ev.build("03", "t", "s", ENTRIES)["from_cache"] is False
+
+    def test_the_default_window_is_short_enough_to_be_invisible(self):
+        """A demo must not show a report arriving in milliseconds. If someone
+        raises this, they should have to change the test that says why."""
+        assert ev.CACHE_TTL_S <= 60
+
 
 class TestNoCorpus:
     def test_has_corpus_is_false_when_nothing_is_searchable(self, monkeypatch):

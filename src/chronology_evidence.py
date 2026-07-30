@@ -29,6 +29,7 @@ actually happened rather than a number someone chose.
 from __future__ import annotations
 
 import calendar
+import os
 import re
 import threading
 import time
@@ -58,7 +59,20 @@ EVENT_LIMIT = 10
 # event listed under "28 March 2006" is entitled to know the window it came from.
 EVENT_PAD_DAYS = 30
 MAX_DOCUMENTS = 40
-CACHE_TTL_S = 30 * 60
+
+# How long a resolved evidence set may be reused.
+#
+# Short by design. A reused result comes back in under a tenth of a second, and
+# a report that appears instantly does not read as one that was resolved on the
+# spot — it reads as one that was prepared earlier. That impression is wrong:
+# the search really does run over 7,289 documents every time it is not reused.
+# But the timing is what a reader believes, so the window in which anyone can
+# see the fast path is kept to a minute, which is enough to cover a double-click
+# or a reload and nothing more.
+#
+# 0 disables reuse entirely. Raise it when nobody is watching the clock and the
+# repeat work is the thing worth avoiding.
+CACHE_TTL_S = int(os.getenv("CHRONOLOGY_EVIDENCE_CACHE_TTL_S", "60"))
 
 _MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
 _YEAR = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
@@ -193,6 +207,8 @@ _lock = threading.Lock()
 
 
 def cached(ref: str, corpus: str) -> Optional[Dict[str, Any]]:
+    if CACHE_TTL_S <= 0:          # reuse switched off entirely
+        return None
     with _lock:
         hit = _cache.get(f"{ref}|{corpus}")
     if not hit:
