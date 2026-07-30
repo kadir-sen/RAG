@@ -16,6 +16,8 @@ this area agree on what a subject means.
 TO ADD A CHRONOLOGY
   1. Drop the .docx in content/chronologies/
   2. Add an entry to _DOCS below: ref, title, file, summary, keywords
+  3. Set download_name to the name the file should arrive under — the author's
+     own name for it, not the numbered one we store it under.
 Keywords outweigh the title, so put the words people actually type in there —
 abbreviations, party names, synonyms.
 """
@@ -46,6 +48,11 @@ class ChronologyDoc:
     file: str
     summary: str
     keywords: List[str] = field(default_factory=list)
+    # We store these under numbered names so the set stays ordered on disk; the
+    # author knows them by their own titles, and that is what a download should
+    # be called — the file goes straight into a report. No extension: it comes
+    # from `file`, so the suffix lives in one place.
+    download_name: str = ""
 
 
 _DOCS: List[ChronologyDoc] = [
@@ -53,6 +60,7 @@ _DOCS: List[ChronologyDoc] = [
         ref="01",
         title="Incomplete and Misaligned Design (The SDS Contract)",
         file="01-design-sds.docx",
+        download_name="Incomplete and Misaligned Design (The SDS Contract)",
         summary=("The SDS design contract with Parsons Brinckerhoff — scope, "
                  "co-ordination and the late and incomplete design deliverables."),
         keywords=[
@@ -72,6 +80,9 @@ _DOCS: List[ChronologyDoc] = [
         ref="02",
         title="Mismanagement by Transport Initiatives Edinburgh (tie)",
         file="02-tie-mismanagement.docx",
+        # (TIE), not the (tie) of the title — the author capitalises it in the
+        # file name, and the title's casing is what the matcher tokenises.
+        download_name="Mismanagement by Transport Initiatives Edinburgh (TIE)",
         summary=("tie as delivery vehicle — governance layering, board conduct, "
                  "cost estimating and the Audit Scotland reviews."),
         keywords=[
@@ -88,6 +99,7 @@ _DOCS: List[ChronologyDoc] = [
         ref="03",
         title="Utility Diversion Failures (MUDFA)",
         file="03-mudfa-utilities.docx",
+        download_name="Utility Diversion Failures (MUDFA)",
         summary=("The Multi-Utilities Diversion Framework Agreement — scope "
                  "growth, unforeseen apparatus and the diversion programme."),
         keywords=[
@@ -105,6 +117,10 @@ _DOCS: List[ChronologyDoc] = [
         ref="04",
         title='An "Irreparably Flawed" Contract Strategy',
         file="04-contract-strategy.docx",
+        # Curly quotes, where the author's own file has straight ones: Windows
+        # browsers strip `"` out of a download name and leave underscores. These
+        # survive every OS and read the same.
+        download_name="An “Irreparably Flawed” Contract Strategy",
         summary=("The procurement strategy and risk transfer — the fixed-price "
                  "premise, the Wiesbaden deal and the pricing assumptions."),
         keywords=[
@@ -123,6 +139,7 @@ _DOCS: List[ChronologyDoc] = [
         ref="05",
         title="Severe Contractor Disputes and Work Stoppages",
         file="05-contractor-disputes.docx",
+        download_name="Severe Contractor Disputes and Work Stoppages",
         summary=("The breakdown between tie and BSC — the Dispute Resolution "
                  "Procedure, the adjudications, mediation and the stoppages."),
         keywords=[
@@ -140,6 +157,7 @@ _DOCS: List[ChronologyDoc] = [
         ref="06",
         title="Withdrawal of National Oversight",
         file="06-national-oversight.docx",
+        download_name="Withdrawal of National Oversight",
         summary=("Transport Scotland stepping back to a funding-only role, "
                  "and the monitoring that went with it."),
         keywords=[
@@ -406,3 +424,14 @@ def get_doc(ref: str) -> Optional[ChronologyDoc]:
 
 def list_docs() -> List[ChronologyDoc]:
     return list(_DOCS)
+
+
+def doc_path(doc: ChronologyDoc) -> Path:
+    """Where the authored .docx actually sits."""
+    return CHRONOLOGY_DIR / doc.file
+
+
+def download_filename(doc: ChronologyDoc) -> str:
+    """The name a download of this chronology should arrive under."""
+    stem = (doc.download_name or doc.title or Path(doc.file).stem).strip()
+    return stem + Path(doc.file).suffix

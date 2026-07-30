@@ -17,6 +17,31 @@ import apiClient from './client';
    never arrives. */
 export const DOWNLOAD_TIMEOUT = 10 * 60 * 1000;
 
+/**
+ * Read the filename out of a content-disposition header.
+ *
+ * Because the file arrives as an XHR blob, the browser's own RFC 6266 parsing
+ * never runs and this is the whole of the filename logic. Authored documents
+ * download under their author's name, which can carry quotes and accents the
+ * quoted-string form cannot hold, so the server sends `filename*` alongside a
+ * flattened ASCII `filename=`. Prefer the former; fall back to the latter.
+ */
+function nameFromDisposition(disposition: string): string | undefined {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition)?.[1];
+  if (star) {
+    try {
+      return decodeURIComponent(star);
+    } catch {
+      /* malformed encoding — fall through to the ASCII form */
+    }
+  }
+  return (
+    /filename="([^"]*)"/.exec(disposition)?.[1] ||
+    /filename=([^;]+)/.exec(disposition)?.[1]?.trim() ||
+    undefined
+  );
+}
+
 /** Save a blob, preferring the name the server sent over `fallback`. */
 export function saveBlob(
   blob: Blob,
@@ -24,7 +49,7 @@ export function saveBlob(
   fallback: string,
 ) {
   const disposition = String(headers['content-disposition'] ?? '');
-  const named = /filename="?([^"]+)"?/.exec(disposition)?.[1];
+  const named = nameFromDisposition(disposition);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

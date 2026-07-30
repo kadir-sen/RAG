@@ -20,7 +20,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.chronology_library import list_docs, match  # noqa: E402
+from src.chronology_library import (doc_path, download_filename, list_docs,  # noqa: E402
+                                    match)
 
 
 # (typed subject, chronology it must resolve to)
@@ -100,6 +101,17 @@ def test_every_chronology_is_reachable():
         if r["status"] == "match":
             reached.add(r["doc"].ref)
     assert reached == {d.ref for d in list_docs()}
+
+
+def test_every_chronology_is_on_disk_and_has_a_download_name():
+    """The registry is only a promise; these are the two things that have to be
+    true for a subject to produce a document. A file that stopped shipping, or
+    an entry added without the author's own name for it, both fail here rather
+    than at the moment someone tries to download it."""
+    for doc in list_docs():
+        assert doc_path(doc).is_file(), f"{doc.file} is missing from content/chronologies/"
+        assert doc.download_name.strip(), f"{doc.ref} has no download_name"
+        assert download_filename(doc).endswith(".docx")
 
 
 def test_scores_are_stable():
