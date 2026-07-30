@@ -252,17 +252,42 @@ from ._docx import docx_response as _docx_response  # noqa: E402
 
 @router.get("/chronology/subjects/{ref}/document")
 async def chronology_subject_docx(
-    ref: str, user: UserContext = Depends(get_current_user),
+    ref: str,
+    rendered: bool = Query(False),
+    user: UserContext = Depends(get_current_user),
 ) -> Response:
-    """One authored chronology as a Word document."""
+    """One authored chronology as a Word document.
+
+    By default this is the authored file itself, byte for byte, under the name
+    its author gave it. What comes down is pasted straight into a report, and a
+    re-typeset copy — same words, our layout, our stamp — is not the document
+    anyone was handed. `?rendered=1` returns that copy, with the evidence
+    section, for the cases that want it.
+    """
     from fastapi import HTTPException
 
-    from src.chronology_docx import build_subject_docx, safe_filename
-    from src.chronology_library import COLLECTION, get_doc, get_entries
+    from src.chronology_library import doc_path, download_filename, get_doc
 
     doc = get_doc(ref)
     if doc is None:
         raise HTTPException(status_code=404, detail="No such chronology")
+
+    if not rendered:
+        path = doc_path(doc)
+        if not path.is_file():
+            # The ref is good; the deployment is not. Say so rather than 404 —
+            # and do not quietly fall back to the rendered build, which reads
+            # the same missing file and would hand over an empty chronology
+            # that looks like the real one.
+            from src.logger import logger
+            logger.error(f"[Chronology] authored file missing: {path}")
+            raise HTTPException(status_code=500,
+                                detail="Chronology file missing on this deployment")
+        return _docx_response(path.read_bytes(), download_filename(doc))
+
+    from src.chronology_docx import build_subject_docx, safe_filename
+    from src.chronology_library import COLLECTION, get_entries
+
     # If an evidence pass has already run for this subject, the export carries it.
     # The narrative names no source files, so a chronology handed on without them
     # asserts a history with nothing to check it against.
