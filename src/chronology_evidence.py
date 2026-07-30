@@ -40,7 +40,14 @@ from .logger import logger
 
 # What a deepened build aims at. A target, not a promise — when the corpus is
 # small or the entries are short the work finishes early and the payload says so.
-BUDGET_MS = 13_000
+#
+# Measured on the production box (2 vCPU, warm index): a 13 s budget produced a
+# 14.9 s round trip covering 7 of 21 units. 17 s lands the round trip near 19 s —
+# the middle of the window the owner asked for — and buys a couple more entries.
+# Full coverage of all 21 would need roughly 40 s there, which is worse than
+# partial coverage that says so: `budget_exhausted` is reported and the page
+# prints "budget reached, later entries not searched".
+BUDGET_MS = 17_000
 
 SUBJECT_TOP_K = 24
 ENTRY_TOP_K = 5
