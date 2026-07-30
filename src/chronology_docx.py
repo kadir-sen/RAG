@@ -26,137 +26,37 @@ from typing import Any, Dict, List, Optional
 # .docx). Imported lazily inside the builders so a missing optional install can
 # never take the whole chronology API down with it.
 
-_ACCENT = "E89517"  # COAir orange, as used by the UI's --accent
-_MUTED = "6B7280"
-_RULE = "D1D5DB"
 
 
-def _shared():
-    from docx.shared import Pt, RGBColor, Cm
-    return Pt, RGBColor, Cm
-
-
-def _mono(run, size=9, colour=_MUTED, bold=False):
-    Pt, RGBColor, _ = _shared()
-    run.font.name = "Consolas"
-    run.font.size = Pt(size)
-    run.font.bold = bold
-    run.font.color.rgb = RGBColor.from_string(colour)
-
-
-def _label(doc, text: str):
-    """The small tracked-out caps the page uses above a heading."""
-    Pt, RGBColor, _ = _shared()
-    p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(2)
-    _mono(p.add_run(text.upper()), size=8, colour=_MUTED)
-    return p
-
-
-def _rule(doc):
-    """A hairline, drawn as a bottom border on an empty paragraph."""
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
-
-    Pt, _, _ = _shared()
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(2)
-    p.paragraph_format.space_after = Pt(8)
-    pPr = p._p.get_or_add_pPr()
-    borders = OxmlElement("w:pBdr")
-    bottom = OxmlElement("w:bottom")
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), "4")
-    bottom.set(qn("w:color"), _RULE)
-    borders.append(bottom)
-    pPr.append(borders)
-    return p
-
-
-def _borderless(table):
-    """python-docx has no 'no borders' style guarantee across templates, so the
-    table is told explicitly. Without this the export picks up whatever the
-    default template defines and the narrative reads as a spreadsheet."""
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
-
-    tblPr = table._tbl.tblPr
-    borders = OxmlElement("w:tblBorders")
-    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        el = OxmlElement(f"w:{edge}")
-        el.set(qn("w:val"), "none")
-        el.set(qn("w:sz"), "0")
-        borders.append(el)
-    tblPr.append(borders)
-
-
-def _fit(table, widths_cm):
-    """Column widths only stick when set on every cell."""
-    _, _, Cm = _shared()
-    table.autofit = False
-    for row in table.rows:
-        for cell, w in zip(row.cells, widths_cm):
-            cell.width = Cm(w)
-
-
-def _footer_note(doc, text: str):
-    Pt, _, _ = _shared()
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(10)
-    _mono(p.add_run(text), size=8, colour=_MUTED)
-
-
-def _stamp(doc, collection: str = ""):
-    """Who produced this and when. An undated extract that turns up in a bundle
-    six months later is worth very little."""
-    when = datetime.now().strftime("%d %B %Y")
-    tail = f" · {collection}" if collection else ""
-    _footer_note(doc, f"Exported from COAir on {when}{tail}")
-
-
-def _new_document():
-    from docx import Document
-    from docx.shared import Cm
-
-    doc = Document()
-    for section in doc.sections:
-        section.top_margin = Cm(2.0)
-        section.bottom_margin = Cm(2.0)
-        section.left_margin = Cm(2.2)
-        section.right_margin = Cm(2.2)
-    return doc
-
-
-def _title(doc, text: str):
-    Pt, RGBColor, _ = _shared()
-    p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(4)
-    run = p.add_run(text)
-    run.font.size = Pt(16)
-    run.font.bold = True
-    run.font.color.rgb = RGBColor.from_string("111827")
-    return p
-
-
-def _body(doc, text: str, size=10, colour="374151"):
-    Pt, RGBColor, _ = _shared()
-    p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(2)
-    run = p.add_run(text)
-    run.font.size = Pt(size)
-    run.font.color.rgb = RGBColor.from_string(colour)
-    return p
-
-
-def _save(doc) -> bytes:
-    buf = io.BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
+# The layout primitives moved to docx_kit so the chat-answer export can reach
+# them without importing a module named "chronology". Aliased back to their old
+# private names: this file's two builders and tests/test_chronology_docx.py are
+# written against them, and renaming would be churn with no reader benefit.
+from .docx_kit import (  # noqa: F401
+    ACCENT as _ACCENT,
+    MUTED as _MUTED,
+    RULE as _RULE,
+    body as _body,
+    borderless as _borderless,
+    fit as _fit,
+    footer_note as _footer_note,
+    label as _label,
+    mono as _mono,
+    new_document as _new_document,
+    paragraph_style_ids,
+    rule as _rule,
+    safe_filename,
+    save as _save,
+    shared as _shared,
+    stamp as _stamp,
+    title as _title,
+)
 
 
 # ── the authored chronology ─────────────────────────────────────────────
 def build_subject_docx(subject: Dict[str, Any], entries: List[Dict[str, Any]],
-                       collection: str = "") -> bytes:
+                       collection: str = "",
+                       evidence: Optional[Dict[str, Any]] = None) -> bytes:
     """One authored chronology, laid out as the page lays it out."""
     Pt, RGBColor, _ = _shared()
     doc = _new_document()
@@ -208,6 +108,33 @@ def build_subject_docx(subject: Dict[str, Any], entries: List[Dict[str, Any]],
     _rule(doc)
     n = len(entries)
     _footer_note(doc, f"{n} entr{'y' if n == 1 else 'ies'} · end of chronology")
+
+    # The supporting documents, when an evidence pass has resolved them. The
+    # narrative names no source files, so without this the exported chronology
+    # asserts a history with nothing a reader can check it against.
+    if evidence and evidence.get("documents"):
+        _rule(doc)
+        docs = evidence["documents"]
+        _label(doc, f"Supporting documents · {len(docs)}")
+        _body(doc,
+              "Resolved from the project record for this subject — ranked by the "
+              "search, not authored alongside the narrative.",
+              size=9, colour=_MUTED)
+        Pt, _, _ = _shared()
+        for d in docs:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(1)
+            page = d.get("page_number") or 1
+            _mono(p.add_run(f"{d.get('file_name', '')}  p.{page}"),
+                  size=9, colour="111827")
+        note = (f"{evidence.get('elapsed_ms', 0)} ms · "
+                f"{evidence.get('passes', 0)} searches · "
+                f"{evidence.get('units_searched', 0)} entries · "
+                f"{evidence.get('corpus_searched', 0)} documents searched")
+        if evidence.get("budget_exhausted"):
+            note += " · budget reached, later entries not searched"
+        _footer_note(doc, note)
+
     _stamp(doc, collection)
     return _save(doc)
 
@@ -248,31 +175,28 @@ def _entry_styles(doc):
     call. Profiling 5,000 events put 67% of the run inside that lookup alone.
     """
     from docx.enum.text import WD_TAB_ALIGNMENT
-    from docx.enum.style import WD_STYLE_TYPE
 
     Pt, RGBColor, Cm = _shared()
-    styles = doc.styles
 
-    entry = styles.add_style("ChronologyEntry", WD_STYLE_TYPE.PARAGRAPH)
-    entry.font.size = Pt(9)
-    entry.font.color.rgb = RGBColor.from_string("111827")
-    pf = entry.paragraph_format
-    pf.left_indent = Cm(_DATE_COL_CM)
-    pf.first_line_indent = Cm(-_DATE_COL_CM)   # the date hangs in its own column
-    pf.space_after = Pt(1)
-    pf.tab_stops.add_tab_stop(Cm(_DATE_COL_CM), WD_TAB_ALIGNMENT.LEFT)
+    def entry(style):
+        style.font.size = Pt(9)
+        style.font.color.rgb = RGBColor.from_string("111827")
+        pf = style.paragraph_format
+        pf.left_indent = Cm(_DATE_COL_CM)
+        pf.first_line_indent = Cm(-_DATE_COL_CM)   # the date hangs in its column
+        pf.space_after = Pt(1)
+        pf.tab_stops.add_tab_stop(Cm(_DATE_COL_CM), WD_TAB_ALIGNMENT.LEFT)
 
-    meta = styles.add_style("ChronologyMeta", WD_STYLE_TYPE.PARAGRAPH)
-    meta.font.size = Pt(8)
-    meta.font.name = "Consolas"
-    meta.font.color.rgb = RGBColor.from_string(_MUTED)
-    mpf = meta.paragraph_format
-    mpf.left_indent = Cm(_DATE_COL_CM)
-    mpf.space_after = Pt(6)
+    def meta(style):
+        style.font.size = Pt(8)
+        style.font.name = "Consolas"
+        style.font.color.rgb = RGBColor.from_string(_MUTED)
+        pf = style.paragraph_format
+        pf.left_indent = Cm(_DATE_COL_CM)
+        pf.space_after = Pt(6)
 
-    resolve = styles.get_style_id
-    return (resolve(entry, WD_STYLE_TYPE.PARAGRAPH),
-            resolve(meta, WD_STYLE_TYPE.PARAGRAPH))
+    ids = paragraph_style_ids(doc, {"ChronologyEntry": entry, "ChronologyMeta": meta})
+    return ids["ChronologyEntry"], ids["ChronologyMeta"]
 
 
 def build_events_docx(rows: List[Dict[str, Any]],
@@ -345,12 +269,3 @@ def build_events_docx(rows: List[Dict[str, Any]],
     return _save(doc)
 
 
-# ── file naming ─────────────────────────────────────────────────────────
-_UNSAFE = re.compile(r"[^A-Za-z0-9]+")
-
-
-def safe_filename(*parts: str) -> str:
-    """A predictable, filesystem-safe name. Callers add the extension."""
-    joined = "-".join(_UNSAFE.sub("-", str(p or "")).strip("-") for p in parts if p)
-    joined = re.sub(r"-{2,}", "-", joined).strip("-")
-    return joined or "chronology"

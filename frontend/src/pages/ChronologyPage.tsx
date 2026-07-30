@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import ChronologyTimeline from '../components/chronology/ChronologyTimeline';
 import type { TimelineEvent } from '../utils/timeline';
@@ -10,15 +10,18 @@ import SubjectBar from '../components/chronology/SubjectBar';
 import SubjectNarrative from '../components/chronology/SubjectNarrative';
 import DownloadDocxButton from '../components/chronology/DownloadDocxButton';
 import {
+  buildChronology,
   downloadEventsDocx,
-  getChronologySubject,
-  matchChronologySubject,
 } from '../api/chronologyApi';
+import type { BuildResult, Evidence } from '../api/chronologyApi';
+import EvidencePanel from '../components/chronology/EvidencePanel';
+import ActivityFeed from '../components/chat/ActivityFeed';
+import { useActivityFeed } from '../hooks/useActivityFeed';
+import { usePacedSteps } from '../hooks/usePacedSteps';
 import type {
   ChronologyEvent,
   ChronologyEntry,
   ChronologySubject,
-  SubjectMatch,
 } from '../api/chronologyApi';
 import { useUIStore } from '../stores/uiStore';
 import { count } from '../utils/format';
@@ -77,38 +80,87 @@ export default function ChronologyPage() {
   const [barStatus, setBarStatus] = useState<'idle' | 'loading' | 'match' | 'ambiguous' | 'none'>('idle');
   const [lastSubject, setLastSubject] = useState('');
 
-  const applyMatch = (r: SubjectMatch) => {
-    if (r.status === 'match') {
-      setSubject(r.subject);
-      setEntries(r.entries);
+  const [evidence, setEvidence] = useState<Evidence | null>(null);
+  const [evidenceNote, setEvidenceNote] = useState('');
+  /* The build publishes its steps to the shared progress store under this id —
+     the retrieval itself emits them, so each line names a document that was
+     really read. */
+  const [buildId, setBuildId] = useState<string | null>(null);
+  const [building, setBuilding] = useState(false);
+  const [pending, setPending] = useState<BuildResult | null>(null);
+  const [lastRef, setLastRef] = useState('');
+
+  const feed = useActivityFeed(buildId, building);
+  const paced = usePacedSteps(feed.steps, { active: building });
+
+  /* Hold the report until the paced reveal has caught up with the work. The
+     steps are real; only the rhythm is ours, and the report's own footer prints
+     the true elapsed time so nothing downstream inherits the pacing. */
+  useEffect(() => {
+    if (!building || !pending) return;
+    if (!feed.done || !paced.caughtUp) return;
+    if (pending.status === 'match') {
+      setSubject(pending.subject);
+      setEntries(pending.entries);
+      setEvidence(pending.evidence);
+      setEvidenceNote(pending.evidence_note ?? '');
       setCandidates([]);
       setBarStatus('match');
     } else {
       setSubject(null);
       setEntries([]);
-      setCandidates(r.candidates);
-      setBarStatus(r.status);
+      setCandidates(pending.candidates);
+      setBarStatus(pending.status);
     }
-  };
+    setBuilding(false);
+    setPending(null);
+  }, [building, pending, feed.done, paced.caughtUp]);
 
-  const handleSubject = async (s: string) => {
-    setLastSubject(s);
+  const runBuild = async (args: { subject?: string; ref?: string; force?: boolean }) => {
+    const rid = `chron-${Math.random().toString(36).slice(2, 10)}`;
+    setBuildId(rid);
+    setBuilding(true);
+    setPending(null);
     setBarStatus('loading');
+    setEvidence(null);
+    setEvidenceNote('');
     try {
-      applyMatch(await matchChronologySubject(s));
+      const r = await buildChronology({ ...args, requestId: rid });
+      if (r.status === 'match') setLastRef(r.subject.ref);
+      // An immediate return (ambiguous, or no corpus to search) has nothing to
+      // pace — showing a staged build in front of it would be theatre.
+      if (r.status !== 'match' || r.evidence === null) {
+        if (r.status === 'match') {
+          setSubject(r.subject);
+          setEntries(r.entries);
+          setEvidence(null);
+          setEvidenceNote(r.evidence_note ?? '');
+          setCandidates([]);
+          setBarStatus('match');
+        } else {
+          setSubject(null);
+          setEntries([]);
+          setCandidates(r.candidates);
+          setBarStatus(r.status);
+        }
+        setBuilding(false);
+        return;
+      }
+      setPending(r);
     } catch {
+      setBuilding(false);
       setBarStatus('none');
       setCandidates([]);
     }
   };
 
+  const handleSubject = async (s: string) => {
+    setLastSubject(s);
+    await runBuild({ subject: s });
+  };
+
   const handlePick = async (ref: string) => {
-    setBarStatus('loading');
-    try {
-      applyMatch(await getChronologySubject(ref));
-    } catch {
-      setBarStatus('none');
-    }
+    await runBuild({ ref });
   };
 
   const [eventType, setEventType] = useState<string | null>(null);
@@ -253,17 +305,42 @@ export default function ChronologyPage() {
         />
         <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-4 md:px-8 py-8">
-          {subject ? (
+          {building ? (
+            /* The build in progress. Every line here was published by the
+               retrieval as it ran, so it names a document that was really
+               read — see usePacedSteps for why the reveal is paced. */
+            <div className="mt-5">
+              <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
+                Building · {lastSubject || lastRef}
+              </p>
+              <p className="mt-1.5 text-[13px] text-[var(--text-secondary)]">
+                Resolving the documents behind this chronology.
+              </p>
+              <div className="mt-4">
+                <ActivityFeed steps={paced.visible} visible />
+              </div>
+            </div>
+          ) : subject ? (
+            <>
             <SubjectNarrative
               subject={subject}
               entries={entries}
               onClear={() => {
                 setSubject(null);
                 setEntries([]);
+                setEvidence(null);
+                setEvidenceNote('');
                 setCandidates([]);
                 setBarStatus('idle');
               }}
+              onRebuild={() => runBuild({ ref: subject.ref, force: true })}
             />
+            <EvidencePanel
+              evidence={evidence}
+              note={evidenceNote}
+              onOpen={openDocument}
+            />
+            </>
           ) : (
           <>
           <header className="mb-6">

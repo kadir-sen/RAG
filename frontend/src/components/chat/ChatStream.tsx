@@ -40,8 +40,20 @@ export default function ChatStream({ messages, isLoading, onDocClick, onRetry, a
   return (
     <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto py-4 md:py-6" role="log" aria-label="Chat messages" aria-live="polite">
       <div className="max-w-5xl mx-auto px-2 md:px-6">
-        {messages.map((msg) => (
-          <MessageItem key={msg.id} message={msg} onDocClick={onDocClick} onRetry={onRetry} />
+        {messages.map((msg, i) => (
+          <MessageItem
+            key={msg.id}
+            message={msg}
+            /* The question this answer replies to. The exported document is far
+               more useful with it, and only this level knows the ordering. */
+            question={
+              msg.role === 'assistant'
+                ? [...messages.slice(0, i)].reverse().find((m) => m.role === 'user')?.content ?? ''
+                : ''
+            }
+            onDocClick={onDocClick}
+            onRetry={onRetry}
+          />
         ))}
         <ActivityFeed requestId={activeRequestId ?? null} visible={isLoading} />
         <div ref={bottomRef} />

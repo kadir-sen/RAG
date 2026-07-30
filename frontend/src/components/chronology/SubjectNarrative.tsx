@@ -15,9 +15,14 @@ interface Props {
   subject: ChronologySubject;
   entries: ChronologyEntry[];
   onClear: () => void;
+  /** Re-run the evidence pass. A second look at the same subject reuses what was
+      already resolved, which is right — but when the corpus has changed you want
+      the full pass, and dressing a cache hit as a fresh analysis would be the
+      misrepresentation this whole area avoids. */
+  onRebuild?: () => void;
 }
 
-export default function SubjectNarrative({ subject, entries, onClear }: Props) {
+export default function SubjectNarrative({ subject, entries, onClear, onRebuild }: Props) {
   return (
     <article className="mt-5">
       <header className="pb-3 border-b border-[var(--border)]">
@@ -27,6 +32,15 @@ export default function SubjectNarrative({ subject, entries, onClear }: Props) {
           </p>
           <div className="shrink-0 flex items-baseline gap-4">
             <DownloadDocxButton onDownload={() => downloadSubjectDocx(subject.ref)} />
+            {onRebuild && (
+              <button
+                type="button"
+                onClick={onRebuild}
+                className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              >
+                rebuild
+              </button>
+            )}
             {/* Without this the narrative is a one-way door — there is no other
                 way back to the events the corpus produced. */}
             <button

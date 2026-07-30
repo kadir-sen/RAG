@@ -1,4 +1,5 @@
 import apiClient from './client';
+import { downloadGet } from './download';
 
 /** One extracted event, as the store holds it. */
 export interface ChronologyEvent {
@@ -101,53 +102,91 @@ export async function getChronologySubject(ref: string): Promise<SubjectMatch> {
 }
 
 /* ── Word downloads ────────────────────────────────────────────────────
-   Fetched with XHR rather than a plain link because the endpoints need the
-   bearer token, so the response arrives as a blob and is handed to the browser
-   here. Same pattern the CSV exports already use. */
-
-/* The unfiltered export builds a document for the whole record — tens of
-   thousands of events — which takes the server a while. The client's default
-   120s would abandon a request the server was going to answer, and the user
-   would see a failure over a file that then never arrives. */
-const DOWNLOAD_TIMEOUT = 10 * 60 * 1000;
-
-/** Save a blob under `fallback`, preferring the name the server sent. */
-function saveBlob(blob: Blob, headers: Record<string, unknown>, fallback: string) {
-  const disposition = String(headers['content-disposition'] ?? '');
-  const named = /filename="?([^"]+)"?/.exec(disposition)?.[1];
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = named || fallback;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Revoking immediately can cancel the download in Safari; one tick is enough.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+   The blob plumbing lives in ./download — the chat-answer export needs the same
+   helper, and one copy of the content-disposition/Safari handling is enough. */
 
 export async function downloadSubjectDocx(ref: string): Promise<void> {
-  const res = await apiClient.get(`/chronology/subjects/${ref}/document`, {
-    responseType: 'blob',
-    timeout: DOWNLOAD_TIMEOUT,
-  });
-  saveBlob(res.data as Blob, res.headers as Record<string, unknown>, `Chronology-${ref}.docx`);
+  await downloadGet(
+    `/chronology/subjects/${ref}/document`,
+    `Chronology-${ref}.docx`,
+  );
 }
 
 export async function downloadEventsDocx(f: ChronologyFilters = {}): Promise<void> {
-  const res = await apiClient.get('/chronology/events/document', {
-    responseType: 'blob',
-    timeout: DOWNLOAD_TIMEOUT,
-    params: {
-      event_type: f.eventType || undefined,
-      actor: f.actor || undefined,
-      date_from: f.dateFrom || undefined,
-      date_to: f.dateTo || undefined,
-    },
+  await downloadGet('/chronology/events/document', 'Chronology-project-record.docx', {
+    event_type: f.eventType || undefined,
+    actor: f.actor || undefined,
+    date_from: f.dateFrom || undefined,
+    date_to: f.dateTo || undefined,
   });
-  saveBlob(
-    res.data as Blob,
-    res.headers as Record<string, unknown>,
-    'Chronology-project-record.docx',
+}
+
+/* ── the staged, evidence-backed build ─────────────────────────────────
+   /chronology/match stays the cheap resolver (candidate chips, ambiguity).
+   This is the one that also resolves which corpus documents stand behind the
+   narrative, and reports what it actually did. */
+
+export interface EvidenceDocument {
+  doc_id: string;
+  file_name: string;
+  page_number: number;
+  anchor: string;
+  snippet: string;
+  score: number;
+}
+
+export interface EvidenceUnit {
+  ref: string;
+  kind: 'entry' | 'sub';
+  date: string;
+  documents: EvidenceDocument[];
+  events: { date: string; event_type: string; actor: string; file_name: string; description: string }[];
+  window: string[] | null;
+}
+
+export interface Evidence {
+  ref: string;
+  documents: EvidenceDocument[];
+  units: EvidenceUnit[];
+  passes: number;
+  units_searched: number;
+  dated_units: number;
+  units_with_events: number;
+  elapsed_ms: number;
+  budget_exhausted: boolean;
+  event_pad_days: number;
+  corpus_searched: number;
+  from_cache: boolean;
+}
+
+export type BuildResult =
+  | {
+      status: 'match';
+      subject: ChronologySubject;
+      entries: ChronologyEntry[];
+      evidence: Evidence | null;
+      evidence_note?: string;
+      request_id?: string;
+    }
+  | { status: 'ambiguous' | 'none'; candidates: ChronologySubject[] };
+
+export async function buildChronology(args: {
+  subject?: string;
+  ref?: string;
+  requestId: string;
+  force?: boolean;
+}): Promise<BuildResult> {
+  const { data } = await apiClient.post<BuildResult>(
+    '/chronology/build',
+    {
+      subject: args.subject ?? '',
+      ref: args.ref ?? '',
+      request_id: args.requestId,
+      force: args.force ?? false,
+    },
+    // The build searches the corpus per entry; the client's default 120s is
+    // ample, but a cold full-text index build on a large corpus is not.
+    { timeout: 5 * 60 * 1000 },
   );
+  return data;
 }

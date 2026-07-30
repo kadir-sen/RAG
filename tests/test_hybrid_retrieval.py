@@ -23,16 +23,24 @@ def clean_store():
 # ── chunk_store ─────────────────────────────────────────────────────────────
 class TestChunkStore:
     def test_add_dedupe_delete(self, clean_store):
+        # Deltas, not absolute counts. The fixture hands back the *real* store
+        # (get_chunk_store is a singleton over storage/chunks/chunks.db), so
+        # `count() == 2` only held on an empty checkout — against the 135k-chunk
+        # corpus it fails, which is why this test sat red the moment the module
+        # became importable. It cleans up only its own synthetic files, so the
+        # corpus is never at risk; the assertions just had to stop assuming they
+        # owned the database.
         cs = clean_store
+        before = cs.count()
         n = cs.add_chunks([
             {"doc_id": "d1", "file_name": "a.pdf", "page_number": 1, "text": "alpha text one"},
             {"doc_id": "d1", "file_name": "a.pdf", "page_number": 2, "text": "beta text two"},
             {"doc_id": "d1", "file_name": "a.pdf", "page_number": 1, "text": "alpha text one"},  # dup
         ])
         assert n == 2  # duplicate skipped
-        assert cs.count() == 2
+        assert cs.count() == before + 2
         assert cs.delete_by_file("a.pdf") == 2
-        assert cs.count() == 0
+        assert cs.count() == before
 
     def test_empty_text_skipped(self, clean_store):
         cs = clean_store

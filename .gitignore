@@ -109,3 +109,8 @@ delay-disputes-portal/
 
 # Stray screenshots from local UI runs.
 /*.png
+
+# The six authored chronologies live in content/chronologies/ under stable
+# numbered names. This folder is the same six files under their original titles
+# (md5-identical) — a handover copy, not a second source of truth.
+Sample Chronologies/

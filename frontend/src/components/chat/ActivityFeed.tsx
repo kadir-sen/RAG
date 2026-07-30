@@ -33,8 +33,13 @@ function BouncingDots() {
 }
 
 interface Props {
-  requestId: string | null;
+  requestId?: string | null;
   visible: boolean;
+  /** Pre-supplied steps, which switch the component out of polling. The
+      chronology build hands them in already paced (see usePacedSteps) — the feed
+      is otherwise identical, so it renders them rather than owning a second
+      copy of this layout. */
+  steps?: ActivityStep[];
 }
 
 /**
@@ -43,8 +48,9 @@ interface Props {
  * bouncing dots), earlier ones settle to muted with a check. Falls back to the
  * plain typing dots until the first step arrives.
  */
-export default function ActivityFeed({ requestId, visible }: Props) {
-  const { steps } = useActivityFeed(requestId, visible);
+export default function ActivityFeed({ requestId, visible, steps: given }: Props) {
+  const polled = useActivityFeed(requestId ?? null, visible && given === undefined);
+  const steps = given ?? polled.steps;
   if (!visible) return null;
 
   if (!steps.length) {

@@ -49,6 +49,9 @@ jobs:
             tests/test_path_normalizer.py \
             tests/test_chronology_library.py \
             tests/test_chronology_docx.py \
+            tests/test_markdown_blocks.py \
+            tests/test_answer_docx.py \
+            tests/test_chronology_evidence.py \
             tests/test_router_document_listing.py \
             tests/test_router_intent_doc_list.py \
             tests/test_router_rebalance.py \
