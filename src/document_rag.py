@@ -891,8 +891,17 @@ class DocumentRAG:
         file_names: Optional[List[str]] = None,
         payload_filters: Optional[Dict[str, Any]] = None,
         synthesize: bool = True,
+        rerank: bool = True,
     ) -> dict:
         """Query documents with proper page-level citations.
+
+        rerank=False drops the LLM *rerank* call as well, leaving retrieval
+        entirely model-free: dense + BM25 + RRF and nothing else. synthesize=False
+        alone is not that — ENABLE_RERANK defaults on, so the retrieve-only path
+        still spends one lite-model call ordering the fused pool. The chronology
+        evidence build needs a retrieval it can promise has no model in it,
+        because that promise is printed on the page, so it has to be a parameter
+        rather than a hope about an env var.
         If doc_ids is provided, only search within those documents.
         payload_filters scope retrieval by scoped-metadata (e.g. {"doc_type":
         "delay notice"}); when a scoped query returns nothing we retry once
@@ -944,6 +953,7 @@ class DocumentRAG:
                     raw_question=original_question,   # cleaner text for lexical + rerank
                     top_k=top_k, doc_ids=doc_ids, file_names=file_names,
                     payload_filters=payload_filters, synthesize=synthesize,
+                    rerank=rerank,
                 )
                 # Empty-scope safety net: a scoped query that found nothing retries
                 # once unscoped rather than reporting "not found".
@@ -952,7 +962,7 @@ class DocumentRAG:
                     hybrid = self._hybrid_query(
                         question=question, raw_question=original_question,
                         top_k=top_k, doc_ids=doc_ids, file_names=file_names,
-                        synthesize=synthesize,
+                        synthesize=synthesize, rerank=rerank,
                     )
                 if hybrid is not None:
                     return hybrid
@@ -1092,7 +1102,8 @@ class DocumentRAG:
                       doc_ids: Optional[List[str]] = None,
                       file_names: Optional[List[str]] = None,
                       payload_filters: Optional[Dict[str, Any]] = None,
-                      synthesize: bool = True) -> Optional[dict]:
+                      synthesize: bool = True,
+                      rerank: bool = True) -> Optional[dict]:
         """Dense + lexical candidate fusion (RRF) + optional LLM rerank, then
         synthesize an answer from the final chunks. Returns None when there are
         no candidates at all (caller falls back to the dense path).
@@ -1147,7 +1158,7 @@ class DocumentRAG:
         fused = rrf_fuse(dense, lexical, doc_boost, rrf_k=RRF_K)
 
         # 4. LLM rerank the top of the fused pool → final_k
-        if ENABLE_RERANK and len(fused) > final_k:
+        if ENABLE_RERANK and rerank and len(fused) > final_k:
             final = self._llm_rerank(raw_question, fused[:RAG_RERANK_K], final_k)
         else:
             final = fused[:final_k]

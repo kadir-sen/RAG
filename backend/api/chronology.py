@@ -243,20 +243,11 @@ async def chronology_subject(
 # one thing that makes it a chronology, so both views export as .docx laid out
 # the way the page lays them out.
 
-_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-
-def _docx_response(blob: bytes, filename: str) -> Response:
-    return Response(
-        content=blob,
-        media_type=_DOCX_MIME,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            # The browser fetches this with XHR to attach the bearer token, so
-            # the header has to be readable from script to name the file.
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        },
-    )
+# The three response headers live in backend/api/_docx.py now — the chat-answer
+# export needs exactly the same set, and a second copy of
+# Access-Control-Expose-Headers is the kind of omission that only shows up in a
+# browser, as a file called "download".
+from ._docx import docx_response as _docx_response  # noqa: E402
 
 
 @router.get("/chronology/subjects/{ref}/document")

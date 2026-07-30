@@ -13,6 +13,8 @@ import EmailTraceResponse from './EmailTraceResponse';
 import CtaButton from './CtaButton';
 import DocumentAnalysisTable from './DocumentAnalysisTable';
 import { mapRelatedDocsToTimeline } from '../../utils/timeline';
+import DownloadDocxButton from '../chronology/DownloadDocxButton';
+import { downloadAnswerDocx } from '../../api/chatApi';
 
 // Custom markdown components for better presentation
 const markdownComponents: Components = {
@@ -52,6 +54,8 @@ interface Props {
   failedText?: string;
   onRetry?: (text: string) => void;
   activities?: ActivityStep[];
+  /** The question this answer replies to — carried into the Word export. */
+  question?: string;
 }
 
 // Collapsed trail of the activity steps the assistant took to produce the answer.
@@ -90,7 +94,7 @@ function formatTime(ts?: number): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function AssistantMessage({ response, text, timestamp, onDocClick, failedText, onRetry, activities }: Props) {
+function AssistantMessage({ response, text, timestamp, onDocClick, failedText, onRetry, activities, question = '' }: Props) {
   const intent = response?.ui_intent ?? 'answer';
   // Mode-less: whenever the router returns a document list (FILE_LIST / TIMELINE
   // → ui_intent "doc_list") with related documents, render them as a single
@@ -117,6 +121,35 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
       setTimeout(() => setCopied(false), 2000);
     });
   }, [text]);
+
+  /* The document is rendered server-side from what is on screen. A SQL answer
+     carries its query and rows too — preview_rows are row objects, so the
+     columns are their keys, the same way the CSV button derives them. */
+  const handleDownload = useCallback(async () => {
+    const artifact = response?.sql_artifact;
+    const rows = artifact?.preview_rows ?? [];
+    const cols = rows.length ? Object.keys(rows[0]) : [];
+    /* row_count is only trustworthy when it exceeds what we were sent: a
+       restored answer kept 20 preview rows and the count was recomputed from
+       their length, so an equal count is indistinguishable from that artefact.
+       Passing null there makes the document say how many rows it is showing
+       instead of claiming a total for the query. */
+    const knownTotal =
+      artifact && artifact.row_count > rows.length ? artifact.row_count : null;
+    await downloadAnswerDocx({
+      question,
+      answer: text,
+      citations: response?.citations?.map((c) => ({
+        doc_name: c.doc_name,
+        anchor: c.anchor,
+        snippet: c.snippet,
+      })),
+      sql: artifact?.generated_sql ?? '',
+      tableColumns: cols,
+      tableRows: rows.map((r) => cols.map((c) => r[c] ?? '')),
+      totalRows: knownTotal,
+    });
+  }, [question, text, response]);
 
   // Inline citations are only meaningful for plain answer responses where the
   // text itself is the primary content. Doc-list / email-trace /
@@ -221,16 +254,26 @@ function AssistantMessage({ response, text, timestamp, onDocClick, failedText, o
             )}
           </div>
 
-          {/* Footer: timestamp + copy (hover-only) */}
-          <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-[var(--text-muted)] opacity-0 group-hover:opacity-100 transition-opacity">
-            {time && <span>{time}</span>}
-            <button
-              onClick={handleCopy}
-              aria-label={copied ? 'Response copied' : 'Copy response'}
-              className="ml-auto px-2 py-0.5 rounded hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
-            >
-              {copied ? 'copied!' : 'copy'}
-            </button>
+          {/* Footer: timestamp, download, copy.
+              The strip fades in on hover, which is right for `copy` — you go
+              looking for it — but wrong for a download nobody knows exists yet,
+              so that one stays visible. */}
+          <div className="mt-1 flex items-center gap-2 text-[10px] font-mono text-[var(--text-muted)]">
+            {time && (
+              <span className="opacity-0 group-hover:opacity-100 transition-opacity">
+                {time}
+              </span>
+            )}
+            <span className="ml-auto flex items-center gap-2">
+              {!!text.trim() && <DownloadDocxButton onDownload={handleDownload} />}
+              <button
+                onClick={handleCopy}
+                aria-label={copied ? 'Response copied' : 'Copy response'}
+                className="px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-all"
+              >
+                {copied ? 'copied!' : 'copy'}
+              </button>
+            </span>
           </div>
         </div>
       </div>

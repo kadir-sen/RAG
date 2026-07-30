@@ -6,11 +6,13 @@ import AssistantMessage from './AssistantMessage';
 
 interface Props {
   message: Message;
+  /** The user message this answer replies to — carried into the Word export. */
+  question?: string;
   onDocClick: (doc: ViewerDoc) => void;
   onRetry?: (text: string) => void;
 }
 
-function MessageItem({ message, onDocClick, onRetry }: Props) {
+function MessageItem({ message, question, onDocClick, onRetry }: Props) {
   if (message.role === 'user') {
     return <UserMessage text={message.content} timestamp={message.timestamp} />;
   }
@@ -23,6 +25,7 @@ function MessageItem({ message, onDocClick, onRetry }: Props) {
       failedText={message.failedText}
       onRetry={onRetry}
       activities={message.activities}
+      question={question ?? ''}
     />
   );
 }

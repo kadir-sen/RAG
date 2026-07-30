@@ -188,7 +188,12 @@ def test_event_export_survives_an_empty_list():
     (("Chronology", "03", "Utility Diversion Failures (MUDFA)"),
      "Chronology-03-Utility-Diversion-Failures-MUDFA"),
     (("Chronology", "project-record"), "Chronology-project-record"),
-    (("", ""), "chronology"),
+    # The all-empty fallback moved from "chronology" to "coair-export" when this
+    # helper moved into src/docx_kit and became shared with the chat-answer
+    # export — a file named "chronology.docx" would be wrong for half its callers
+    # now. Unreachable from the chronology path either way: ref and title are
+    # always present there.
+    (("", ""), "coair-export"),
     (("../../etc/passwd",), "etc-passwd"),
 ])
 def test_safe_filename(parts, expected):
