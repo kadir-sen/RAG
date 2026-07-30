@@ -55,7 +55,8 @@ from .docx_kit import (  # noqa: F401
 
 # ── the authored chronology ─────────────────────────────────────────────
 def build_subject_docx(subject: Dict[str, Any], entries: List[Dict[str, Any]],
-                       collection: str = "") -> bytes:
+                       collection: str = "",
+                       evidence: Optional[Dict[str, Any]] = None) -> bytes:
     """One authored chronology, laid out as the page lays it out."""
     Pt, RGBColor, _ = _shared()
     doc = _new_document()
@@ -107,6 +108,33 @@ def build_subject_docx(subject: Dict[str, Any], entries: List[Dict[str, Any]],
     _rule(doc)
     n = len(entries)
     _footer_note(doc, f"{n} entr{'y' if n == 1 else 'ies'} · end of chronology")
+
+    # The supporting documents, when an evidence pass has resolved them. The
+    # narrative names no source files, so without this the exported chronology
+    # asserts a history with nothing a reader can check it against.
+    if evidence and evidence.get("documents"):
+        _rule(doc)
+        docs = evidence["documents"]
+        _label(doc, f"Supporting documents · {len(docs)}")
+        _body(doc,
+              "Resolved from the project record for this subject — ranked by the "
+              "search, not authored alongside the narrative.",
+              size=9, colour=_MUTED)
+        Pt, _, _ = _shared()
+        for d in docs:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(1)
+            page = d.get("page_number") or 1
+            _mono(p.add_run(f"{d.get('file_name', '')}  p.{page}"),
+                  size=9, colour="111827")
+        note = (f"{evidence.get('elapsed_ms', 0)} ms · "
+                f"{evidence.get('passes', 0)} searches · "
+                f"{evidence.get('units_searched', 0)} entries · "
+                f"{evidence.get('corpus_searched', 0)} documents searched")
+        if evidence.get("budget_exhausted"):
+            note += " · budget reached, later entries not searched"
+        _footer_note(doc, note)
+
     _stamp(doc, collection)
     return _save(doc)
 

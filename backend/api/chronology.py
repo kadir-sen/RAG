@@ -252,7 +252,7 @@ from ._docx import docx_response as _docx_response  # noqa: E402
 
 @router.get("/chronology/subjects/{ref}/document")
 async def chronology_subject_docx(
-    ref: str, _: UserContext = Depends(get_current_user),
+    ref: str, user: UserContext = Depends(get_current_user),
 ) -> Response:
     """One authored chronology as a Word document."""
     from fastapi import HTTPException
@@ -263,7 +263,12 @@ async def chronology_subject_docx(
     doc = get_doc(ref)
     if doc is None:
         raise HTTPException(status_code=404, detail="No such chronology")
-    blob = build_subject_docx(_doc_out(doc), get_entries(ref), COLLECTION)
+    # If an evidence pass has already run for this subject, the export carries it.
+    # The narrative names no source files, so a chronology handed on without them
+    # asserts a history with nothing to check it against.
+    from src.chronology_evidence import cached as cached_evidence
+    blob = build_subject_docx(_doc_out(doc), get_entries(ref), COLLECTION,
+                              evidence=cached_evidence(ref, _corpus_of(user)))
     return _docx_response(blob, safe_filename("Chronology", doc.ref, doc.title) + ".docx")
 
 
@@ -292,3 +297,99 @@ async def chronology_events_docx(
         "date_from": date_from, "date_to": date_to,
     })
     return _docx_response(blob, safe_filename("Chronology", "project-record") + ".docx")
+
+
+# ── the staged, evidence-backed build ───────────────────────────────────
+# Typing a subject used to return in milliseconds: the match is token scoring and
+# the narrative is parsed from a cached .docx, so the "Finding…" state was never
+# actually seen and the report arrived looking like a canned lookup. It also had
+# no link to the corpus at all — 80 entries across the six chronologies and not
+# one naming a source file — so "which document is 6.3.4 about?" had no answer.
+#
+# This endpoint answers it. The wait is filled by resolving that evidence, not by
+# sleeping: BM25 over the mirrored chunk text for the subject and then for every
+# entry and sub-point, plus the extracted events falling in each dated entry's
+# period. The payload reports elapsed_ms, passes and how much corpus was searched
+# so the page can print what actually happened.
+#
+# /chronology/match is left alone. It is a cheap honest resolver used by the
+# ambiguity path and the candidate chips, and making it sometimes-slow would
+# change its contract for callers that only want a name.
+
+
+class BuildRequest(BaseModel):
+    subject: str = ""
+    ref: str = ""
+    # Client-generated, so the page can poll GET /chat/progress/{request_id} for
+    # the live steps. That store is keyed on request_id alone and knows nothing
+    # about chat, so reusing it costs nothing and — the actual reason — the
+    # retrieval already publishes its own "reading <file> · p.N" lines. A step
+    # list written on the client could not name the document, and naming the
+    # document is the whole point of this feature.
+    request_id: str = ""
+    force: bool = False
+
+
+@router.post("/chronology/build")
+async def chronology_build(
+    body: BuildRequest, user: UserContext = Depends(get_current_user),
+) -> Dict:
+    """Resolve one authored chronology together with its corpus evidence."""
+    import asyncio
+    import uuid
+
+    from src.chronology_evidence import build as build_evidence, has_corpus
+    from src.chronology_library import get_doc, get_entries, match
+    from backend.tasks.query_progress import (query_progress, query_request_var,
+                                              report_step)
+
+    # Cheap path first: there is nothing to build until we know which chronology.
+    if body.ref:
+        doc = get_doc(body.ref)
+        if doc is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="No such chronology")
+    else:
+        result = match(body.subject or "")
+        if result["status"] != "match":
+            return {"status": result["status"],
+                    "candidates": [_doc_out(r["doc"]) for r in result["ranked"]]}
+        doc = result["doc"]
+
+    entries = get_entries(doc.ref)
+    payload = {"status": "match", "subject": _doc_out(doc), "entries": entries}
+
+    # No corpus to search: return at once and say why. A staged build in front of
+    # an empty evidence section would be the exact misrepresentation this is
+    # meant to avoid.
+    if not has_corpus():
+        return {**payload, "evidence": None,
+                "evidence_note": "No searchable corpus for this account, so there "
+                                 "is no supporting evidence to resolve."}
+
+    request_id = body.request_id or uuid.uuid4().hex[:12]
+    corpus = _corpus_of(user)
+
+    def _run() -> Dict:
+        # The ContextVar rides into this thread via to_thread, which is also what
+        # lets document_rag/lexical publish their own steps under the same id.
+        query_request_var.set(request_id)
+        return build_evidence(
+            doc.ref, doc.title, doc.summary, entries,
+            corpus=corpus,
+            corpus_filter=lambda rows: _scope_to_corpus(rows, user),
+            force=body.force,
+            on_step=report_step,
+        )
+
+    query_progress.start(request_id)
+    try:
+        # to_thread is not optional here. These handlers are async but the work is
+        # synchronous DuckDB and python-docx; at milliseconds nobody noticed, but a
+        # multi-second build on the event loop would stall every other request on
+        # a 2 vCPU box.
+        evidence = await asyncio.to_thread(_run)
+    finally:
+        query_progress.finish(request_id)
+
+    return {**payload, "evidence": evidence, "request_id": request_id}
