@@ -56,7 +56,13 @@ def _edinburgh_file_infos(project_id: str = "") -> List[FileInfo]:
     Read-only."""
     from src.document_registry import get_document_registry
     from src.chunk_store import get_chunk_store
-    reg_names = {r.file_name for r in get_document_registry().get_completed()}
+    registry = get_document_registry()
+    reg_names = {
+        r.file_name for r in (
+            registry.get_completed(project_id=project_id)
+            if project_id else registry.get_completed()
+        )
+    }
     con = get_chunk_store().connection()
     sql = ("SELECT file_name, MAX(page_number) FROM chunks "
            "WHERE file_name IS NOT NULL AND file_name <> ''")
