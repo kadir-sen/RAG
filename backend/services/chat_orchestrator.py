@@ -66,6 +66,8 @@ class ChatOrchestrator:
         mode: str | None = None,
         username: str | None = None,
         request_id: str | None = None,
+        project_id: str = "",
+        project_role: str = "",
     ) -> ChatResponse:
         now = datetime.now().isoformat()
 
@@ -75,6 +77,11 @@ class ChatOrchestrator:
         from backend.tasks.query_progress import query_progress, query_request_var
         import uuid as _uuid
         request_id = request_id or _uuid.uuid4().hex[:12]
+        from src.run_store import get_run_store
+        get_run_store().start(
+            run_id=request_id, project_id=project_id, username=username or "",
+            module="chatbot", query=query, prompt_version="chat-v2",
+        )
         query_request_var.set(request_id)
         query_progress.start(request_id)
 
@@ -141,6 +148,8 @@ class ChatOrchestrator:
                         token_limit=_u.get("token_limit", 0),
                     ))
             corpus_var.set(_corpus)
+            from src.project_context import set_current_project
+            set_current_project(project_id, project_role)
         except Exception:
             pass
 
@@ -283,6 +292,15 @@ class ChatOrchestrator:
         # Mark the activity feed complete (client also stops polling when this
         # POST resolves; this flips `done` for the final render).
         query_progress.finish(request_id)
+        try:
+            get_run_store().finish(
+                request_id,
+                route=str(raw_result.get("query_type") or response.route or ""),
+                source_count=len(response.citations) + len(response.related_docs),
+                verification=str(raw_result.get("verify_verdict") or ""),
+            )
+        except Exception:
+            pass
 
         return response
 

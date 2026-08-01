@@ -23,9 +23,11 @@ CHUNKS_DIR = STORAGE_DIR / "chunks"
 CHUNKS_DB = CHUNKS_DIR / "chunks.db"
 
 
-def _chunk_id(file_name: str, page_number: int, text: str) -> str:
+def _chunk_id(file_name: str, page_number: int, text: str, project_id: str = "") -> str:
     """Stable id for a chunk (dedupe across re-ingests of the same content)."""
-    h = hashlib.sha256(f"{file_name}|{page_number}|{text}".encode("utf-8")).hexdigest()
+    h = hashlib.sha256(
+        f"{project_id}|{file_name}|{page_number}|{text}".encode("utf-8")
+    ).hexdigest()
     return h[:24]
 
 
@@ -61,8 +63,11 @@ class ChunkStore:
             self._con.execute(
                 "CREATE TABLE IF NOT EXISTS chunks ("
                 "chunk_id VARCHAR PRIMARY KEY, doc_id VARCHAR, "
-                "file_name VARCHAR, page_number INTEGER, text VARCHAR)"
+                "file_name VARCHAR, page_number INTEGER, text VARCHAR, project_id VARCHAR DEFAULT '')"
             )
+            cols = {r[1] for r in self._con.execute("PRAGMA table_info('chunks')").fetchall()}
+            if "project_id" not in cols:
+                self._con.execute("ALTER TABLE chunks ADD COLUMN project_id VARCHAR DEFAULT ''")
             logger.info(f"[ChunkStore] Ready ({self.count()} chunks)")
         except Exception as e:
             logger.error(f"[ChunkStore] init failed: {e}")
@@ -71,7 +76,7 @@ class ChunkStore:
             self._con.execute(
                 "CREATE TABLE IF NOT EXISTS chunks ("
                 "chunk_id VARCHAR PRIMARY KEY, doc_id VARCHAR, "
-                "file_name VARCHAR, page_number INTEGER, text VARCHAR)"
+                "file_name VARCHAR, page_number INTEGER, text VARCHAR, project_id VARCHAR DEFAULT '')"
             )
 
     def connection(self):
@@ -94,11 +99,20 @@ class ChunkStore:
                     page = int(r.get("page_number", 1))
                 except (TypeError, ValueError):
                     page = 1
-                cid = _chunk_id(fname, page, text)
+                project_id = str(r.get("project_id") or "")
+                if not project_id:
+                    try:
+                        from .project_context import get_current_project_id
+                        project_id = get_current_project_id()
+                    except Exception:
+                        pass
+                cid = _chunk_id(fname, page, text, project_id)
                 try:
                     self._con.execute(
-                        "INSERT OR IGNORE INTO chunks VALUES (?, ?, ?, ?, ?)",
-                        [cid, r.get("doc_id", ""), fname, page, text],
+                        "INSERT OR IGNORE INTO chunks "
+                        "(chunk_id,doc_id,file_name,page_number,text,project_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        [cid, r.get("doc_id", ""), fname, page, text, project_id],
                     )
                 except Exception as e:
                     logger.debug(f"[ChunkStore] insert skipped: {e}")
@@ -109,11 +123,17 @@ class ChunkStore:
         logger.info(f"[ChunkStore] +{inserted} chunks ({self.count()} total)")
         return inserted
 
-    def delete_by_file(self, file_name: str) -> int:
+    def delete_by_file(self, file_name: str, project_id: str = "") -> int:
         with self._db_lock:
             try:
                 before = self.count()
-                self._con.execute("DELETE FROM chunks WHERE file_name = ?", [file_name])
+                if project_id:
+                    self._con.execute(
+                        "DELETE FROM chunks WHERE file_name = ? AND project_id = ?",
+                        [file_name, project_id],
+                    )
+                else:
+                    self._con.execute("DELETE FROM chunks WHERE file_name = ?", [file_name])
                 removed = before - self.count()
                 if removed:
                     self._dirty = True

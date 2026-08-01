@@ -2,7 +2,7 @@
 
 import threading
 from pathlib import Path
-from backend.tasks.progress import indexing_progress, current_file_var, report
+from backend.tasks.progress import indexing_progress, current_file_var, current_job_var, report
 
 # Cap concurrent heavy indexing jobs (OCR + embedding) so a batch of uploads
 # doesn't exhaust CPU/RAM on a small box. Extra files block here and show
@@ -11,7 +11,8 @@ from src.config import INGEST_MAX_CONCURRENCY
 _INGEST_SEM = threading.BoundedSemaphore(max(1, INGEST_MAX_CONCURRENCY))
 
 
-def index_file_background(file_id: str, file_path: str, corpus: str = ""):
+def index_file_background(file_id: str, file_path: str, corpus: str = "",
+                          project_id: str = "", job_id: str = ""):
     """Run as FastAPI BackgroundTask."""
     from src.file_router import route_file
     from src.document_registry import get_document_registry
@@ -20,6 +21,10 @@ def index_file_background(file_id: str, file_path: str, corpus: str = ""):
     indexing_progress.start(file_id, Path(file_path).name)
     # Stamp this thread so the deep ingest code can report granular progress.
     current_file_var.set(file_id)
+    current_job_var.set(job_id)
+    if project_id:
+        from src.project_context import set_current_project
+        set_current_project(project_id, "editor")
     # Tag any data tables produced by this ingest with the uploader's corpus
     # (background tasks don't inherit the request ContextVar, so set it here).
     if corpus:
@@ -47,7 +52,8 @@ def index_file_background(file_id: str, file_path: str, corpus: str = ""):
                 data_table_status = "error"
 
         if result.success:
-            indexing_progress.complete(file_id, details={
+            report("indexing", 0.96)
+            completion_details = {
                 "file_type": result.file_type,
                 "ocr_pages": result.ocr_pages,
                 "tables_extracted": result.tables_extracted,
@@ -55,7 +61,8 @@ def index_file_background(file_id: str, file_path: str, corpus: str = ""):
                 "notice_extracted": result.notice_extracted,
                 "attachments": result.attachments_processed,
                 "data_table_status": data_table_status,
-            })
+            }
+            indexing_progress.complete(file_id, details=completion_details)
             # Update document registry
             table_names = getattr(result, "table_names", []) or []
             registry.mark_completed(
@@ -68,10 +75,16 @@ def index_file_background(file_id: str, file_path: str, corpus: str = ""):
                     result.schema_match_details if result.file_type == "data" else None
                 ),
             )
+            if job_id:
+                from backend.tasks.ingestion_jobs import get_ingestion_job_store
+                get_ingestion_job_store().complete(job_id, completion_details)
         else:
             error = result.error or "Unknown error"
             indexing_progress.fail(file_id, error)
             registry.mark_error(file_id, error)
+            if job_id:
+                from backend.tasks.ingestion_jobs import get_ingestion_job_store
+                get_ingestion_job_store().fail(job_id, error)
             if data_table_status:
                 # Even on failure, record status for data files so the UI can flag them
                 with registry._file_lock:
@@ -82,6 +95,9 @@ def index_file_background(file_id: str, file_path: str, corpus: str = ""):
     except Exception as e:
         indexing_progress.fail(file_id, str(e))
         registry.mark_error(file_id, str(e))
+        if job_id:
+            from backend.tasks.ingestion_jobs import get_ingestion_job_store
+            get_ingestion_job_store().fail(job_id, str(e))
     finally:
         try:
             _INGEST_SEM.release()

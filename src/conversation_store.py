@@ -24,6 +24,7 @@ class ConversationMeta:
     message_count: int = 0
     pinned: bool = False
     archived: bool = False
+    project_id: str = ""
 
 
 @dataclass
@@ -50,6 +51,7 @@ class Conversation:
     updated_at: str
     messages: List[Message] = field(default_factory=list)
     document_ids: List[str] = field(default_factory=list)
+    project_id: str = ""
 
 
 class ConversationStore:
@@ -58,9 +60,14 @@ class ConversationStore:
     JSON-file backed, one file per conversation.
     """
 
-    def __init__(self, username: str):
+    def __init__(self, username: str, project_id: str = ""):
         self.username = username
-        self.user_dir = CONVERSATIONS_DIR / username
+        self.project_id = project_id
+        # Backwards compatible for maintenance scripts/tests that intentionally
+        # open the old unscoped store; authenticated API requests always pass a
+        # project and therefore use a separate directory.
+        self.user_dir = (CONVERSATIONS_DIR / username / project_id
+                         if project_id else CONVERSATIONS_DIR / username)
         self.user_dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.user_dir / "conversations.json"
         self._index: List[ConversationMeta] = []
@@ -244,6 +251,7 @@ class ConversationStore:
             message_count=item.get("message_count", 0) or 0,
             pinned=bool(item.get("pinned", False)),
             archived=bool(item.get("archived", False)),
+            project_id=item.get("project_id", "") or "",
         )
 
     def _save_index(self) -> None:
@@ -286,6 +294,7 @@ class ConversationStore:
                 "updated_at": conv.updated_at,
                 "messages": [asdict(m) for m in conv.messages],
                 "document_ids": conv.document_ids,
+                "project_id": conv.project_id or self.project_id,
             }
             # Written through a temp file and moved into place: a crash partway
             # through a large answer would otherwise leave a half-written file,
@@ -363,6 +372,7 @@ class ConversationStore:
                 updated_at=data.get("updated_at", ""),
                 messages=messages,
                 document_ids=data.get("document_ids", []),
+                project_id=data.get("project_id", "") or self.project_id,
             )
         except Exception as e:
             logger.error(f"[ConvStore] Failed to load conversation {conv_id}: {e}")
@@ -379,6 +389,7 @@ class ConversationStore:
             title=title,
             created_at=now,
             updated_at=now,
+            project_id=self.project_id,
         )
         self._index.insert(0, meta)  # newest first
         conv = Conversation(
@@ -386,6 +397,7 @@ class ConversationStore:
             title=title,
             created_at=now,
             updated_at=now,
+            project_id=self.project_id,
         )
         self._save_conversation(conv)
         self._save_index()

@@ -1,7 +1,6 @@
 import { useCallback, useRef } from 'react';
 import ModuleTile from '../components/modules/ModuleTile';
 import { ChatbotMark, ChronologyMark, ReportsMark } from '../components/modules/ModuleMarks';
-import { TOOLKIT_URL } from '../config/modules';
 
 /**
  * What you land on after signing in.
@@ -84,7 +83,7 @@ export default function ModulePickerPage() {
               role="Delay Analysis Toolkit"
               blurb="Programme forensics — DCMA checks, variance and critical path. Opens the toolkit, a separate application."
               mark={<ReportsMark className={MARK_CLASS} />}
-              href={TOOLKIT_URL}
+              to="/forensic"
             />
           </li>
         </ul>

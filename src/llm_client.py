@@ -54,6 +54,14 @@ def _attribute_to_current_user(prompt_tok: int, comp_tok: int) -> None:
         logger.warning(f"[LLMClient] per-user usage record failed: {exc}")
 
 
+def _record_run_usage(usage: LLMUsage) -> None:
+    try:
+        from .run_store import get_run_store
+        get_run_store().record_llm(usage)
+    except Exception as exc:
+        logger.debug(f"[LLMClient] run usage record skipped: {exc}")
+
+
 def _enforce_user_quota() -> None:
     """If a user context is active, raise UserQuotaExceededError when capped."""
     try:
@@ -323,8 +331,13 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
         model = model or GEMINI_MODEL
 
         def _mk(m: str):
-            return Gemini(api_key=GOOGLE_API_KEY, model=m,
-                          temperature=temperature, max_tokens=max_tokens)
+            kwargs = {"api_key": GOOGLE_API_KEY, "model": m,
+                      "max_tokens": max_tokens}
+            # Gemini 3.5/3.6 removed sampling parameters. Passing a legacy
+            # temperature causes a request-level validation error on the GA IDs.
+            if not model.startswith(("gemini-3.5", "gemini-3.6")):
+                kwargs["temperature"] = temperature
+            return Gemini(**kwargs)
 
         # Some llama-index/google-generativeai versions require a "models/" prefix
         # and reject the bare name ("Model names should start with `models/`").
@@ -345,10 +358,16 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
 
 # ── Cost Estimation ──────────────────────────────────────────
 
-def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int,
+                  cached_tokens: int = 0) -> float:
     """Estimate cost in USD for a given call."""
     pricing = LLM_PRICING.get(model, LLM_PRICING.get("gemini-flash-latest", {}))
-    input_cost = (prompt_tokens / 1_000_000) * pricing.get("input", 0.075)
+    cached_tokens = max(0, min(int(cached_tokens or 0), int(prompt_tokens or 0)))
+    uncached_tokens = max(0, int(prompt_tokens or 0) - cached_tokens)
+    input_cost = (uncached_tokens / 1_000_000) * pricing.get("input", 0.075)
+    input_cost += (cached_tokens / 1_000_000) * pricing.get(
+        "cached_input", pricing.get("input", 0.075)
+    )
     output_cost = (completion_tokens / 1_000_000) * pricing.get("output", 0.30)
     return round(input_cost + output_cost, 8)
 
@@ -430,18 +449,21 @@ def generate_text(
         logger.info(f"[LLMClient] Cache HIT ({provider}/{cache_key[:16]}...)")
         prompt_tok = estimate_tokens(prompt + system)
         comp_tok = estimate_tokens(cached)
+        cached_usage = LLMUsage(
+            prompt_tokens=prompt_tok,
+            completion_tokens=comp_tok,
+            total_tokens=prompt_tok + comp_tok,
+            cost_estimate=0.0,
+            model=model,
+            latency_ms=0.0,
+            cache_hit=True,
+            provider=provider,
+            cached_tokens=prompt_tok,
+        )
+        _record_run_usage(cached_usage)
         return LLMResponse(
             text=cached,
-            usage=LLMUsage(
-                prompt_tokens=prompt_tok,
-                completion_tokens=comp_tok,
-                total_tokens=prompt_tok + comp_tok,
-                cost_estimate=0.0,  # cached = free
-                model=model,
-                latency_ms=0.0,
-                cache_hit=True,
-                provider=provider,
-            ),
+            usage=cached_usage,
         )
 
     # ── Soft per-query budget (degrade, never block) ──
@@ -514,13 +536,36 @@ def generate_text(
 
             # ── Build usage (thinking tokens are billed as output tokens) ──
             prompt_tok = estimate_tokens((system + prompt) if system else prompt)
+            cached_tok = 0
             if native_comp_tok:
                 comp_tok = native_comp_tok + thoughts_tok
             else:
                 # Claude exposes real output_tokens (incl. thinking) on the response.
                 resp_out = getattr(response, "output_tokens", 0) or 0
                 comp_tok = resp_out if resp_out else estimate_tokens(text)
-            cost = estimate_cost(model, prompt_tok, comp_tok)
+                # LlamaIndex keeps the provider response under .raw. Prefer
+                # Google's authoritative usage metadata over character estimates.
+                raw = getattr(response, "raw", None)
+                meta = getattr(raw, "usage_metadata", None)
+                if meta is None and isinstance(raw, dict):
+                    meta = raw.get("usage_metadata") or raw.get("usageMetadata")
+                if meta is not None:
+                    def _usage_value(*names):
+                        for name in names:
+                            value = (meta.get(name) if isinstance(meta, dict)
+                                     else getattr(meta, name, None))
+                            if value is not None:
+                                return int(value or 0)
+                        return 0
+                    prompt_tok = _usage_value("prompt_token_count", "promptTokenCount") or prompt_tok
+                    candidates = _usage_value("candidates_token_count", "candidatesTokenCount")
+                    thoughts_tok = _usage_value("thoughts_token_count", "thoughtsTokenCount")
+                    cached_tok = _usage_value(
+                        "cached_content_token_count", "cachedContentTokenCount"
+                    )
+                    if candidates or thoughts_tok:
+                        comp_tok = candidates + thoughts_tok
+            cost = estimate_cost(model, prompt_tok, comp_tok, cached_tok)
 
             usage = LLMUsage(
                 prompt_tokens=prompt_tok,
@@ -531,6 +576,8 @@ def generate_text(
                 latency_ms=round(elapsed_ms, 1),
                 cache_hit=False,
                 provider=provider,
+                reasoning_tokens=thoughts_tok,
+                cached_tokens=cached_tok,
             )
 
             logger.info(
@@ -547,6 +594,7 @@ def generate_text(
             except Exception as track_err:
                 logger.warning(f"[LLMClient] usage tracker failed: {track_err}")
             _attribute_to_current_user(prompt_tok, comp_tok)
+            _record_run_usage(usage)
 
             return LLMResponse(text=text, usage=usage, raw=response)
 
@@ -625,6 +673,91 @@ def generate_json(
     resp.text = json.dumps(parsed)
     resp.raw = parsed
     return resp
+
+
+def generate_response_json(
+    prompt: str,
+    *,
+    system: str,
+    schema: Dict[str, Any],
+    schema_name: str,
+    model: str = "",
+    reasoning_effort: str = "high",
+    pro_mode: bool = False,
+    cache_key: Optional[str] = None,
+    ttl_s: int = CACHE_TTL_SECONDS,
+) -> LLMResponse:
+    """Structured JSON through OpenAI Responses API for quality-critical reports."""
+    model = model or OPENAI_MODEL
+    if cache_key is None:
+        material = f"responses:{model}:{reasoning_effort}:{schema_name}:{system}:{prompt}"
+        cache_key = "llm:" + hashlib.sha256(material.encode()).hexdigest()[:32]
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        usage = LLMUsage(
+            prompt_tokens=estimate_tokens(system + prompt),
+            completion_tokens=estimate_tokens(cached),
+            total_tokens=estimate_tokens(system + prompt + cached),
+            model=model, provider="openai", cache_hit=True,
+            cached_tokens=estimate_tokens(system + prompt),
+        )
+        _record_run_usage(usage)
+        return LLMResponse(text=cached, usage=usage, raw=json.loads(cached))
+
+    enforce_budget()
+    _enforce_user_quota()
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
+    reasoning: Dict[str, str] = {"effort": reasoning_effort}
+    if pro_mode:
+        reasoning["mode"] = "pro"
+    started = time.time()
+    response = client.responses.create(
+        model=model,
+        instructions=system,
+        input=prompt,
+        reasoning=reasoning,
+        text={
+            "verbosity": "medium",
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            },
+        },
+        store=False,
+    )
+    elapsed_ms = (time.time() - started) * 1000
+    raw_text = (response.output_text or "").strip()
+    parsed = json.loads(raw_text)
+    api_usage = getattr(response, "usage", None)
+    prompt_tokens = int(getattr(api_usage, "input_tokens", 0) or estimate_tokens(system + prompt))
+    completion_tokens = int(getattr(api_usage, "output_tokens", 0) or estimate_tokens(raw_text))
+    input_details = getattr(api_usage, "input_tokens_details", None)
+    output_details = getattr(api_usage, "output_tokens_details", None)
+    cached_tokens = int(getattr(input_details, "cached_tokens", 0) or 0)
+    reasoning_tokens = int(getattr(output_details, "reasoning_tokens", 0) or 0)
+    pricing = LLM_PRICING.get(model, {})
+    uncached = max(0, prompt_tokens - cached_tokens)
+    cost = (
+        uncached / 1_000_000 * float(pricing.get("input", 0))
+        + cached_tokens / 1_000_000 * float(pricing.get("cached_input", pricing.get("input", 0)))
+        + completion_tokens / 1_000_000 * float(pricing.get("output", 0))
+    )
+    usage = LLMUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        cost_estimate=round(cost, 8), model=model, latency_ms=round(elapsed_ms, 1),
+        provider="openai", reasoning_tokens=reasoning_tokens,
+        cached_tokens=cached_tokens,
+    )
+    _cache_set(cache_key, raw_text, ttl_s)
+    record_usage(prompt_tokens, completion_tokens, usage.cost_estimate)
+    _attribute_to_current_user(prompt_tokens, completion_tokens)
+    _record_run_usage(usage)
+    return LLMResponse(text=raw_text, usage=usage, raw=parsed)
 
 
 # ── Dual-Provider API ────────────────────────────────────────

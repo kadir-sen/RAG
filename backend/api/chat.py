@@ -6,6 +6,7 @@ from backend.models.requests import AnswerDocumentRequest, ChatRequest
 from backend.models.responses import ChatResponse, QueryProgressResponse, QueryActivityStep
 from backend.core.dependencies import get_query_router, get_conversation_store
 from backend.core.security import UserContext, get_current_user
+from backend.core.projects import ProjectContext, get_current_project
 from backend.services.chat_orchestrator import ChatOrchestrator
 from backend.tasks.query_progress import query_progress
 
@@ -19,6 +20,7 @@ async def chat(
     user: UserContext = Depends(get_current_user),
     query_router=Depends(get_query_router),
     store=Depends(get_conversation_store),
+    project: ProjectContext = Depends(get_current_project),
 ):
     # Feature gating — correspondence mode is a per-user flag.
     if req.mode == "correspondence" and not user.features.get("correspondence", False):
@@ -33,6 +35,8 @@ async def chat(
         mode=req.mode,
         username=user.username,
         request_id=req.request_id,
+        project_id=project.project_id,
+        project_role=project.role,
     )
 
 

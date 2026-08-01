@@ -50,6 +50,9 @@ class DocumentRecord:
     # the per-document inventory to reduce hallucination/misrouting.
     llm_summary: Optional[str] = None
     llm_topics: List[str] = field(default_factory=list)
+    # Security boundary. Empty only for pre-project legacy records; new writes
+    # must always receive the request/job project context.
+    project_id: str = ""
 
 
 class DocumentRegistry:
@@ -130,8 +133,15 @@ class DocumentRegistry:
         file_size_kb: int,
         file_type: str,
         extension: str,
+        project_id: str = "",
     ) -> DocumentRecord:
         """Register a new file. Returns the record (may already exist)."""
+        if not project_id:
+            try:
+                from .project_context import get_current_project_id
+                project_id = get_current_project_id()
+            except Exception:
+                project_id = ""
         doc_id = generate_doc_id(file_path)
         with self._file_lock:
             if doc_id in self._records:
@@ -153,6 +163,7 @@ class DocumentRegistry:
                 status="processing",
                 file_hash=file_hash,
                 created_at=datetime.now().isoformat(),
+                project_id=project_id,
             )
             self._records[doc_id] = rec
             self._save()
@@ -160,7 +171,7 @@ class DocumentRegistry:
             return rec
 
     def find_duplicate(self, file_name: str, file_size_kb: int,
-                       file_path: str = "") -> Optional[DocumentRecord]:
+                       file_path: str = "", project_id: str = "") -> Optional[DocumentRecord]:
         """Find existing completed record with same name+size or same file hash."""
         # Check by file hash (strongest dedup) if file_path provided
         if file_path:
@@ -169,6 +180,7 @@ class DocumentRegistry:
                 h = hashlib.md5(open(file_path, "rb").read()).hexdigest()
                 for rec in self._records.values():
                     if (getattr(rec, 'file_hash', None) == h
+                            and (not project_id or rec.project_id == project_id)
                             and rec.status == "completed"):
                         return rec
             except Exception:
@@ -177,6 +189,7 @@ class DocumentRegistry:
         for rec in self._records.values():
             if (rec.file_name == file_name
                     and rec.file_size_kb == file_size_kb
+                    and (not project_id or rec.project_id == project_id)
                     and rec.status == "completed"):
                 return rec
         return None
@@ -247,16 +260,19 @@ class DocumentRegistry:
     def get(self, doc_id: str) -> Optional[DocumentRecord]:
         return self._records.get(doc_id)
 
-    def get_all(self) -> List[DocumentRecord]:
-        return list(self._records.values())
+    def get_all(self, project_id: Optional[str] = None) -> List[DocumentRecord]:
+        rows = list(self._records.values())
+        if project_id is not None:
+            rows = [r for r in rows if (getattr(r, "project_id", "") or "") == project_id]
+        return rows
 
-    def get_completed(self) -> List[DocumentRecord]:
-        return [r for r in self._records.values() if r.status == "completed"]
+    def get_completed(self, project_id: Optional[str] = None) -> List[DocumentRecord]:
+        return [r for r in self.get_all(project_id=project_id) if r.status == "completed"]
 
-    def search_by_name(self, keyword: str) -> List[DocumentRecord]:
+    def search_by_name(self, keyword: str, project_id: Optional[str] = None) -> List[DocumentRecord]:
         """Search completed records by filename substring match (case-insensitive)."""
         kw = keyword.lower()
-        return [r for r in self._records.values()
+        return [r for r in self.get_all(project_id=project_id)
                 if r.status == "completed" and kw in r.file_name.lower()]
 
     def hydrate_from_existing(self, rag_registry: dict, catalog_entries: dict) -> int:

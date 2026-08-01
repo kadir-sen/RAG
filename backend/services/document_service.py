@@ -73,9 +73,9 @@ _DATA_FALLBACK_ROOTS = (
 class DocumentService:
 
     async def get_content(self, doc_id: str, anchor: str = "",
-                          file_name: str = "") -> DocContent:
+                          file_name: str = "", project_id: str = "") -> DocContent:
         return await asyncio.to_thread(
-            self._get_content_sync, doc_id, anchor, file_name)
+            self._get_content_sync, doc_id, anchor, file_name, project_id)
 
     def _is_data_file(self, file_path: str) -> bool:
         return Path(file_path).suffix.lower() in _DATA_EXTENSIONS
@@ -140,12 +140,18 @@ class DocumentService:
         return file_path  # return original — caller will handle the error
 
     def _get_content_sync(self, doc_id: str, anchor: str,
-                          file_name: str = "") -> DocContent:
+                          file_name: str = "", project_id: str = "") -> DocContent:
         # Guard: nothing to go on at all. A file name alone is enough, though —
         # see the fallback at the end of this chain.
         if (not doc_id or not doc_id.strip()) and not (file_name or "").strip():
             return DocContent(type="text", error="No document ID provided")
         doc_id = (doc_id or "").strip()
+
+        # Project-aware requests never enter the legacy global fallback chain:
+        # resolving a guessed filename against the whole data tree would bypass
+        # the membership boundary enforced by the API.
+        if project_id:
+            return self._get_project_content(doc_id, anchor, file_name, project_id)
 
         # Try data tables (Excel viewer) first — match by doc_id from file_paths
         try:
@@ -296,6 +302,50 @@ class DocumentService:
             except Exception:
                 pass
 
+        return DocContent(type="text", error="Document not found")
+
+    def _get_project_content(self, doc_id: str, anchor: str, file_name: str,
+                             project_id: str) -> DocContent:
+        from src.document_registry import get_document_registry
+
+        registry = get_document_registry()
+        records = registry.get_all(project_id=project_id)
+        rec = next((r for r in records if doc_id in (r.doc_id, r.file_name)), None)
+        if not rec and file_name:
+            rec = next((r for r in records if r.file_name == file_name), None)
+        if rec and rec.file_path:
+            path = Path(rec.file_path)
+            # Uploaded project files must remain inside that project's roots.
+            allowed = [
+                (_PROJECT_ROOT / "data" / "projects" / project_id).resolve(),
+                (_PROJECT_ROOT / "storage" / "projects" / project_id).resolve(),
+            ]
+            try:
+                resolved = path.resolve()
+                if any(resolved.is_relative_to(root) for root in allowed) and resolved.is_file():
+                    return self._serve_by_extension(str(resolved), anchor)
+            except (OSError, ValueError):
+                pass
+
+        try:
+            from src.chunk_store import get_chunk_store
+            con = get_chunk_store().connection()
+            key = file_name or doc_id
+            rows = con.execute(
+                "SELECT file_name,page_number,text FROM chunks "
+                "WHERE project_id=? AND (doc_id=? OR file_name=?) ORDER BY page_number",
+                [project_id, doc_id, key],
+            ).fetchall()
+            if rows:
+                page = self._parse_anchor_page(anchor)
+                total = max(int(r[1] or 1) for r in rows)
+                page_rows = [r for r in rows if int(r[1] or 1) == page] or rows
+                return DocContent(
+                    type="text", file_name=rows[0][0], page=page, total_pages=total,
+                    text="\n\n".join((r[2] or "") for r in page_rows)[:8000],
+                )
+        except Exception:
+            pass
         return DocContent(type="text", error="Document not found")
 
     def _serve_by_extension(self, file_path: str, anchor: str = "") -> DocContent:

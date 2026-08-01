@@ -134,7 +134,7 @@ class EventTimeline:
         if actor:
             where.append("LOWER(actor) LIKE ?"); params.append(f"%{actor.lower()}%")
         if project:
-            where.append("LOWER(project) LIKE ?"); params.append(f"%{project.lower()}%")
+            where.append("project = ?"); params.append(project)
         sql = ("SELECT date, event_type, actor, reason, severity, status, description, "
                "file_name FROM events")
         if where:
@@ -159,7 +159,7 @@ class EventTimeline:
         if actor:
             where.append("LOWER(actor) LIKE ?"); params.append(f"%{actor.lower()}%")
         if project:
-            where.append("LOWER(project) LIKE ?"); params.append(f"%{project.lower()}%")
+            where.append("project = ?"); params.append(project)
         if date_from:
             where.append("date_sort >= ?"); params.append(_date_sort_key(date_from))
         if date_to:
@@ -180,6 +180,17 @@ class EventTimeline:
             "SELECT event_type, COUNT(*) FROM events GROUP BY event_type ORDER BY 2 DESC"
         ).fetchall()
         return {r[0]: int(r[1]) for r in rows}
+
+    def delete_by_document(self, doc_id: str, project_id: str = "") -> int:
+        with self._db_lock:
+            before = self.count()
+            if project_id:
+                self._con.execute(
+                    "DELETE FROM events WHERE doc_id=? AND project=?", [doc_id, project_id]
+                )
+            else:
+                self._con.execute("DELETE FROM events WHERE doc_id=?", [doc_id])
+            return before - self.count()
 
 
 _instance: Optional[EventTimeline] = None

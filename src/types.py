@@ -107,6 +107,8 @@ class LLMUsage:
     latency_ms: float = 0.0
     cache_hit: bool = False
     provider: str = ""  # "openai" | "claude" | "gemini"
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
 
 
 @dataclass

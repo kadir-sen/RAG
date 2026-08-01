@@ -29,6 +29,18 @@ class DiagnoseRequest(BaseModel):
     file_id: str
 
 
+class CleanupPrepareRequest(BaseModel):
+    project_id: str = ""
+    documents: int = 26
+    emails: int = 24
+    excel: int = 33
+
+
+class CleanupExecuteRequest(BaseModel):
+    token: str
+    confirmation: str
+
+
 class FileStatus(BaseModel):
     file_id: str
     file_name: str
@@ -62,6 +74,25 @@ def _get_data_records():
     from src.document_registry import get_document_registry
     registry = get_document_registry()
     return [r for r in registry.get_all() if _is_data_extension(r.extension)]
+
+
+@router.post("/admin/demo-cleanup/prepare")
+async def prepare_demo_cleanup(body: CleanupPrepareRequest):
+    from src.admin_cleanup import prepare_cleanup
+    return prepare_cleanup(
+        project_id=body.project_id,
+        expected={"document": body.documents, "email": body.emails, "data": body.excel},
+    )
+
+
+@router.post("/admin/demo-cleanup/execute")
+async def execute_demo_cleanup(body: CleanupExecuteRequest):
+    from fastapi import HTTPException
+    from src.admin_cleanup import execute_cleanup
+    try:
+        return execute_cleanup(body.token, body.confirmation)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 # ── GET status ──────────────────────────────────────────────

@@ -109,5 +109,10 @@ def report_step(kind: str, label: str, detail: str = "") -> None:
         rid = query_request_var.get()
         if rid:
             query_progress.add(rid, kind, label, detail)
+            try:
+                from src.run_store import get_run_store
+                get_run_store().add_step(rid, kind, label, detail)
+            except Exception:
+                pass
     except Exception:
         pass

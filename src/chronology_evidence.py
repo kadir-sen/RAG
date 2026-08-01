@@ -159,7 +159,10 @@ def _search(query: str, top_k: int) -> List[Dict[str, Any]]:
     pass is worth more than a build that dies."""
     try:
         from .lexical_index import get_lexical_index
-        return get_lexical_index().search_chunks(query, top_k=top_k) or []
+        from .project_context import get_current_project_id
+        return get_lexical_index().search_chunks(
+            query, top_k=top_k, project_id=get_current_project_id() or None,
+        ) or []
     except Exception as exc:
         logger.warning(f"[ChronEvidence] lexical pass failed: {exc}")
         return []
@@ -188,8 +191,10 @@ def _events_for(window: Tuple[str, str], corpus_filter) -> List[Dict[str, Any]]:
     try:
         from .event_timeline import get_event_timeline
         lo, hi = _pad(window)
+        from .project_context import get_current_project_id
         rows = get_event_timeline().timeline_context(
-            date_from=lo, date_to=hi, limit=EVENT_LIMIT * 4) or []
+            date_from=lo, date_to=hi, project=get_current_project_id() or None,
+            limit=EVENT_LIMIT * 4) or []
     except Exception as exc:
         logger.warning(f"[ChronEvidence] event pass failed: {exc}")
         return []

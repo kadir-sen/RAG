@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from .logger import logger
+from .config import GEMINI_MODEL_LITE
 from .table_normalizer import parse_mixed_datetime
 
 
@@ -151,6 +152,8 @@ def _enrich_document_llm(file_path: str, full_text: str,
         from . import llm_client
         from .document_rag import generate_doc_id, get_document_rag
         from .document_registry import get_document_registry
+        from .project_context import get_current_project_id
+        project_id = get_current_project_id()
 
         # One unified, cheap call returns everything the downstream layers need:
         # routing summary/topics + a construction doc_type (classification) + any
@@ -180,6 +183,7 @@ def _enrich_document_llm(file_path: str, full_text: str,
         resp = llm_client.generate_json(
             prompt,
             system="You are a precise construction-document indexer. Output JSON only.",
+            model=GEMINI_MODEL_LITE,
             cache_key=cache_key,
         )
         data = resp.raw if isinstance(resp.raw, dict) else {}
@@ -210,11 +214,12 @@ def _enrich_document_llm(file_path: str, full_text: str,
                 "topics": topics,
                 "events": events,
                 "new_terms": new_terms,
+                "project_id": project_id,
             })
 
         # ── Wire the structured outputs LIVE (was previously written-then-ignored) ──
         # 1) events → chronological store, straight from ingest (no offline script).
-        _persist_events_to_timeline(doc_id, file_name, project="", events=events)
+        _persist_events_to_timeline(doc_id, file_name, project=project_id, events=events)
 
         # 1b) new_terms → jargon dictionary (auto onboarding, feedback-free).
         _learn_jargon_from_terms(new_terms)
@@ -228,7 +233,7 @@ def _enrich_document_llm(file_path: str, full_text: str,
         # Per-doc payload write is fine for single uploads but too slow for a
         # bulk backfill (one filtered set_payload per doc) — bulk runs disable it
         # and use the dedicated scripts/enrich_payload.py (which indexes first).
-        scope = {"doc_type": doc_type, "date": doc_date}
+        scope = {"doc_type": doc_type, "date": doc_date, "project_id": project_id}
         if set_scope_payload and any(scope.values()):
             try:
                 get_document_rag().update_payload_scope(file_name, scope)
@@ -376,20 +381,12 @@ def _process_document(file_path: str) -> ProcessingResult:
                     doc_full_text[:200].strip() + "..." if len(doc_full_text) > 200 else doc_full_text
                 )
 
-            # LLM enrichment (Phase 2): one-line summary + topics + events + jargon
-            # + scoped-payload. All ADDITIVE (nothing here gates searchability or the
-            # result record), and it's a ~1.5s cloud call — so run it off the critical
-            # path in a daemon thread. The document is already queryable; enrichment
-            # lands a moment later. Mirrors the clusterer's fire-and-forget pattern.
-            report("enriching", 0.90)
-            import threading as _t
-            _enrich_text = doc_full_text
-            _enrich_notice = result.notice_summary
-            _t.Thread(
-                target=lambda: _enrich_document_llm(
-                    file_path, _enrich_text, notice_summary=_enrich_notice),
-                daemon=True,
-            ).start()
+            # Metadata is a durable queue stage. A job is not marked ready until
+            # enrichment has either completed or failed non-fatally.
+            report("metadata", 0.90)
+            _enrich_document_llm(
+                file_path, doc_full_text, notice_summary=result.notice_summary,
+            )
 
             # Table extraction for PDFs (direct — skips duplicate OCR analysis).
             # Gated: skip on fast bulk embedding runs (INGEST_EXTRACT_TABLES=false).
@@ -800,6 +797,12 @@ def delete_document(doc_id: str) -> Dict[str, Any]:
         return {"error": "Document not found", "doc_id": doc_id}
 
     result: Dict[str, Any] = {"doc_id": doc_id, "file_name": record.file_name}
+    project_id = getattr(record, "project_id", "") or ""
+    try:
+        from .project_context import set_current_project
+        set_current_project(project_id, "editor")
+    except Exception:
+        pass
 
     # 1. DuckDB tables
     if record.table_names:
@@ -834,6 +837,15 @@ def delete_document(doc_id: str) -> Dict[str, Any]:
             result["notice_cleaned"] = True
     except Exception as e:
         logger.warning(f"[Delete] Notice cleanup failed: {e}")
+
+    # 4b. Structured events belong to the same evidence record.
+    try:
+        from .event_timeline import get_event_timeline
+        result["events_deleted"] = get_event_timeline().delete_by_document(
+            doc_id, project_id=project_id,
+        )
+    except Exception as e:
+        logger.warning(f"[Delete] Event cleanup failed: {e}")
 
     # 5. Source file on disk + GCS
     try:

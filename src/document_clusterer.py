@@ -248,14 +248,17 @@ class DocumentClusterer:
 
     # ── Clustering core ────────────────────────────────────────────
 
-    def cluster_all(self, *, force: bool = False) -> Dict[str, List[str]]:
+    def cluster_all(self, *, force: bool = False, project_id: str = "") -> Dict[str, List[str]]:
         """Re-cluster every completed document.
 
         Returns mapping cluster_id -> list of doc_ids.
         """
         from .document_registry import get_document_registry
         registry = get_document_registry()
-        completed = registry.get_completed()
+        if project_id:
+            from .project_context import set_current_project
+            set_current_project(project_id)
+        completed = registry.get_completed(project_id=project_id or None)
         doc_ids = [r.doc_id for r in completed]
         file_type_by_doc = {r.doc_id: r.file_type for r in completed}
 

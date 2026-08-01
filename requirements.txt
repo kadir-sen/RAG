@@ -16,12 +16,9 @@ fastembed>=0.4.0
 # Dual-LLM Providers
 openai>=1.10.0
 anthropic>=0.18.0
-# NOTE: Gemini 2.5 extended thinking needs the native `google-genai` SDK, but it
-# is intentionally NOT pinned here — its transitive cryptography/cffi range
-# conflicts with the existing locked deps (ResolutionImpossible). The thinking
-# code degrades gracefully when it's absent (_GENAI_AVAILABLE=False), so Gemini
-# thinking is simply skipped; Claude thinking still works. To enable Gemini
-# thinking later, resolve the dep pin and `pip install google-genai` separately.
+# Native Gemini SDK: required for Gemini 3.x thinking and selective multimodal
+# OCR fallback. Current dependency resolution is compatible with the image.
+google-genai>=2.16.0,<3.0.0
 
 # Document Processing
 pymupdf>=1.23.0

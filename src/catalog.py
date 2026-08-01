@@ -66,6 +66,7 @@ class TableMetadata:
     # Corpus/tenant tag for isolation ('demo' | 'edinburgh' | ...). Inherited
     # from the owning CatalogEntry at add_table time.
     corpus: str = "demo"
+    project_id: str = ""
 
 
 @dataclass
@@ -78,6 +79,7 @@ class CatalogEntry:
     ingested_at: str = field(default_factory=lambda: datetime.now().isoformat())
     ocr_decision: str = "native"  # "native" | "ocr" | "hybrid"
     corpus: str = "demo"  # Corpus/tenant tag for isolation ('demo' | 'edinburgh' | ...)
+    project_id: str = ""
 
     # Notice extraction (Phase 2)
     notice_path: Optional[str] = None  # Path to notice JSON
@@ -97,6 +99,14 @@ def _active_corpus() -> str:
         return _current_user_corpus() or "demo"
     except Exception:
         return "demo"
+
+
+def _active_project() -> str:
+    try:
+        from .project_context import get_current_project_id
+        return get_current_project_id()
+    except Exception:
+        return ""
 
 
 class TableCatalog:
@@ -151,6 +161,7 @@ class TableCatalog:
                     ingested_at=entry_data.get("ingested_at", ""),
                     ocr_decision=entry_data.get("ocr_decision", "native"),
                     corpus=entry_data.get("corpus", "demo"),
+                    project_id=entry_data.get("project_id", ""),
                     notice_path=entry_data.get("notice_path"),
                     notice_extracted=entry_data.get("notice_extracted", False),
                     notice_summary=entry_data.get("notice_summary"),
@@ -171,6 +182,7 @@ class TableCatalog:
                     "ingested_at": entry.ingested_at,
                     "ocr_decision": entry.ocr_decision,
                     "corpus": entry.corpus,
+                    "project_id": entry.project_id,
                     "notice_path": entry.notice_path,
                     "notice_extracted": entry.notice_extracted,
                     "notice_summary": entry.notice_summary,
@@ -246,7 +258,8 @@ class TableCatalog:
 
     def add_entry(self, source_file: str, source_type: str,
                   ocr_decision: str = "native",
-                  corpus: Optional[str] = None) -> CatalogEntry:
+                  corpus: Optional[str] = None,
+                  project_id: Optional[str] = None) -> CatalogEntry:
         """Add or update a catalog entry for a source file.
 
         ``corpus`` tags the entry for tenant isolation; when omitted it is read
@@ -254,7 +267,8 @@ class TableCatalog:
         schema-converter path nor the fallback extractor needs to thread it.
         """
         file_hash = self.compute_file_hash(source_file)
-        key = f"{source_type}:{Path(source_file).name}:{file_hash[:8]}"
+        project_id = project_id if project_id is not None else _active_project()
+        key = f"{project_id}:{source_type}:{Path(source_file).name}:{file_hash[:8]}"
         corpus = (corpus or _active_corpus()).lower()
 
         # Check if already exists with same hash
@@ -269,6 +283,7 @@ class TableCatalog:
             file_hash=file_hash,
             ocr_decision=ocr_decision,
             corpus=corpus,
+            project_id=project_id,
         )
         self.entries[key] = entry
         self._save_catalog()
@@ -284,6 +299,7 @@ class TableCatalog:
             return
         # Tables inherit their owning entry's corpus tag (single source of truth).
         table_meta.corpus = entry.corpus
+        table_meta.project_id = entry.project_id
         entry.tables.append(table_meta)
         self._save_catalog()
 
@@ -297,18 +313,22 @@ class TableCatalog:
 
         logger.info(f"[Catalog] Added table: {table_meta.table_name}")
 
-    def get_entry(self, source_file: str) -> Optional[CatalogEntry]:
+    def get_entry(self, source_file: str, project_id: Optional[str] = None) -> Optional[CatalogEntry]:
         """Get catalog entry for a source file."""
         file_name = Path(source_file).name
+        selected_project = _active_project() if project_id is None else project_id
         for key, entry in self.entries.items():
-            if file_name in key:
+            if file_name in key and (not selected_project or entry.project_id == selected_project):
                 return entry
         return None
 
-    def get_all_tables(self) -> List[TableMetadata]:
+    def get_all_tables(self, project_id: Optional[str] = None) -> List[TableMetadata]:
         """Get all tables from all entries."""
         tables = []
+        selected_project = _active_project() if project_id is None else project_id
         for entry in self.entries.values():
+            if selected_project and entry.project_id != selected_project:
+                continue
             tables.extend(entry.tables)
         return tables
 
@@ -328,7 +348,10 @@ class TableCatalog:
         scored: List[tuple] = []  # (score, result_dict)
 
         seen_sources: set = set()
+        selected_project = _active_project()
         for _key, entry in self.entries.items():
+            if selected_project and entry.project_id != selected_project:
+                continue
             source_name = Path(entry.source_file).name
             if source_name in seen_sources:
                 continue
@@ -399,10 +422,12 @@ class TableCatalog:
         scored.sort(key=lambda x: (x[0], x[1].get("date", "")), reverse=True)
         return [item[1] for item in scored[:limit]]
 
-    def remove_entry(self, source_file: str):
+    def remove_entry(self, source_file: str, project_id: Optional[str] = None):
         """Remove an entry and its parquet files."""
         file_name = Path(source_file).name
-        keys_to_remove = [k for k in self.entries.keys() if file_name in k]
+        selected_project = _active_project() if project_id is None else project_id
+        keys_to_remove = [k for k, e in self.entries.items()
+                          if file_name in k and (not selected_project or e.project_id == selected_project)]
 
         for key in keys_to_remove:
             entry = self.entries[key]
