@@ -196,6 +196,10 @@ $SSH "$SSH_TARGET" "
     set -e
     cd $REMOTE_APP_DIR
     QDRANT_SERVER_API_KEY=\$(sudo sed -n 's/^QDRANT_API_KEY=//p' .env.production | tail -1)
+    if [ -z "\$QDRANT_SERVER_API_KEY" ]; then
+        echo "QDRANT_API_KEY must be non-empty in .env.production" >&2
+        exit 1
+    fi
     export QDRANT_SERVER_API_KEY
     sudo docker compose -f docker-compose.prod.yml down || true
     sudo env QDRANT_SERVER_API_KEY=\"\$QDRANT_SERVER_API_KEY\" docker compose -f docker-compose.prod.yml up -d

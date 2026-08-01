@@ -166,6 +166,10 @@ jobs:
             # Export only the Qdrant key for the qdrant container definition;
             # never pass the API container's other provider secrets to Qdrant.
             QDRANT_SERVER_API_KEY="$($SUDO sed -n 's/^QDRANT_API_KEY=//p' "$APP_DIR/.env.production" | tail -1)"
+            if [ -z "$QDRANT_SERVER_API_KEY" ]; then
+              echo "QDRANT_API_KEY must be non-empty in $APP_DIR/.env.production" >&2
+              exit 1
+            fi
             export QDRANT_SERVER_API_KEY
 
             # Authenticate to GHCR to pull the private image (token is ephemeral).
