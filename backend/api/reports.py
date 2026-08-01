@@ -59,8 +59,18 @@ def _assert_ready(project_id: str) -> None:
             "eta_seconds": summary["eta_seconds"],
         })
     from src.document_registry import get_document_registry
-    if not get_document_registry().get_completed(project_id=project_id):
-        raise HTTPException(409, "project_has_no_ready_documents")
+    if get_document_registry().get_completed(project_id=project_id):
+        return
+    try:
+        from src.chunk_store import get_chunk_store
+        row = get_chunk_store().connection().execute(
+            "SELECT 1 FROM chunks WHERE project_id=? LIMIT 1", [project_id]
+        ).fetchone()
+        if row:
+            return
+    except Exception:
+        pass
+    raise HTTPException(409, "project_has_no_ready_documents")
 
 
 def _public(job: dict) -> dict:

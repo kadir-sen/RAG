@@ -82,7 +82,7 @@ def _catalog_corpus_by_name() -> dict:
         return {}
 
 
-def _edinburgh_data_library_docs() -> List[LibraryDocument]:
+def _edinburgh_data_library_docs(project_id: str = "") -> List[LibraryDocument]:
     """LibraryDocument rows for the edinburgh corpus's SQL data tables (Excel/CSV)
     from the catalog — they're not in the chunk store, so the vectors-only library
     path misses them. doc_id == generate_doc_id(source_file) for viewer round-trip."""
@@ -91,6 +91,8 @@ def _edinburgh_data_library_docs() -> List[LibraryDocument]:
     out: List[LibraryDocument] = []
     for entry in get_catalog().entries.values():
         if (getattr(entry, "corpus", "demo") or "demo").lower() != "edinburgh":
+            continue
+        if project_id and (getattr(entry, "project_id", "") or "") != project_id:
             continue
         if entry.source_type not in ("excel", "csv"):
             continue
@@ -168,6 +170,8 @@ async def list_library(
         return [_build_library_doc(r) for r in project_records]
     project_chunks = _vectors_only_library_docs(set(), project.project_id)
     if project_chunks:
+        if _corpus_of(user) == "edinburgh":
+            project_chunks.extend(_edinburgh_data_library_docs(project.project_id))
         return project_chunks
 
     if _corpus_of(user) == "edinburgh":
@@ -207,9 +211,15 @@ async def library_summary(
         }
     project_chunk_docs = _vectors_only_library_docs(set(), project.project_id)
     if project_chunk_docs:
+        data_docs = (_edinburgh_data_library_docs(project.project_id)
+                     if _corpus_of(user) == "edinburgh" else [])
         by_file_type = Counter(d.file_type for d in project_chunk_docs)
-        return {"total_files": len(project_chunk_docs), "by_file_type": dict(by_file_type),
-                "by_doc_type": {}, "total_tables": 0}
+        if data_docs:
+            by_file_type.update(d.file_type for d in data_docs)
+        return {"total_files": len(project_chunk_docs) + len(data_docs),
+                "by_file_type": dict(by_file_type),
+                "by_doc_type": {"data_file": len(data_docs)} if data_docs else {},
+                "total_tables": sum(len(d.table_names) for d in data_docs)}
 
     # 'edinburgh' users: stats from the bulk vectors-only corpus (chunk store),
     # so the home PROJECT LIBRARY widget reflects their own documents, not the demo.
