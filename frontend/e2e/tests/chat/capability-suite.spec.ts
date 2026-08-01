@@ -15,10 +15,10 @@
  *
  * Credentials/target come from env (never hard-code secrets in CI):
  *   E2E_USER (default admin) / E2E_PASS (default admin123)
- *   BASE_URL=http://18.185.38.217
+ *   BASE_URL=http://63.184.32.196
  *
  * Run:
- *   BASE_URL=http://18.185.38.217 E2E_USER=admin E2E_PASS=admin123 \
+ *   BASE_URL=http://63.184.32.196 E2E_USER=admin E2E_PASS=admin123 \
  *     npm run e2e -- tests/chat/capability-suite.spec.ts
  */
 import { test, expect } from '@playwright/test';

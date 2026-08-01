@@ -12,14 +12,14 @@ Docker Compose. Image is built locally on the developer Mac and shipped via
 | Region | eu-central-1 (Frankfurt) |
 | OS | Ubuntu (Lightsail base) |
 | Plan | 2 GB RAM / 2 vCPU / 60 GB SSD |
-| Public IPv4 | `18.185.38.217` |
+| Public IPv4 | `63.184.32.196` |
 | SSH user | `ubuntu` |
 | Remote app dir | `/opt/mvp-api` |
 
 ## Architecture
 
 ```
-Browser ── HTTP 80 ──► Lightsail (18.185.38.217)
+Browser ── HTTP 80 ──► Lightsail (63.184.32.196)
                        └── docker compose -f docker-compose.prod.yml
                            └── mvp-api (FastAPI :8000, port-mapped 80)
                                ├── /          → React SPA
@@ -61,9 +61,9 @@ chmod 400 "$SSH_KEY"
 
 scp -i "$SSH_KEY" \
     scripts/server_bootstrap_lightsail.sh \
-    ubuntu@18.185.38.217:/tmp/
+    ubuntu@63.184.32.196:/tmp/
 
-ssh -i "$SSH_KEY" ubuntu@18.185.38.217 \
+ssh -i "$SSH_KEY" ubuntu@63.184.32.196 \
     'bash /tmp/server_bootstrap_lightsail.sh'
 ```
 
@@ -99,14 +99,14 @@ Flow:
 6. `scp` `.env.production` + remote `chmod 600`.
 7. Optional: `rsync` `data/` and `storage/`.
 8. Remote: `docker compose down` + `up -d` (NEVER `down -v`).
-9. Health loop: poll `http://18.185.38.217/api/health` for up to 60 s.
+9. Health loop: poll `http://63.184.32.196/api/health` for up to 60 s.
 
 ## Verification
 
 ```bash
-curl -i http://18.185.38.217/api/health      # → 200 {"status":"ok"}
-curl -i http://18.185.38.217/                 # → 200 SPA HTML
-curl -i http://18.185.38.217/docs             # → 200 OpenAPI UI
+curl -i http://63.184.32.196/api/health      # → 200 {"status":"ok"}
+curl -i http://63.184.32.196/                 # → 200 SPA HTML
+curl -i http://63.184.32.196/docs             # → 200 OpenAPI UI
 ```
 
 Server-side checks (over SSH):
@@ -124,12 +124,12 @@ sudo ss -tulpn | grep -E ':6333|:6334|:8000'  # MUST be empty (Qdrant + raw API 
 
 | Action | Command |
 |---|---|
-| Tail logs | `ssh -i $SSH_KEY ubuntu@18.185.38.217 "sudo docker logs -f mvp-api"` |
-| Restart | `ssh -i $SSH_KEY ubuntu@18.185.38.217 "cd /opt/mvp-api && sudo docker compose -f docker-compose.prod.yml restart"` |
-| Stop | `ssh -i $SSH_KEY ubuntu@18.185.38.217 "cd /opt/mvp-api && sudo docker compose -f docker-compose.prod.yml stop"` |
-| Status | `ssh -i $SSH_KEY ubuntu@18.185.38.217 "sudo docker ps && free -h && df -h /"` |
-| Backup `storage/` | `ssh -i $SSH_KEY ubuntu@18.185.38.217 "sudo tar -czf /tmp/storage-$(date +%F).tgz -C /opt/mvp-api storage data"` then `scp` it down |
-| Reboot test | `ssh -i $SSH_KEY ubuntu@18.185.38.217 "sudo reboot"` (wait 2 min, hit `/api/health`) |
+| Tail logs | `ssh -i $SSH_KEY ubuntu@63.184.32.196 "sudo docker logs -f mvp-api"` |
+| Restart | `ssh -i $SSH_KEY ubuntu@63.184.32.196 "cd /opt/mvp-api && sudo docker compose -f docker-compose.prod.yml restart"` |
+| Stop | `ssh -i $SSH_KEY ubuntu@63.184.32.196 "cd /opt/mvp-api && sudo docker compose -f docker-compose.prod.yml stop"` |
+| Status | `ssh -i $SSH_KEY ubuntu@63.184.32.196 "sudo docker ps && free -h && df -h /"` |
+| Backup `storage/` | `ssh -i $SSH_KEY ubuntu@63.184.32.196 "sudo tar -czf /tmp/storage-$(date +%F).tgz -C /opt/mvp-api storage data"` then `scp` it down |
+| Reboot test | `ssh -i $SSH_KEY ubuntu@63.184.32.196 "sudo reboot"` (wait 2 min, hit `/api/health`) |
 
 > **Never** run `docker compose down -v` — it deletes named volumes and
 > would wipe state. The deploy script uses `down` (no `-v`) only.
@@ -149,7 +149,7 @@ Lightsail console → Networking → Firewall:
 ## Static IP
 
 By default Lightsail issues a dynamic public IPv4. The current
-`18.185.38.217` will change if the instance is stopped/started.
+`63.184.32.196` will change if the instance is stopped/started.
 
 Action: in Lightsail console → Networking → "Create static IP" → attach
 to instance `mvp-api`. Free while attached. Update the deploy script's

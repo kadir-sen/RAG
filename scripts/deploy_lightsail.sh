@@ -19,7 +19,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────
-SSH_HOST="${SSH_HOST:-18.185.38.217}"
+SSH_HOST="${SSH_HOST:-63.184.32.196}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/Downloads/LightsailDefaultKey-eu-central-1.pem}"
 REMOTE_APP_DIR="${REMOTE_APP_DIR:-/opt/mvp-api}"

@@ -23,7 +23,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
-DEFAULT_BASE = "http://18.185.38.217"
+DEFAULT_BASE = "http://63.184.32.196"
 
 
 def _http_get(url: str, timeout: int = 15) -> tuple[int, Any]:
