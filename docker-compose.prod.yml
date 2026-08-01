@@ -61,6 +61,10 @@ services:
       - "127.0.0.1:6333:6333"
     volumes:
       - ./qdrant_storage:/qdrant/storage
+      # Qdrant writes collection snapshots outside /qdrant/storage. Keep that
+      # path on the host too, otherwise a container recreation discards the
+      # rollback snapshot even though the live collection data survives.
+      - ./qdrant_snapshots:/qdrant/snapshots
     logging:
       driver: json-file
       options:
