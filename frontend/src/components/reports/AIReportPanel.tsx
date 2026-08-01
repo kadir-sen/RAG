@@ -22,10 +22,16 @@ export default function AIReportPanel({ module }: { module: 'chronology' | 'fore
   const [toolkitArtifacts, setToolkitArtifacts] = useState<ToolkitArtifact[]>([]);
   const [selectedToolkit, setSelectedToolkit] = useState<string[]>([]);
 
-  useEffect(() => { void listReports(module).then(setJobs).catch(() => undefined); }, [module]);
   useEffect(() => {
-    if (module === 'forensic') void listToolkitEvidence().then(setToolkitArtifacts).catch(() => setToolkitArtifacts([]));
-  }, [module]);
+    setJobs([]);
+    setReviewing(null);
+    if (selectedProjectId) void listReports(module).then(setJobs).catch(() => undefined);
+  }, [module, selectedProjectId]);
+  useEffect(() => {
+    setToolkitArtifacts([]);
+    setSelectedToolkit([]);
+    if (module === 'forensic' && selectedProjectId) void listToolkitEvidence().then(setToolkitArtifacts).catch(() => setToolkitArtifacts([]));
+  }, [module, selectedProjectId]);
   useEffect(() => {
     if (!jobs.some((job) => job.status === 'queued' || job.status === 'processing')) return;
     const timer = window.setInterval(async () => {

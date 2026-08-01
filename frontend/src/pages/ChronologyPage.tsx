@@ -1,5 +1,4 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import ChronologyTimeline from '../components/chronology/ChronologyTimeline';
 import type { TimelineEvent } from '../utils/timeline';
 import { getFileTypeBadge } from '../styles/tokens';
@@ -221,14 +220,7 @@ export default function ChronologyPage() {
         className="w-[240px] shrink-0 border-r border-[var(--border)] bg-[var(--bg-secondary)] overflow-y-auto p-4 hidden md:block"
         aria-label="Chronology filters"
       >
-        <Link
-          to="/"
-          className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors no-underline"
-        >
-          ← modules
-        </Link>
-
-        <p className="mt-5 font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
+        <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
           Event type
         </p>
         <div className="mt-2 flex flex-wrap gap-1.5">

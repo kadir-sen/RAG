@@ -8,20 +8,23 @@ import {
   archiveConversation,
 } from '../api/conversationApi';
 import { useChatStore } from '../stores/chatStore';
+import { useProjectStore } from '../stores/projectStore';
 
 export function useConversations(options?: { archived?: boolean }) {
   const archived = options?.archived ?? false;
   const queryClient = useQueryClient();
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   const setConversation = useChatStore((s) => s.setConversation);
 
   const query = useQuery({
-    queryKey: ['conversations', { archived }],
+    queryKey: ['conversations', projectId, { archived }],
     queryFn: () => listConversations(archived),
+    enabled: Boolean(projectId),
     staleTime: 30_000,
   });
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    queryClient.invalidateQueries({ queryKey: ['conversations', projectId] });
   };
 
   const create = useMutation({

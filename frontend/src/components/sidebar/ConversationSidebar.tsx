@@ -13,6 +13,7 @@ import type { Message } from '../../types/chat';
 import FileTypeBadge from '../ui/FileTypeBadge';
 import SidebarSection from './SidebarSection';
 import UsageRing from '../shared/UsageRing';
+import { useProjectStore } from '../../stores/projectStore';
 
 // Communications folder = emails only (.eml / .msg / file_type "email").
 const isEmailDoc = (d: LibraryDocument) => {
@@ -133,6 +134,7 @@ const IconUpload = (
 );
 
 export default function ConversationSidebar({ onSend }: SidebarProps) {
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   const [viewingArchived, setViewingArchived] = useState(false);
   const {
     conversations,
@@ -167,7 +169,7 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
 
-  const libraryQuery = useQuery({ queryKey: ['library'], queryFn: getLibrary, staleTime: 60_000 });
+  const libraryQuery = useQuery({ queryKey: ['library', projectId], queryFn: getLibrary, enabled: Boolean(projectId), staleTime: 60_000 });
   const queryClient = useQueryClient();
 
   const showLoadError = (message: string) => {

@@ -24,7 +24,8 @@ export async function uploadFile(
 }
 
 export async function deleteFile(fileId: string) {
-  await apiClient.delete(`/files/${fileId}`);
+  const { data } = await apiClient.delete<{ ok: boolean; detail?: string }>(`/files/${encodeURIComponent(fileId)}`);
+  if (!data.ok) throw new Error(data.detail || 'The server did not delete the file.');
 }
 
 /**

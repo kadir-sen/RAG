@@ -8,18 +8,21 @@ import {
   addDocumentsToCollection,
   removeDocumentFromCollection,
 } from '../api/knowledgeApi';
+import { useProjectStore } from '../stores/projectStore';
 
 export function useKnowledgeCollections() {
   const queryClient = useQueryClient();
+  const projectId = useProjectStore((state) => state.selectedProjectId);
 
   const query = useQuery({
-    queryKey: ['knowledge'],
+    queryKey: ['knowledge', projectId],
     queryFn: listCollections,
+    enabled: Boolean(projectId),
     staleTime: 30_000,
   });
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['knowledge'] });
+    queryClient.invalidateQueries({ queryKey: ['knowledge', projectId] });
   };
 
   const create = useMutation({
@@ -51,7 +54,7 @@ export function useKnowledgeCollections() {
       addDocumentsToCollection(id, docIds),
     onSuccess: (_, vars) => {
       invalidate();
-      queryClient.invalidateQueries({ queryKey: ['knowledge', vars.id] });
+      queryClient.invalidateQueries({ queryKey: ['knowledge', projectId, vars.id] });
     },
   });
 
@@ -60,7 +63,7 @@ export function useKnowledgeCollections() {
       removeDocumentFromCollection(id, docId),
     onSuccess: (_, vars) => {
       invalidate();
-      queryClient.invalidateQueries({ queryKey: ['knowledge', vars.id] });
+      queryClient.invalidateQueries({ queryKey: ['knowledge', projectId, vars.id] });
     },
   });
 
@@ -76,10 +79,11 @@ export function useKnowledgeCollections() {
 }
 
 export function useKnowledgeCollection(id: string | null) {
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   return useQuery({
-    queryKey: ['knowledge', id],
+    queryKey: ['knowledge', projectId, id],
     queryFn: () => getCollection(id as string),
-    enabled: !!id,
+    enabled: Boolean(projectId && id),
     staleTime: 30_000,
   });
 }

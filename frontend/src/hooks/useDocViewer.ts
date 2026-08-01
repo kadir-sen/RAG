@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { getDocContent } from '../api/fileApi';
 import { useUIStore, type ViewerDoc } from '../stores/uiStore';
+import { useProjectStore } from '../stores/projectStore';
 
 export function useDocViewer() {
   const { rightPanelOpen, rightPanelDoc, openDocument, closeViewer } =
     useUIStore();
+  const projectId = useProjectStore((state) => state.selectedProjectId);
 
   // Either identifier is enough. A citation stored before a re-ingest carries a
   // doc_id that no longer resolves, and the file name is what rescues it.
@@ -13,7 +15,7 @@ export function useDocViewer() {
 
   const contentQuery = useQuery({
     queryKey: [
-      'docContent', rightPanelDoc?.docId, rightPanelDoc?.anchor,
+      'docContent', projectId, rightPanelDoc?.docId, rightPanelDoc?.anchor,
       rightPanelDoc?.fileName,
     ],
     queryFn: () =>

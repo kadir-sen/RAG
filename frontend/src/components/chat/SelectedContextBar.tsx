@@ -3,13 +3,15 @@ import { getLibrary } from '../../api/libraryApi';
 import { useChatStore } from '../../stores/chatStore';
 import { getFileTypeBadge } from '../../styles/tokens';
 import type { LibraryDocument } from '../../types/api';
+import { useProjectStore } from '../../stores/projectStore';
 
 // Tiles for the files (documents + emails) the user picked in the sidebar.
 // Rendered just above the chat input so the selected context is always visible;
 // each tile is an image-like file chip with an × to deselect.
 export default function SelectedContextBar() {
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   const { selectedIds, toggleSelection, clearSelection } = useChatStore();
-  const libraryQuery = useQuery({ queryKey: ['library'], queryFn: getLibrary, staleTime: 60_000 });
+  const libraryQuery = useQuery({ queryKey: ['library', projectId], queryFn: getLibrary, enabled: Boolean(projectId), staleTime: 60_000 });
 
   if (selectedIds.length === 0) return null;
 

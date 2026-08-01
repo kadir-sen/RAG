@@ -1,6 +1,7 @@
 """File upload, listing, deletion, stats, and export endpoints."""
 
 import os
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Depends, HTTPException
@@ -14,6 +15,133 @@ from backend.tasks.indexing import index_file_background
 
 router = APIRouter()
 _file_service = FileService()
+
+
+def _delete_legacy_project_file(file_id: str, project_id: str) -> dict | None:
+    """Delete a project-owned source that predates the document registry.
+
+    Bulk corpora use the exact file name as the Files API id. Membership in the
+    project-scoped chunk store or catalog must be established before any write;
+    a guessed global filename is never sufficient authorization.
+    """
+    file_name = Path(file_id).name
+    if not file_name or file_name != file_id:
+        return None
+
+    from src.chunk_store import get_chunk_store
+    from src.catalog import get_catalog
+    from src.document_rag import generate_doc_id
+
+    chunk_store = get_chunk_store()
+    con = chunk_store.connection()
+    chunk_rows = con.execute(
+        "SELECT DISTINCT doc_id FROM chunks WHERE project_id=? AND file_name=?",
+        [project_id, file_name],
+    ).fetchall()
+    doc_ids = {str(row[0]) for row in chunk_rows if row and row[0]}
+
+    catalog = get_catalog()
+    catalog_entries = [
+        entry for entry in catalog.entries.values()
+        if (getattr(entry, "project_id", "") or "") == project_id
+        and file_id in (Path(entry.source_file).name, generate_doc_id(entry.source_file))
+    ]
+    if catalog_entries and file_name == file_id:
+        # A catalog id can be a generated hash; use its real source name for
+        # derivative cleanup and disk resolution.
+        file_name = Path(catalog_entries[0].source_file).name
+    doc_ids.update(generate_doc_id(entry.source_file) for entry in catalog_entries)
+
+    if not chunk_rows and not catalog_entries:
+        return None
+
+    # Check whether a legacy global source is shared before removing it from
+    # disk. Project-local sources are isolated by construction.
+    other_chunk_ref = bool(con.execute(
+        "SELECT 1 FROM chunks WHERE project_id<>? AND file_name=? LIMIT 1",
+        [project_id, file_name],
+    ).fetchone())
+    other_catalog_ref = any(
+        (getattr(entry, "project_id", "") or "") != project_id
+        and Path(entry.source_file).name == file_name
+        for entry in catalog.entries.values()
+    )
+    try:
+        from src.document_registry import get_document_registry
+        other_registry_ref = any(
+            (getattr(record, "project_id", "") or "") != project_id
+            and record.file_name == file_name
+            for record in get_document_registry().get_all()
+        )
+    except Exception:
+        other_registry_ref = False
+    shared_source = other_chunk_ref or other_catalog_ref or other_registry_ref
+
+    result = {"file_name": file_name, "legacy": True}
+
+    table_names = sorted({
+        table.table_name
+        for entry in catalog_entries
+        for table in entry.tables
+        if table.table_name
+    })
+    if table_names:
+        try:
+            from src.data_analyzer_sql import get_data_analyzer
+            result["tables_dropped"] = get_data_analyzer().drop_tables(table_names)
+        except Exception as exc:
+            result["table_cleanup_error"] = str(exc)
+
+    source_paths = {Path(entry.source_file) for entry in catalog_entries}
+    for entry in catalog_entries:
+        catalog.remove_entry(entry.source_file, project_id=project_id)
+    result["catalog_entries_deleted"] = len(catalog_entries)
+
+    # clear_file is project-filtered through the request's ProjectContext and
+    # removes both Qdrant points and mirrored lexical chunks.
+    from src.document_rag import get_document_rag
+    get_document_rag().clear_file(file_name)
+    result["rag_cleaned"] = True
+
+    try:
+        from src.event_timeline import get_event_timeline
+        result["events_deleted"] = sum(
+            get_event_timeline().delete_by_document(doc_id, project_id=project_id)
+            for doc_id in doc_ids
+        )
+    except Exception as exc:
+        result["event_cleanup_error"] = str(exc)
+
+    from src.config import DATA_DIR, STORAGE_DIR
+    data_root = Path(DATA_DIR).resolve()
+    storage_root = Path(STORAGE_DIR).resolve()
+    project_roots = (
+        (data_root / "projects" / project_id).resolve(),
+        (storage_root / "projects" / project_id).resolve(),
+    )
+    source_paths.update({
+        data_root / "edinburgh_pdfs" / file_name,
+        data_root / "projects" / project_id / "documents" / file_name,
+        data_root / "projects" / project_id / "emails" / file_name,
+        data_root / "projects" / project_id / "tables" / file_name,
+    })
+    deleted_paths = []
+    for candidate in source_paths:
+        try:
+            resolved = candidate.resolve()
+            project_local = any(resolved.is_relative_to(root) for root in project_roots)
+            inside_managed_data = resolved.is_relative_to(data_root)
+            if not resolved.is_file() or not (project_local or inside_managed_data):
+                continue
+            if not project_local and shared_source:
+                continue
+            resolved.unlink()
+            deleted_paths.append(str(resolved))
+        except (OSError, ValueError):
+            continue
+    result["source_files_deleted"] = len(deleted_paths)
+    result["shared_source_retained"] = shared_source
+    return result
 
 
 def _edinburgh_data_table_infos(project_id: str = "") -> List[FileInfo]:
@@ -123,9 +251,7 @@ async def list_files(
     project: ProjectContext = Depends(get_current_project),
 ):
     raw = _file_service.list_files(project_id=project.project_id)
-    if not raw and str((user.features or {}).get("corpus") or "").lower() == "edinburgh":
-        return _edinburgh_file_infos(project.project_id)
-    return [
+    registered = [
         FileInfo(
             id=f.get("id", ""),
             name=f.get("name", ""),
@@ -142,6 +268,16 @@ async def list_files(
         )
         for f in raw
     ]
+    if str((user.features or {}).get("corpus") or "").lower() == "edinburgh":
+        # A migrated bulk corpus and newly uploaded project files coexist. The
+        # old conditional returned only registry rows as soon as the first new
+        # upload existed, making all 7k legacy sources appear to vanish. Merge
+        # the inventories and prefer the richer registry row on name clashes.
+        merged = {(item.file_type, item.name): item
+                  for item in _edinburgh_file_infos(project.project_id)}
+        merged.update({(item.file_type, item.name): item for item in registered})
+        return list(merged.values())
+    return registered
 
 
 @router.delete("/files/{file_id}")
@@ -149,23 +285,22 @@ async def delete_file(
     file_id: str,
     project: ProjectContext = Depends(require_project_editor),
 ):
-    """Delete file from ALL systems: disk, Pinecone, DuckDB, catalog, notices, registry."""
-    try:
-        from src.document_registry import get_document_registry
-        rec = get_document_registry().get(file_id)
-        if not rec or getattr(rec, "project_id", "") != project.project_id:
+    """Delete one selected-project file and all of its derived evidence."""
+    from src.document_registry import get_document_registry
+    rec = get_document_registry().get(file_id)
+    if rec:
+        if (getattr(rec, "project_id", "") or "") != project.project_id:
             raise HTTPException(404, "file_not_found")
         from src.file_router import delete_document
         result = delete_document(file_id)
         if "error" in result:
-            return {"ok": False, "detail": result["error"]}
+            raise HTTPException(500, result["error"])
         return {"ok": True, "cleanup": result}
-    except Exception as e:
-        # Fallback to simple disk delete
-        deleted = _file_service.delete(file_id, project.project_id)
-        if not deleted:
-            return {"ok": False, "detail": f"File not found: {e}"}
-        return {"ok": True}
+
+    legacy_result = _delete_legacy_project_file(file_id, project.project_id)
+    if legacy_result is None:
+        raise HTTPException(404, "file_not_found")
+    return {"ok": True, "cleanup": legacy_result}
 
 
 @router.post("/files/{file_id}/reindex")

@@ -65,6 +65,7 @@ jobs:
             tests/test_ai_report_footnotes.py \
             tests/test_durable_job_stores.py \
             tests/test_project_store.py \
+            tests/test_project_file_deletion.py \
             tests/test_run_store.py
 
   # ── 2. Build the Docker image and push it to GHCR ────────────────────────
