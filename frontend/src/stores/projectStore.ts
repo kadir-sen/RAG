@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Project } from '../types/projects';
 import { listProjects } from '../api/projectApi';
+import { useChatStore } from './chatStore';
+import { useUIStore } from './uiStore';
 
 interface ProjectState {
   projects: Project[];
@@ -33,7 +35,16 @@ export const useProjectStore = create<ProjectState>()(
           set({ loading: false });
         }
       },
-      select(projectId) { set({ selectedProjectId: projectId }); },
+      select(projectId) {
+        if (get().selectedProjectId !== projectId) {
+          // Project changes are hard workspace boundaries. Clear client-only
+          // state immediately so a conversation, selected document, or open
+          // viewer from the previous project can never flash in the next one.
+          useChatStore.getState().setConversation('');
+          useUIStore.getState().closeViewer();
+        }
+        set({ selectedProjectId: projectId });
+      },
       clear() { set({ projects: [], selectedProjectId: null }); },
     }),
     {

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getLibrary } from '../../api/libraryApi';
 import type { LibraryDocument } from '../../types/api';
 import Badge from '../shared/Badge';
+import { useProjectStore } from '../../stores/projectStore';
 
 interface Props {
   open: boolean;
@@ -12,14 +13,15 @@ interface Props {
 }
 
 export default function LibraryPickerModal({ open, onClose, existingDocIds, onAdd }: Props) {
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   const { data: library = [], isLoading } = useQuery({
-    queryKey: ['library'],
+    queryKey: ['library', projectId],
     queryFn: getLibrary,
-    enabled: open,
+    enabled: Boolean(open && projectId),
     staleTime: 60_000,
   });
 

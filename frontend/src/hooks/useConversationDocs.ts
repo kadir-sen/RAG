@@ -4,16 +4,18 @@ import {
   addDocsToConversation,
   removeDocFromConversation,
 } from '../api/libraryApi';
+import { useProjectStore } from '../stores/projectStore';
 
 export function useConversationDocs(conversationId: string | null) {
   const queryClient = useQueryClient();
+  const projectId = useProjectStore((state) => state.selectedProjectId);
 
-  const queryKey = ['conversation-docs', conversationId];
+  const queryKey = ['conversation-docs', projectId, conversationId];
 
   const { data: docs = [], isLoading } = useQuery({
     queryKey,
     queryFn: () => getConversationDocs(conversationId!),
-    enabled: !!conversationId,
+    enabled: Boolean(projectId && conversationId),
     staleTime: 30_000,
   });
 

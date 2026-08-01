@@ -159,6 +159,7 @@ export interface FileInfo {
   id: string;
   name: string;
   file_type: string;
+  status: string;
   pages: number | null;
   ocr_pages: number;
   tables: number;

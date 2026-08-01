@@ -5,6 +5,7 @@ import {
   getChronologySummary,
 } from '../api/chronologyApi';
 import type { ChronologyFilters } from '../api/chronologyApi';
+import { useProjectStore } from '../stores/projectStore';
 
 /* The event store only changes at ingest, so these can sit still for a while.
    Filters are part of the key, so narrowing refetches but going back to a
@@ -12,25 +13,31 @@ import type { ChronologyFilters } from '../api/chronologyApi';
 const STALE = 5 * 60 * 1000;
 
 export function useChronologyEvents(filters: ChronologyFilters) {
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   return useQuery({
-    queryKey: ['chronology', 'events', filters],
+    queryKey: ['chronology', projectId, 'events', filters],
     queryFn: () => getChronologyEvents(filters),
+    enabled: Boolean(projectId),
     staleTime: STALE,
   });
 }
 
 export function useChronologyFacets() {
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   return useQuery({
-    queryKey: ['chronology', 'facets'],
+    queryKey: ['chronology', projectId, 'facets'],
     queryFn: getChronologyFacets,
+    enabled: Boolean(projectId),
     staleTime: STALE,
   });
 }
 
 export function useChronologySummary() {
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   return useQuery({
-    queryKey: ['chronology', 'summary'],
+    queryKey: ['chronology', projectId, 'summary'],
     queryFn: getChronologySummary,
+    enabled: Boolean(projectId),
     staleTime: STALE,
   });
 }

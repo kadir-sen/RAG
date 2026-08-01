@@ -1,6 +1,8 @@
 import { useCallback, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import ModuleTile from '../components/modules/ModuleTile';
 import { ChatbotMark, ChronologyMark, ReportsMark } from '../components/modules/ModuleMarks';
+import { useProjectStore } from '../stores/projectStore';
 
 /**
  * What you land on after signing in.
@@ -19,6 +21,9 @@ const MARK_CLASS = 'w-full h-full block';
 
 export default function ModulePickerPage() {
   const gridRef = useRef<HTMLUListElement>(null);
+  const projects = useProjectStore((state) => state.projects);
+  const selectedProjectId = useProjectStore((state) => state.selectedProjectId);
+  const current = projects.find((project) => project.project_id === selectedProjectId) ?? null;
 
   /* Left/right walk the tiles, the way the portal's picker does. Only the
      enabled ones are reachable — a disabled tile is not a link. */
@@ -49,6 +54,17 @@ export default function ModulePickerPage() {
             Three ways into the same project record. The one you pick opens with
             your session intact.
           </p>
+          {current && (
+            <Link
+              to="/projects"
+              className="mt-4 inline-flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 no-underline hover:border-[var(--ink)] transition-colors"
+            >
+              <span className="h-2 w-2 rounded-full bg-[var(--green)]" aria-hidden="true" />
+              <span className="font-mono text-[9px] uppercase tracking-[.13em] text-[var(--text-muted)]">Active project</span>
+              <strong className="max-w-[320px] truncate text-[11px] text-[var(--text-primary)]">{current.name}</strong>
+              <span className="font-mono text-[9px] text-[var(--text-secondary)]">Manage →</span>
+            </Link>
+          )}
         </header>
 
         <ul

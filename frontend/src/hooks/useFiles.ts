@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { listFiles, uploadFile as apiUploadFile, deleteFile } from '../api/fileApi';
+import { useProjectStore } from '../stores/projectStore';
 
 export interface UploadingFile {
   name: string;
@@ -11,11 +12,13 @@ export interface UploadingFile {
 
 export function useFiles() {
   const queryClient = useQueryClient();
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   const [uploading, setUploading] = useState<UploadingFile[]>([]);
 
   const query = useQuery({
-    queryKey: ['files'],
+    queryKey: ['files', projectId],
     queryFn: listFiles,
+    enabled: Boolean(projectId),
     staleTime: 5_000,
     refetchInterval: uploading.some((u) => u.status === 'uploading') ? 3_000 : false,
   });
@@ -57,21 +60,21 @@ export function useFiles() {
         batch.map((file, j) => uploadOne(file, i + j)),
       );
       // Refresh file list after each batch
-      queryClient.invalidateQueries({ queryKey: ['files'] });
+      queryClient.invalidateQueries({ queryKey: ['files', projectId] });
     }
 
-    queryClient.invalidateQueries({ queryKey: ['files'] });
-    queryClient.invalidateQueries({ queryKey: ['library'] });
+    queryClient.invalidateQueries({ queryKey: ['files', projectId] });
+    queryClient.invalidateQueries({ queryKey: ['library', projectId] });
 
     // Clear upload status after 3 seconds
     setTimeout(() => setUploading([]), 3000);
-  }, [queryClient]);
+  }, [projectId, queryClient]);
 
   const remove = useMutation({
     mutationFn: deleteFile,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['files'] });
-      queryClient.invalidateQueries({ queryKey: ['library'] });
+      queryClient.invalidateQueries({ queryKey: ['files', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['library', projectId] });
     },
   });
 

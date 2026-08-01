@@ -12,8 +12,10 @@ import KnowledgeModal from '../knowledge/KnowledgeModal';
 import Badge from '../shared/Badge';
 import DataTablesPanel from '../admin/DataTablesPanel';
 import { getFileTypeBadge } from '../../styles/tokens';
+import { useProjectStore } from '../../stores/projectStore';
 
 export default function LeftDrawer() {
+  const projectId = useProjectStore((state) => state.selectedProjectId);
   const { leftDrawerOpen, toggleLeftDrawer, openDocument, leftDrawerTab, setLeftDrawerTab } = useUIStore();
   const activeConversationId = useChatStore(s => s.activeConversationId);
   const { files, uploadMultiple, isUploading, deleteFile } = useFiles();
@@ -30,19 +32,20 @@ export default function LeftDrawer() {
     setOpenFolders((prev) => ({ ...prev, [key]: !prev[key] }));
 
   const indexing = useQuery({
-    queryKey: ['indexingStatus'],
+    queryKey: ['indexingStatus', projectId],
     queryFn: getIndexingStatus,
     // Poll quickly while anything is still indexing so the granular bar feels live,
     // otherwise back off to 5s.
     refetchInterval: leftDrawerTab === 'library'
       ? (q) => ((q.state.data ?? []).some((s) => s.status === 'indexing') ? 1500 : 5000)
       : false,
-    enabled: leftDrawerTab === 'library',
+    enabled: leftDrawerTab === 'library' && Boolean(projectId),
   });
 
   const stats = useQuery({
-    queryKey: ['dashboardStats'],
+    queryKey: ['dashboardStats', projectId],
     queryFn: getStats,
+    enabled: Boolean(projectId),
     staleTime: 30_000,
   });
 
@@ -160,6 +163,7 @@ export default function LeftDrawer() {
                         tables: doc.table_names.length,
                         rows: 0,
                         notice_extracted: doc.notice_extracted,
+                        status: 'completed',
                       }}
                       onClick={() => {}}
                       noticeMetadata={doc.notice_metadata}
