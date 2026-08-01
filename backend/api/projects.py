@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -46,7 +47,9 @@ def _stats(project_id: str) -> Dict:
         pass
     counts = {"document": 0, "email": 0, "data": 0}
     status = {"queued": 0, "processing": 0, "ready": 0, "failed": 0}
+    seen_names = set()
     for rec in files:
+        seen_names.add(rec.file_name)
         counts[rec.file_type if rec.file_type in counts else "document"] += 1
         if rec.status == "completed":
             status["ready"] += 1
@@ -54,10 +57,53 @@ def _stats(project_id: str) -> Dict:
             status["failed"] += 1
         else:
             status["processing"] += 1
+
+    # Bulk/legacy corpora were intentionally indexed without one registry row per
+    # source file.  Once those records are assigned to a project, the chunk store
+    # is the durable inventory for the project picker and readiness gate.
+    try:
+        from src.chunk_store import get_chunk_store
+        rows = get_chunk_store().connection().execute(
+            "SELECT file_name FROM chunks WHERE project_id=? "
+            "AND file_name IS NOT NULL AND file_name<>'' GROUP BY file_name",
+            [project_id],
+        ).fetchall()
+        for (file_name,) in rows:
+            if file_name in seen_names:
+                continue
+            seen_names.add(file_name)
+            ext = os.path.splitext(file_name)[1].lower()
+            kind = ("email" if ext in (".eml", ".msg") else
+                    "data" if ext in (".xlsx", ".xls", ".csv") else "document")
+            counts[kind] += 1
+            status["ready"] += 1
+    except Exception:
+        pass
+
+    # Project-scoped spreadsheets live in the catalog rather than the text chunk
+    # mirror, so include each source workbook once.
+    try:
+        from src.catalog import get_catalog
+        for entry in get_catalog().entries.values():
+            if (getattr(entry, "project_id", "") or "") != project_id:
+                continue
+            file_name = Path(entry.source_file).name
+            if file_name in seen_names:
+                continue
+            seen_names.add(file_name)
+            counts["data"] += 1
+            status["ready"] += 1
+    except Exception:
+        pass
     try:
         from backend.tasks.ingestion_jobs import get_ingestion_job_store
         job_stats = get_ingestion_job_store().project_summary(project_id)
-        status.update(job_stats)
+        # Jobs provide live queue/error state.  Ready inventory also includes
+        # migrated vector-only sources which have no historical ingestion job.
+        status["queued"] = max(status["queued"], job_stats.get("queued", 0))
+        status["processing"] = max(status["processing"], job_stats.get("processing", 0))
+        status["ready"] = max(status["ready"], job_stats.get("ready", 0))
+        status["failed"] = max(status["failed"], job_stats.get("failed", 0))
     except Exception:
         job_stats = {}
     return {
@@ -67,7 +113,7 @@ def _stats(project_id: str) -> Dict:
         "eta_seconds": job_stats.get("eta_seconds") if job_stats else None,
         "calibration_size": job_stats.get("calibration_size", 0) if job_stats else 0,
         "calibration_complete": job_stats.get("calibration_complete", False) if job_stats else False,
-        "report_ready": bool(files) and status["processing"] == 0 and status["queued"] == 0
+        "report_ready": bool(seen_names) and status["processing"] == 0 and status["queued"] == 0
                         and status["ready"] > 0,
     }
 

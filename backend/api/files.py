@@ -16,7 +16,7 @@ router = APIRouter()
 _file_service = FileService()
 
 
-def _edinburgh_data_table_infos() -> List[FileInfo]:
+def _edinburgh_data_table_infos(project_id: str = "") -> List[FileInfo]:
     """FileInfo rows for the edinburgh corpus's SQL data tables (Excel/CSV), read
     from the catalog by corpus tag. These live as DuckDB/parquet tables (not in the
     chunk store), so without this they never reach the 'edinburgh' Spreadsheets list.
@@ -27,6 +27,8 @@ def _edinburgh_data_table_infos() -> List[FileInfo]:
     out: List[FileInfo] = []
     for entry in get_catalog().entries.values():
         if (getattr(entry, "corpus", "demo") or "demo").lower() != "edinburgh":
+            continue
+        if project_id and (getattr(entry, "project_id", "") or "") != project_id:
             continue
         if entry.source_type not in ("excel", "csv"):
             continue
@@ -47,7 +49,7 @@ def _edinburgh_data_table_infos() -> List[FileInfo]:
     return out
 
 
-def _edinburgh_file_infos() -> List[FileInfo]:
+def _edinburgh_file_infos(project_id: str = "") -> List[FileInfo]:
     """FileInfo rows for the 'edinburgh' account: bulk vectors-only PDFs/emails
     (chunk-store docs not in the registry) PLUS its SQL data tables (Excel/CSV)
     from the catalog, so Documents AND Spreadsheets both reflect its own corpus.
@@ -56,10 +58,13 @@ def _edinburgh_file_infos() -> List[FileInfo]:
     from src.chunk_store import get_chunk_store
     reg_names = {r.file_name for r in get_document_registry().get_completed()}
     con = get_chunk_store().connection()
-    rows = con.execute(
-        "SELECT file_name, MAX(page_number) FROM chunks "
-        "WHERE file_name IS NOT NULL AND file_name <> '' GROUP BY file_name"
-    ).fetchall()
+    sql = ("SELECT file_name, MAX(page_number) FROM chunks "
+           "WHERE file_name IS NOT NULL AND file_name <> ''")
+    params = []
+    if project_id:
+        sql += " AND project_id=?"
+        params.append(project_id)
+    rows = con.execute(sql + " GROUP BY file_name", params).fetchall()
     out: List[FileInfo] = []
     for file_name, max_page in rows:
         if file_name in reg_names:
@@ -75,7 +80,7 @@ def _edinburgh_file_infos() -> List[FileInfo]:
                             pages=pages, status="completed"))
     # Merge the edinburgh SQL data tables (Excel/CSV) — these are not in the chunk store.
     try:
-        out.extend(_edinburgh_data_table_infos())
+        out.extend(_edinburgh_data_table_infos(project_id))
     except Exception:
         pass
     return out
@@ -112,6 +117,8 @@ async def list_files(
     project: ProjectContext = Depends(get_current_project),
 ):
     raw = _file_service.list_files(project_id=project.project_id)
+    if not raw and str((user.features or {}).get("corpus") or "").lower() == "edinburgh":
+        return _edinburgh_file_infos(project.project_id)
     return [
         FileInfo(
             id=f.get("id", ""),

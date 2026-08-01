@@ -46,7 +46,7 @@ export default function ProjectsPage() {
   const current = projects.find((p) => p.project_id === selectedProjectId) ?? null;
   const active = useMemo(() => jobs.filter((j) => !['ready', 'failed'].includes(j.status)), [jobs]);
   const readyCount = jobs.filter((job) => job.status === 'ready').length;
-  const canOpen = readyCount > 0 && active.length === 0;
+  const canOpen = (readyCount > 0 || Boolean(current?.stats.report_ready)) && active.length === 0;
 
   const addProject = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -133,8 +133,8 @@ export default function ProjectsPage() {
               <div className="mt-6 border border-[var(--border)] bg-[var(--wash)] rounded-[3px]">
                 <div className="p-4 border-b border-[var(--border)] flex items-center justify-between gap-4">
                   <div>
-                    <h2 className="text-[15px] font-semibold text-[var(--text-primary)]">{current.name} · processing</h2>
-                    <p className="text-[11px] text-[var(--text-muted)] mt-1">{active.length} active · {jobs.filter((j) => j.status === 'ready').length} ready · {jobs.filter((j) => j.status === 'failed').length} failed</p>
+                    <h2 className="text-[15px] font-semibold text-[var(--text-primary)]">{current.name} · {current.stats.report_ready ? 'ready' : 'processing'}</h2>
+                    <p className="text-[11px] text-[var(--text-muted)] mt-1">{active.length} active · {Math.max(readyCount, current.stats.ready)} ready · {Math.max(jobs.filter((j) => j.status === 'failed').length, current.stats.failed)} failed</p>
                     {!current.stats.calibration_complete && current.stats.total_files > 20 && <p className="mt-1 text-[10px] text-[var(--text-muted)]">Calibrating first {current.stats.calibration_size} files before releasing the remaining queue.</p>}
                   </div>
                   <button type="button" disabled={!canOpen} onClick={() => navigate('/')} className="px-3 py-2 bg-[var(--accent)] text-[var(--accent-ink)] font-mono text-[10px] uppercase tracking-[.14em] rounded-[2px] disabled:opacity-40">{canOpen ? 'Open modules →' : 'Processing record…'}</button>
