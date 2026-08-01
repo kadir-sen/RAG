@@ -3,6 +3,7 @@ import UsageRing from '../components/shared/UsageRing';
 import BrandMark from '../components/shared/BrandMark';
 import SheetToggle from '../components/shared/SheetToggle';
 import UserMenu from '../components/auth/UserMenu';
+import ProjectSelector from '../components/projects/ProjectSelector';
 
 export default function TopNav() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
@@ -41,9 +42,7 @@ export default function TopNav() {
       {/* Center — wordmark + workspace label */}
       <div className="flex items-center gap-2 justify-self-center">
         <BrandMark size="sm" />
-        <span className="text-[var(--text-muted)] text-[12px] font-mono tracking-wide select-none">
-          · workspace
-        </span>
+        <ProjectSelector />
       </div>
 
       {/* Right — usage badge + sheet toggle + settings + avatar */}

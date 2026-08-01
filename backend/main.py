@@ -35,9 +35,13 @@ from backend.api import (
     indexing,
     library,
     knowledge,
+    projects,
+    reports,
+    runs,
     usage,
 )
 from backend.core.security import get_current_user, require_admin
+from backend.core.projects import get_current_project
 from src.usage_tracker import BudgetExceededError
 from src.user_store import UserQuotaExceededError, get_user_store
 
@@ -86,10 +90,12 @@ def create_app() -> FastAPI:
     app.add_middleware(_AssetCacheHeaders)
 
     auth_dep = [Depends(get_current_user)]
+    project_dep = [Depends(get_current_project)]
     admin_dep = [Depends(require_admin)]
 
     # Public — login lives here, no auth required.
     app.include_router(auth.router, prefix="/api", tags=["auth"])
+    app.include_router(projects.router, prefix="/api", tags=["projects"], dependencies=auth_dep)
 
     # Admin-only routers.
     app.include_router(
@@ -102,25 +108,27 @@ def create_app() -> FastAPI:
 
     # Authenticated routers (chat already injects user explicitly; the router-
     # level dep is a belt-and-suspenders gate).
-    app.include_router(chat.router, prefix="/api", tags=["chat"], dependencies=auth_dep)
+    app.include_router(chat.router, prefix="/api", tags=["chat"], dependencies=auth_dep + project_dep)
     app.include_router(
         chronology.router, prefix="/api", tags=["chronology"], dependencies=auth_dep,
     )
     app.include_router(
-        conversations.router, prefix="/api", tags=["conversations"], dependencies=auth_dep,
+        conversations.router, prefix="/api", tags=["conversations"], dependencies=auth_dep + project_dep,
     )
-    app.include_router(feedback.router, prefix="/api", tags=["feedback"], dependencies=auth_dep)
-    app.include_router(files.router, prefix="/api", tags=["files"], dependencies=auth_dep)
+    app.include_router(feedback.router, prefix="/api", tags=["feedback"], dependencies=auth_dep + project_dep)
+    app.include_router(files.router, prefix="/api", tags=["files"], dependencies=auth_dep + project_dep)
     app.include_router(
-        documents.router, prefix="/api", tags=["documents"], dependencies=auth_dep,
+        documents.router, prefix="/api", tags=["documents"], dependencies=auth_dep + project_dep,
     )
     app.include_router(
-        indexing.router, prefix="/api", tags=["indexing"], dependencies=auth_dep,
+        indexing.router, prefix="/api", tags=["indexing"], dependencies=auth_dep + project_dep,
     )
-    app.include_router(library.router, prefix="/api", tags=["library"], dependencies=auth_dep)
+    app.include_router(library.router, prefix="/api", tags=["library"], dependencies=auth_dep + project_dep)
     app.include_router(
-        knowledge.router, prefix="/api", tags=["knowledge"], dependencies=auth_dep,
+        knowledge.router, prefix="/api", tags=["knowledge"], dependencies=auth_dep + project_dep,
     )
+    app.include_router(reports.router, prefix="/api", tags=["reports"], dependencies=auth_dep + project_dep)
+    app.include_router(runs.router, prefix="/api", tags=["runs"], dependencies=auth_dep + project_dep)
     # Global usage (cost across the whole tenant) is operational data — admin-only.
     app.include_router(usage.router, prefix="/api", tags=["usage"], dependencies=admin_dep)
 

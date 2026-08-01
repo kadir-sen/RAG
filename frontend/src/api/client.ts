@@ -20,6 +20,14 @@ apiClient.interceptors.request.use((config) => {
         config.headers.Authorization = `Bearer ${token}`;
       }
     }
+    const projectRaw = localStorage.getItem('coair-project');
+    if (projectRaw) {
+      const parsed = JSON.parse(projectRaw) as { state?: { selectedProjectId?: string | null } };
+      if (parsed.state?.selectedProjectId) {
+        config.headers = config.headers ?? {};
+        config.headers['X-Project-ID'] = parsed.state.selectedProjectId;
+      }
+    }
   } catch {
     // Ignore — request will go out unauthenticated and fail with 401 below.
   }
@@ -36,6 +44,7 @@ apiClient.interceptors.response.use(
     if (status === 401 && !url.includes('/auth/login')) {
       try {
         localStorage.removeItem('coair-auth');
+        localStorage.removeItem('coair-project');
       } catch {
         // ignore
       }

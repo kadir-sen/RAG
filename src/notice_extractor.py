@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field, asdict
 
 from .logger import logger
-from .config import GOOGLE_API_KEY, GEMINI_MODEL, BASE_DIR
+from .config import GOOGLE_API_KEY, GEMINI_MODEL_LITE, BASE_DIR
 
 # Notice storage directory
 NOTICES_DIR = BASE_DIR / "data" / "notices"
@@ -1111,7 +1111,9 @@ class NoticeExtractor:
         system = build_system_prompt("You are a construction document metadata extractor.")
 
         try:
-            resp = llm_client.generate_json(prompt, system=system)
+            resp = llm_client.generate_json(
+                prompt, system=system, model=GEMINI_MODEL_LITE,
+            )
             refined = resp.raw if isinstance(resp.raw, dict) else {}
 
             if refined.get('date') and len(refined['date']) == 10:

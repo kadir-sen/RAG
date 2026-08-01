@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel
 
 from backend.core.security import get_current_user, UserContext
+from backend.core.projects import ProjectContext, get_current_project
 
 router = APIRouter()
 
@@ -38,7 +39,7 @@ _READ_CEILING = 100_000
 # above the real store, not a product rule.
 
 
-def _scoped_rows(user: UserContext, **filters) -> List[Dict]:
+def _scoped_rows(user: UserContext, project_id: str = "", **filters) -> List[Dict]:
     """Every event this user can see under these filters, unpaged.
 
     Callers that page apply their own limit afterwards. Reading the full set
@@ -48,7 +49,9 @@ def _scoped_rows(user: UserContext, **filters) -> List[Dict]:
     """
     from src.event_timeline import get_event_timeline
 
-    rows = get_event_timeline().timeline_context(limit=_READ_CEILING, **filters)
+    rows = get_event_timeline().timeline_context(
+        limit=_READ_CEILING, project=project_id or None, **filters,
+    )
     if len(rows) >= _READ_CEILING:
         # Never expected — the ceiling sits far above the store — but if it ever
         # bites, every count and every export below it is quietly short, so say
@@ -58,6 +61,8 @@ def _scoped_rows(user: UserContext, **filters) -> List[Dict]:
             f"[Chronology] read ceiling {_READ_CEILING} reached — counts and "
             f"exports are truncated. Raise _READ_CEILING or page the store."
         )
+    if project_id:
+        return rows
     return _scope_to_corpus(rows, user)
 
 
@@ -106,7 +111,10 @@ def _scope_to_corpus(rows: List[Dict], user: UserContext) -> List[Dict]:
 
 
 @router.get("/chronology/summary")
-async def chronology_summary(user: UserContext = Depends(get_current_user)) -> Dict[str, int]:
+async def chronology_summary(
+    user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(get_current_project),
+) -> Dict[str, int]:
     """How many events this user can see. Drives the header count and, when
     zero, the empty state that explains the corpus has not been enriched yet.
 
@@ -114,11 +122,14 @@ async def chronology_summary(user: UserContext = Depends(get_current_user)) -> D
     raw count(), so the header can never promise rows the list won't show — but
     over the whole store, not the first page of it.
     """
-    return {"total_events": len(_scoped_rows(user))}
+    return {"total_events": len(_scoped_rows(user, project.project_id))}
 
 
 @router.get("/chronology/facets")
-async def chronology_facets(user: UserContext = Depends(get_current_user)) -> Dict[str, Dict[str, int]]:
+async def chronology_facets(
+    user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(get_current_project),
+) -> Dict[str, Dict[str, int]]:
     """Event counts per type, for the filter chips.
 
     Counted over the corpus-scoped rows, not the store's type_counts(), for the
@@ -128,7 +139,8 @@ async def chronology_facets(user: UserContext = Depends(get_current_user)) -> Di
     """
     from collections import Counter
 
-    counts = Counter(r.get("event_type") for r in _scoped_rows(user) if r.get("event_type"))
+    counts = Counter(r.get("event_type") for r in _scoped_rows(user, project.project_id)
+                     if r.get("event_type"))
     return {"event_type": dict(counts)}
 
 
@@ -143,6 +155,7 @@ async def chronology_events(
     # use, so nothing here refuses a page the store could actually serve.
     limit: int = Query(200, ge=1, le=_READ_CEILING),
     user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(get_current_project),
 ) -> Dict[str, Any]:
     """Events oldest-first, filtered.
 
@@ -159,7 +172,7 @@ async def chronology_events(
     header needs the first number to avoid describing a page as a record.
     """
     rows = _scoped_rows(
-        user, event_type=event_type, actor=actor,
+        user, project.project_id, event_type=event_type, actor=actor,
         date_from=date_from, date_to=date_to,
     )
     return {"events": rows[:limit], "matching": len(rows)}
@@ -304,6 +317,7 @@ async def chronology_events_docx(
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
     user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(get_current_project),
 ) -> Response:
     """The event list as a Word document, under the same filters and the same
     corpus scoping as /chronology/events — an export that could show rows the
@@ -314,7 +328,7 @@ async def chronology_events_docx(
     from src.chronology_docx import build_events_docx, safe_filename
 
     rows = _scoped_rows(
-        user, event_type=event_type, actor=actor,
+        user, project.project_id, event_type=event_type, actor=actor,
         date_from=date_from, date_to=date_to,
     )
     blob = build_events_docx(rows, {
@@ -358,6 +372,7 @@ class BuildRequest(BaseModel):
 @router.post("/chronology/build")
 async def chronology_build(
     body: BuildRequest, user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(get_current_project),
 ) -> Dict:
     """Resolve one authored chronology together with its corpus evidence."""
     import asyncio
@@ -393,16 +408,19 @@ async def chronology_build(
                                  "is no supporting evidence to resolve."}
 
     request_id = body.request_id or uuid.uuid4().hex[:12]
-    corpus = _corpus_of(user)
+    corpus = project.project_id
 
     def _run() -> Dict:
         # The ContextVar rides into this thread via to_thread, which is also what
         # lets document_rag/lexical publish their own steps under the same id.
         query_request_var.set(request_id)
+        from src.project_context import set_current_project
+        set_current_project(project.project_id, project.role)
         return build_evidence(
             doc.ref, doc.title, doc.summary, entries,
             corpus=corpus,
-            corpus_filter=lambda rows: _scope_to_corpus(rows, user),
+            corpus_filter=lambda rows: [r for r in rows
+                                        if (r.get("project") or project.project_id) == project.project_id],
             force=body.force,
             on_step=report_step,
         )

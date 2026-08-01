@@ -15,7 +15,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
 
-  const redirectTo = (location.state as LocationState)?.from?.pathname || '/';
+  const redirectTo = (location.state as LocationState)?.from?.pathname || '/projects';
 
   useEffect(() => {
     if (token) {

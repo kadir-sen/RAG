@@ -14,7 +14,7 @@ ilişkili kelimeler" idea):
 Both are fused with the dense lane via Reciprocal Rank Fusion in document_rag.
 """
 import threading
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .logger import logger
 
@@ -62,7 +62,8 @@ class LexicalIndex:
                 logger.warning(f"[Lexical] FTS unavailable, using LIKE fallback: {e}")
                 return False
 
-    def search_chunks(self, query: str, top_k: int = 30) -> List[Dict]:
+    def search_chunks(self, query: str, top_k: int = 30,
+                      project_id: Optional[str] = None) -> List[Dict]:
         """Return chunk candidates ranked by BM25 (or LIKE fallback).
 
         Each item: {chunk_id, doc_id, file_name, page_number, text, lex_score}.
@@ -78,12 +79,17 @@ class LexicalIndex:
 
         if self._ensure_fts():
             try:
+                where = "score IS NOT NULL"
+                params = [query]
+                if project_id:
+                    where += " AND project_id = ?"
+                    params.append(project_id)
+                params.append(top_k)
                 rows = con.execute(
                     "SELECT chunk_id, doc_id, file_name, page_number, text, "
                     "fts_main_chunks.match_bm25(chunk_id, ?) AS score "
-                    "FROM chunks WHERE score IS NOT NULL "
-                    "ORDER BY score DESC LIMIT ?",
-                    [query, top_k],
+                    f"FROM chunks WHERE {where} ORDER BY score DESC LIMIT ?",
+                    params,
                 ).fetchall()
                 return [
                     {"chunk_id": r[0], "doc_id": r[1], "file_name": r[2],
@@ -102,11 +108,13 @@ class LexicalIndex:
                 ["(CASE WHEN LOWER(text) LIKE ? THEN 1 ELSE 0 END)" for _ in tokens]
             )
             params = [f"%{t}%" for t in tokens]
+            project_clause = " AND project_id = ?" if project_id else ""
             sql = (
                 f"SELECT chunk_id, doc_id, file_name, page_number, text, ({score_expr}) AS score "
-                f"FROM chunks WHERE {score_expr} > 0 ORDER BY score DESC LIMIT ?"
+                f"FROM chunks WHERE {score_expr} > 0{project_clause} ORDER BY score DESC LIMIT ?"
             )
-            rows = con.execute(sql, params + params + [top_k]).fetchall()
+            tail = ([project_id] if project_id else []) + [top_k]
+            rows = con.execute(sql, params + params + tail).fetchall()
             return [
                 {"chunk_id": r[0], "doc_id": r[1], "file_name": r[2],
                  "page_number": r[3], "text": r[4], "lex_score": float(r[5] or 0.0)}
@@ -117,7 +125,8 @@ class LexicalIndex:
             return []
 
     # ── Document-level keyword signal ────────────────────────
-    def match_docs(self, terms: List[str], limit: int = 25) -> Dict[str, float]:
+    def match_docs(self, terms: List[str], limit: int = 25,
+                   project_id: Optional[str] = None) -> Dict[str, float]:
         """Return {doc_id: boost} from persisted document metadata.
 
         Aggregates three keyword sources, normalized to a 0..1 boost per doc_id.
@@ -141,7 +150,7 @@ class LexicalIndex:
         try:
             from .document_registry import get_document_registry
             tl = [t.lower() for t in terms]
-            for rec in get_document_registry().get_completed():
+            for rec in get_document_registry().get_completed(project_id=project_id):
                 blob = " ".join(
                     [(rec.llm_summary or "")] + list(getattr(rec, "llm_topics", None) or [])
                 ).lower()

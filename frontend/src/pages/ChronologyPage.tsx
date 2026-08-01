@@ -25,6 +25,7 @@ import type {
 } from '../api/chronologyApi';
 import { useUIStore } from '../stores/uiStore';
 import { count } from '../utils/format';
+import AIReportPanel from '../components/reports/AIReportPanel';
 
 const RightDocViewer = lazy(() => import('../components/viewer/RightDocViewer'));
 
@@ -296,6 +297,7 @@ export default function ChronologyPage() {
 
       {/* ── subject bar + whichever view it selected ───────────── */}
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
+        <AIReportPanel module="chronology" />
         <SubjectBar
           onSubmit={handleSubject}
           onPick={handlePick}

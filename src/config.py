@@ -15,14 +15,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Model settings
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 # Cheap tier for low-value reasoning (classification, scope detection, table
 # selection, small-result summaries, answer-verification). Half the flash price
 # (see LLM_PRICING). High-value steps (SQL generation, synthesis) stay on GEMINI_MODEL.
-GEMINI_MODEL_LITE = os.getenv("GEMINI_MODEL_LITE", "gemini-2.5-flash-lite")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+GEMINI_MODEL_LITE = os.getenv("GEMINI_MODEL_LITE", "gemini-3.5-flash-lite")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-sol")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")  # claude-sonnet-4-20250514 or claude-3-5-sonnet-20241022
-EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
 EMBEDDING_DIMENSION = 768  # MRL-reduced from 3072 default (also bge-base-en-v1.5 native dim)
 
 # Embedding provider (all bge-base-en-v1.5, 768-dim → matches EMBEDDING_DIMENSION):
@@ -31,7 +31,7 @@ EMBEDDING_DIMENSION = 768  # MRL-reduced from 3072 default (also bge-base-en-v1.
 #   "fastembed" — ONNX (no torch), low RAM (~0.6 GB); server default for the 2 GB box.
 # local & fastembed are wire-compatible (same model + query instruction), so docs can
 # be ingested with "local" on the Mac and queried with "fastembed" on the server.
-EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "gemini").lower()
+EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "fastembed").lower()
 LOCAL_EMBEDDING_MODEL = os.getenv("LOCAL_EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5")
 # "api" — hosted copy of the SAME bge model via an OpenAI-compatible
 # /embeddings endpoint (DeepInfra, Together, HF router...). Frees the ~600 MB
@@ -52,7 +52,9 @@ if ANTHROPIC_API_KEY:
 # Dual-provider fan-out (calls every provider in LLM_PROVIDERS per query) is a
 # major cost multiplier and its compare-UI is currently not surfaced to users.
 # Keep it OFF unless explicitly enabled, even when multiple keys are present.
-ENABLE_DUAL_PROVIDER = os.getenv("ENABLE_DUAL_PROVIDER", "false").lower() in ("1", "true", "yes")
+# Product policy: one task → one selected provider. Keeping this immutable avoids
+# an old deployment environment silently re-enabling costly all-provider fan-out.
+ENABLE_DUAL_PROVIDER = False
 
 # ── Extended thinking / reasoning (Phase 3) ─────────────────
 # Reasoning is enabled ONLY on hallucination-prone steps: SQL generation and
@@ -137,7 +139,9 @@ OCR_ENGINE = os.getenv("OCR_ENGINE", "tesseract")  # "tesseract" | "paddleocr"
 # Pages of a scanned PDF are OCR'd in parallel (each tesseract call releases the
 # GIL via its subprocess). Capped by CPU count in code. Combined with the ingest
 # semaphore this bounds total parallel OCR on a small box.
-OCR_MAX_WORKERS = int(os.getenv("OCR_MAX_WORKERS", "4"))
+OCR_MAX_WORKERS = int(os.getenv("OCR_MAX_WORKERS", "2"))
+OCR_VISION_FALLBACK_ENABLED = os.getenv("OCR_VISION_FALLBACK_ENABLED", "true").lower() == "true"
+OCR_VISION_CONFIDENCE_THRESHOLD = float(os.getenv("OCR_VISION_CONFIDENCE_THRESHOLD", "0.50"))
 OCR_LANG = os.getenv("OCR_LANG", "eng")  # English-only (all documents are English)
 OCR_DPI = int(os.getenv("OCR_DPI", "200"))  # Image rendering DPI
 OCR_CACHE_DIR = str(BASE_DIR / ".cache" / "ocr")
@@ -171,6 +175,9 @@ Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 # ── Cost Estimation (USD per 1M tokens) ─────────────────────
 LLM_PRICING = {
+    # Google Developer API standard paid tier, checked 2026-08-01.
+    "gemini-3.6-flash": {"input": 1.50, "cached_input": 0.15, "output": 7.50},
+    "gemini-3.5-flash-lite": {"input": 0.30, "cached_input": 0.03, "output": 2.50},
     "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
     "gemini-2.5-flash-lite": {"input": 0.075, "output": 0.30},
     "gemini-flash-latest": {"input": 0.075, "output": 0.30},
@@ -182,6 +189,9 @@ LLM_PRICING = {
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4.1": {"input": 2.00, "output": 8.00},
+    "gpt-5.6-sol": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
+    "gpt-5.6-terra": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
+    "gpt-5.6-luna": {"input": 1.00, "cached_input": 0.10, "output": 6.00},
     # Claude
     "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
     "claude-haiku-4-20250514": {"input": 0.80, "output": 4.00},

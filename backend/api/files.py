@@ -3,10 +3,11 @@
 import os
 from typing import List
 
-from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Depends
+from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from backend.core.security import get_current_user, UserContext
+from backend.core.projects import ProjectContext, get_current_project, require_project_editor
 from backend.models.responses import FileInfo, UploadResult
 from backend.services.file_service import FileService
 from backend.tasks.indexing import index_file_background
@@ -85,39 +86,32 @@ async def upload_file(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = BackgroundTasks(),
     user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(require_project_editor),
 ):
-    saved_path, file_id, is_duplicate = await _file_service.save(file)
+    saved_path, file_id, is_duplicate = await _file_service.save(file, project.project_id)
     if is_duplicate:
         return UploadResult(
             file_id=file_id,
             filename=file.filename,
             status="completed",
         )
-    # Propagate the uploader's corpus so the background indexer tags new data
-    # tables correctly (otherwise the unset ContextVar defaults them to 'demo'
-    # and an edinburgh user's upload would silently land in the demo corpus).
-    try:
-        corpus = str((user.features or {}).get("corpus") or "").lower()
-    except Exception:
-        corpus = ""
-    background_tasks.add_task(index_file_background, file_id, saved_path, corpus)
+    from backend.tasks.ingestion_jobs import get_ingestion_job_store
+    job = get_ingestion_job_store().enqueue(
+        project.project_id, file_id, saved_path, file.filename or "upload",
+    )
     return UploadResult(
         file_id=file_id,
         filename=file.filename,
-        status="indexing",
+        status=job["status"],
     )
 
 
 @router.get("/files", response_model=List[FileInfo])
-async def list_files(user: UserContext = Depends(get_current_user)):
-    # Per-user corpus split: the 'edinburgh' account's counts/lists come from the
-    # bulk vectors-only set; everyone else from the registry (demo) files.
-    try:
-        if str((user.features or {}).get("corpus") or "").lower() == "edinburgh":
-            return _edinburgh_file_infos()
-    except Exception:
-        pass
-    raw = _file_service.list_files(corpus="demo")
+async def list_files(
+    user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(get_current_project),
+):
+    raw = _file_service.list_files(project_id=project.project_id)
     return [
         FileInfo(
             id=f.get("id", ""),
@@ -138,9 +132,16 @@ async def list_files(user: UserContext = Depends(get_current_user)):
 
 
 @router.delete("/files/{file_id}")
-async def delete_file(file_id: str):
+async def delete_file(
+    file_id: str,
+    project: ProjectContext = Depends(require_project_editor),
+):
     """Delete file from ALL systems: disk, Pinecone, DuckDB, catalog, notices, registry."""
     try:
+        from src.document_registry import get_document_registry
+        rec = get_document_registry().get(file_id)
+        if not rec or getattr(rec, "project_id", "") != project.project_id:
+            raise HTTPException(404, "file_not_found")
         from src.file_router import delete_document
         result = delete_document(file_id)
         if "error" in result:
@@ -148,14 +149,18 @@ async def delete_file(file_id: str):
         return {"ok": True, "cleanup": result}
     except Exception as e:
         # Fallback to simple disk delete
-        deleted = _file_service.delete(file_id)
+        deleted = _file_service.delete(file_id, project.project_id)
         if not deleted:
             return {"ok": False, "detail": f"File not found: {e}"}
         return {"ok": True}
 
 
 @router.post("/files/{file_id}/reindex")
-async def reindex_file(file_id: str, background_tasks: BackgroundTasks):
+async def reindex_file(
+    file_id: str,
+    background_tasks: BackgroundTasks,
+    project: ProjectContext = Depends(require_project_editor),
+):
     """Delete and re-index a single file (clean slate)."""
     from pathlib import Path
     from src.document_registry import get_document_registry
@@ -164,7 +169,7 @@ async def reindex_file(file_id: str, background_tasks: BackgroundTasks):
 
     registry = get_document_registry()
     rec = registry.get(file_id)
-    if not rec:
+    if not rec or getattr(rec, "project_id", "") != project.project_id:
         return {"ok": False, "detail": "Document not found"}
 
     file_path = rec.file_path
@@ -179,13 +184,19 @@ async def reindex_file(file_id: str, background_tasks: BackgroundTasks):
 
     # 3. Re-index in background
     new_doc_id = generate_doc_id(file_path)
-    background_tasks.add_task(index_file_background, new_doc_id, file_path)
+    from backend.tasks.ingestion_jobs import get_ingestion_job_store
+    get_ingestion_job_store().enqueue(
+        project.project_id, new_doc_id, file_path, file_name,
+    )
 
     return {"ok": True, "file_name": file_name, "new_file_id": new_doc_id, "status": "reindexing"}
 
 
 @router.post("/files/reindex-stuck")
-async def reindex_stuck_files(background_tasks: BackgroundTasks):
+async def reindex_stuck_files(
+    background_tasks: BackgroundTasks,
+    project: ProjectContext = Depends(require_project_editor),
+):
     """Find all processing/error files, clean them up, and re-index."""
     from pathlib import Path
     from src.document_registry import get_document_registry
@@ -193,7 +204,8 @@ async def reindex_stuck_files(background_tasks: BackgroundTasks):
     from src.document_rag import generate_doc_id
 
     registry = get_document_registry()
-    stuck = [r for r in registry.get_all() if r.status in ("processing", "error")]
+    stuck = [r for r in registry.get_all(project_id=project.project_id)
+             if r.status in ("processing", "error")]
 
     results = []
     for rec in stuck:
@@ -208,14 +220,17 @@ async def reindex_stuck_files(background_tasks: BackgroundTasks):
 
         # Re-index
         new_id = generate_doc_id(file_path)
-        background_tasks.add_task(index_file_background, new_id, file_path)
+        from backend.tasks.ingestion_jobs import get_ingestion_job_store
+        get_ingestion_job_store().enqueue(
+            project.project_id, new_id, file_path, rec.file_name,
+        )
         results.append({"name": rec.file_name, "status": "reindexing", "new_id": new_id})
 
     return {"total": len(stuck), "results": results}
 
 
 @router.get("/stats")
-async def get_stats():
+async def get_stats(project: ProjectContext = Depends(get_current_project)):
     """Return vector count and table count for dashboard metrics."""
     vectors = 0
     tables = 0
@@ -242,7 +257,7 @@ async def get_stats():
 
 
 @router.get("/files/export")
-async def export_files_excel():
+async def export_files_excel(project: ProjectContext = Depends(get_current_project)):
     """Export file list as multi-sheet Excel (.xlsx) grouped by file type."""
     import io
     from datetime import datetime
@@ -253,7 +268,7 @@ async def export_files_excel():
         from fastapi import HTTPException
         raise HTTPException(500, "pandas/openpyxl not available")
 
-    raw = _file_service.list_files()
+    raw = _file_service.list_files(project_id=project.project_id)
 
     # Group files by type
     groups = {

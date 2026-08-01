@@ -72,6 +72,14 @@ def _current_user_corpus() -> str:
         return ""
 
 
+def _current_project_id() -> str:
+    try:
+        from .project_context import get_current_project_id
+        return get_current_project_id()
+    except Exception:
+        return ""
+
+
 _EDIN_NAMES_CACHE = {"set": None, "ts": 0.0}
 
 
@@ -362,25 +370,30 @@ class DocumentRAG:
 
     def _delete_file_vectors(self, file_name: str):
         """Delete existing vectors for a file before re-indexing."""
-        doc_id = generate_doc_id(file_name)
+        project_id = _current_project_id()
         try:
             if self.backend == "qdrant":
                 from qdrant_client.http import models as qmodels
-                flt = qmodels.Filter(must=[
+                must = [
                     qmodels.FieldCondition(
-                        key="doc_id",
-                        match=qmodels.MatchValue(value=doc_id),
+                        key="file_name",
+                        match=qmodels.MatchValue(value=file_name),
                     )
-                ])
+                ]
+                if project_id:
+                    must.append(qmodels.FieldCondition(
+                        key="project_id", match=qmodels.MatchValue(value=project_id)))
+                flt = qmodels.Filter(must=must)
                 self.qdrant_client.delete(
                     collection_name=QDRANT_COLLECTION,
                     points_selector=qmodels.FilterSelector(filter=flt),
                 )
             else:
                 # Pinecone metadata filter delete (unchanged behavior).
-                self.pinecone_index.delete(
-                    filter={"doc_id": {"$eq": doc_id}}
-                )
+                flt = {"file_name": {"$eq": file_name}}
+                if project_id:
+                    flt["project_id"] = {"$eq": project_id}
+                self.pinecone_index.delete(filter=flt)
             logger.info(f"   Cleared existing vectors for: {file_name}")
         except Exception as e:
             # Pinecone free tier might not support metadata filtering for delete
@@ -593,6 +606,10 @@ class DocumentRAG:
             return None
 
         if new_docs:
+            project_id = _current_project_id()
+            for doc in new_docs:
+                if project_id:
+                    doc.metadata["project_id"] = project_id
             self.documents.extend(new_docs)
 
             # Count OCR pages
@@ -604,6 +621,7 @@ class DocumentRAG:
                 "page_count": len(new_docs),
                 "ocr_pages": ocr_pages,
                 "doc_id": generate_doc_id(file_path),
+                "project_id": project_id,
             }
             log_document_processing(file_name, "Added", f"{len(new_docs)} pages ({ocr_pages} OCR)")
             return new_docs
@@ -644,6 +662,7 @@ class DocumentRAG:
                 "page_number": page_num,
                 "total_pages": len(page_texts),
                 "doc_id": generate_doc_id(file_path),
+                "project_id": _current_project_id(),
             }
             if metadata:
                 doc_meta.update(metadata)
@@ -658,6 +677,7 @@ class DocumentRAG:
                 "page_count": len(new_docs),
                 "ocr_pages": 0,
                 "doc_id": generate_doc_id(file_path),
+                "project_id": _current_project_id(),
             }
             log_document_processing(file_name, "Added", f"{len(new_docs)} pages (from pages)")
             return new_docs
@@ -758,6 +778,7 @@ class DocumentRAG:
                         "file_name": meta.get("file_name", "Unknown"),
                         "page_number": meta.get("page_number", 1),
                         "text": node.get_content(),
+                        "project_id": meta.get("project_id", "") or _current_project_id(),
                     })
                 get_chunk_store().add_chunks(rows)
             except Exception as e:
@@ -1136,7 +1157,9 @@ class DocumentRAG:
             try:
                 from .lexical_index import get_lexical_index
                 li = get_lexical_index()
-                lexical = li.search_chunks(raw_question, RAG_CANDIDATE_K)
+                lexical = li.search_chunks(
+                    raw_question, RAG_CANDIDATE_K, project_id=_current_project_id() or None,
+                )
                 if doc_ids:
                     ids = set(doc_ids)
                     lexical = [c for c in lexical if c.get("doc_id") in ids]
@@ -1145,7 +1168,9 @@ class DocumentRAG:
                     lexical = [c for c in lexical if c.get("file_name") in fns]
                 for c in lexical:
                     c["key"] = f"{c.get('file_name')}::{c.get('page_number')}"
-                doc_boost = li.match_docs(self._lexical_terms(raw_question))
+                doc_boost = li.match_docs(
+                    self._lexical_terms(raw_question), project_id=_current_project_id() or None,
+                )
             except Exception as e:
                 logger.debug(f"   Lexical lane skipped: {e}")
 
@@ -1231,6 +1256,10 @@ class DocumentRAG:
         corpus = _current_user_corpus()
         if corpus:
             scope_specs.append(MetadataFilter(key="corpus", value=corpus,
+                                              operator=FilterOperator.EQ))
+        project_id = _current_project_id()
+        if project_id:
+            scope_specs.append(MetadataFilter(key="project_id", value=project_id,
                                               operator=FilterOperator.EQ))
 
         if not doc_file_specs and not scope_specs:
@@ -1714,6 +1743,10 @@ class DocumentRAG:
                 if _corpus:
                     must.append(qmodels.FieldCondition(
                         key="corpus", match=qmodels.MatchValue(value=_corpus)))
+                _project = _current_project_id()
+                if _project:
+                    must.append(qmodels.FieldCondition(
+                        key="project_id", match=qmodels.MatchValue(value=_project)))
                 flt = qmodels.Filter(must=must) if must else None
                 res = self.qdrant_client.query_points(
                     collection_name=QDRANT_COLLECTION,
@@ -1732,6 +1765,9 @@ class DocumentRAG:
                     pc_filter["file_name"] = {"$in": list(file_names)}
                 for key, val in (payload_filters or {}).items():
                     pc_filter[key] = {"$in": list(val)} if isinstance(val, (list, tuple, set)) else {"$eq": val}
+                _project = _current_project_id()
+                if _project:
+                    pc_filter["project_id"] = {"$eq": _project}
                 kwargs = dict(vector=qvec, top_k=top_k, include_metadata=True,
                               namespace="__default__")
                 if pc_filter:
@@ -2031,29 +2067,19 @@ class DocumentRAG:
 
     def clear_file(self, file_name: str):
         """Clear vectors for a specific file."""
-        doc_id = generate_doc_id(file_name)
         try:
-            if self.backend == "qdrant":
-                from qdrant_client.http import models as qmodels
-                flt = qmodels.Filter(must=[
-                    qmodels.FieldCondition(
-                        key="doc_id",
-                        match=qmodels.MatchValue(value=doc_id),
-                    )
-                ])
-                self.qdrant_client.delete(
-                    collection_name=QDRANT_COLLECTION,
-                    points_selector=qmodels.FilterSelector(filter=flt),
-                )
-            else:
-                self.pinecone_index.delete(filter={"doc_id": {"$eq": doc_id}})
+            self._delete_file_vectors(file_name)
             if file_name in self.file_registry:
                 del self.file_registry[file_name]
-            self.documents = [d for d in self.documents if d.metadata.get("file_name") != file_name]
+            project_id = _current_project_id()
+            self.documents = [d for d in self.documents if not (
+                d.metadata.get("file_name") == file_name and
+                (not project_id or d.metadata.get("project_id") == project_id)
+            )]
             # Keep the lexical chunk store in sync with the vector store.
             try:
                 from .chunk_store import get_chunk_store
-                get_chunk_store().delete_by_file(file_name)
+                get_chunk_store().delete_by_file(file_name, project_id=project_id)
             except Exception as e:
                 logger.debug(f"Chunk store delete skipped: {e}")
             logger.info(f"Cleared: {file_name}")

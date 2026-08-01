@@ -2,7 +2,9 @@
 
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from backend.core.projects import ProjectContext, get_current_project
 
 from backend.models.requests import (
     KnowledgeCollectionCreate,
@@ -51,35 +53,46 @@ def _to_detail(col) -> KnowledgeCollectionDetail:
 
 
 @router.get("/knowledge", response_model=List[KnowledgeCollectionOut])
-async def list_collections():
+async def list_collections(project: ProjectContext = Depends(get_current_project)):
     from src.knowledge_store import get_knowledge_store
-    return [_to_out(c) for c in get_knowledge_store().list_all()]
+    return [_to_out(c) for c in get_knowledge_store().list_all(project.project_id)]
 
 
 @router.post("/knowledge", response_model=KnowledgeCollectionOut)
-async def create_collection(body: KnowledgeCollectionCreate):
+async def create_collection(
+    body: KnowledgeCollectionCreate,
+    project: ProjectContext = Depends(get_current_project),
+):
     from src.knowledge_store import get_knowledge_store
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(400, "Collection name cannot be empty")
-    col = get_knowledge_store().create(name=name, description=body.description or "")
+    col = get_knowledge_store().create(
+        name=name, description=body.description or "", project_id=project.project_id,
+    )
     return _to_out(col)
 
 
 @router.get("/knowledge/{col_id}", response_model=KnowledgeCollectionDetail)
-async def get_collection(col_id: str):
+async def get_collection(
+    col_id: str, project: ProjectContext = Depends(get_current_project),
+):
     from src.knowledge_store import get_knowledge_store
-    col = get_knowledge_store().get(col_id)
+    col = get_knowledge_store().get(col_id, project.project_id)
     if not col:
         raise HTTPException(404, "Collection not found")
     return _to_detail(col)
 
 
 @router.patch("/knowledge/{col_id}", response_model=KnowledgeCollectionOut)
-async def update_collection(col_id: str, body: KnowledgeCollectionUpdate):
+async def update_collection(
+    col_id: str, body: KnowledgeCollectionUpdate,
+    project: ProjectContext = Depends(get_current_project),
+):
     from src.knowledge_store import get_knowledge_store
     col = get_knowledge_store().update(
-        col_id, name=body.name, description=body.description
+        col_id, name=body.name, description=body.description,
+        project_id=project.project_id,
     )
     if not col:
         raise HTTPException(404, "Collection not found")
@@ -87,31 +100,42 @@ async def update_collection(col_id: str, body: KnowledgeCollectionUpdate):
 
 
 @router.delete("/knowledge/{col_id}")
-async def delete_collection(col_id: str):
+async def delete_collection(
+    col_id: str, project: ProjectContext = Depends(get_current_project),
+):
     from src.knowledge_store import get_knowledge_store
-    ok = get_knowledge_store().delete(col_id)
+    ok = get_knowledge_store().delete(col_id, project.project_id)
     if not ok:
         raise HTTPException(404, "Collection not found")
     return {"ok": True}
 
 
 @router.post("/knowledge/{col_id}/documents", response_model=KnowledgeCollectionOut)
-async def add_documents(col_id: str, body: AddDocumentsRequest):
+async def add_documents(
+    col_id: str, body: AddDocumentsRequest,
+    project: ProjectContext = Depends(get_current_project),
+):
     from src.knowledge_store import get_knowledge_store
     from src.document_registry import get_document_registry
 
     registry = get_document_registry()
-    valid_ids = [d for d in body.doc_ids if registry.get(d) is not None]
-    col = get_knowledge_store().add_documents(col_id, valid_ids)
+    valid_ids = [d for d in body.doc_ids if (
+        (rec := registry.get(d)) is not None
+        and (getattr(rec, "project_id", "") or "") == project.project_id
+    )]
+    col = get_knowledge_store().add_documents(col_id, valid_ids, project.project_id)
     if not col:
         raise HTTPException(404, "Collection not found")
     return _to_out(col)
 
 
 @router.delete("/knowledge/{col_id}/documents/{doc_id}", response_model=KnowledgeCollectionOut)
-async def remove_document(col_id: str, doc_id: str):
+async def remove_document(
+    col_id: str, doc_id: str,
+    project: ProjectContext = Depends(get_current_project),
+):
     from src.knowledge_store import get_knowledge_store
-    col = get_knowledge_store().remove_document(col_id, doc_id)
+    col = get_knowledge_store().remove_document(col_id, doc_id, project.project_id)
     if not col:
         raise HTTPException(404, "Collection not found")
     return _to_out(col)

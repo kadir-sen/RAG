@@ -1,12 +1,14 @@
 """File upload, listing, and deletion."""
 
 import hashlib
+import os
+import uuid
 from pathlib import Path
 from typing import List
 
 from fastapi import UploadFile
 
-from src.config import DOCUMENTS_DIR, TABLES_DIR, EMAILS_DIR
+from src.config import BASE_DIR, DOCUMENTS_DIR, TABLES_DIR, EMAILS_DIR
 
 EXTENSION_MAP = {
     ".pdf": ("document", DOCUMENTS_DIR),
@@ -23,58 +25,65 @@ EXTENSION_MAP = {
 
 class FileService:
 
-    async def save(self, file: UploadFile) -> tuple[str, str, bool]:
+    @staticmethod
+    def _target_dir(project_id: str, file_type: str) -> Path:
+        if not project_id:
+            return Path({"document": DOCUMENTS_DIR, "email": EMAILS_DIR,
+                         "data": TABLES_DIR}.get(file_type, DOCUMENTS_DIR))
+        leaf = {"document": "documents", "email": "emails", "data": "tables"}.get(
+            file_type, "documents"
+        )
+        return Path(BASE_DIR) / "data" / "projects" / project_id / leaf
+
+    async def save(self, file: UploadFile, project_id: str = "") -> tuple[str, str, bool]:
         """Save uploaded file to disk. Returns (path, doc_id, is_duplicate)."""
         from src.document_registry import get_document_registry
         from src.document_rag import generate_doc_id
 
-        content = await file.read()
-        file_size_kb = len(content) // 1024
-        ext = Path(file.filename).suffix.lower()
-        file_type, target_dir = EXTENSION_MAP.get(ext, ("unknown", DOCUMENTS_DIR))
+        safe_name = Path(file.filename or "upload.bin").name
+        ext = Path(safe_name).suffix.lower()
+        file_type = EXTENSION_MAP.get(ext, ("unknown", DOCUMENTS_DIR))[0]
+        target_dir = self._target_dir(project_id, file_type)
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # Stream to disk. Reading the entire upload into RAM made a 500-file
+        # batch capable of exhausting even the upgraded 8 GB host.
+        temp = target_dir / f".{uuid.uuid4().hex}.upload"
+        total = 0
+        with temp.open("wb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                total += len(chunk)
+        file_size_kb = total // 1024
 
         # Check for duplicate (same name + same size)
         # If the file was already processed AND is in the RAG index, skip re-upload.
         # Otherwise re-index it (handles cases where indexing failed silently).
         registry = get_document_registry()
-        existing = registry.find_duplicate(file.filename, file_size_kb)
+        existing = registry.find_duplicate(
+            safe_name, file_size_kb, file_path=str(temp), project_id=project_id,
+        )
         if existing:
-            # Verify the file is actually indexed (not just registered)
-            actually_indexed = False
-            try:
-                from src.document_rag import get_document_rag
-                rag = get_document_rag()
-                actually_indexed = file.filename in rag.file_registry
-            except Exception:
-                pass
-            if not actually_indexed:
-                # Also check if it's a data file in DuckDB
-                try:
-                    from src.data_analyzer_sql import get_data_analyzer
-                    analyzer = get_data_analyzer()
-                    for tname, info in analyzer.tables.items():
-                        if info.get("file_name") == file.filename or info.get("source_file", "").endswith(file.filename):
-                            actually_indexed = True
-                            break
-                except Exception:
-                    pass
-            if actually_indexed:
+            if existing.status == "completed":
+                temp.unlink(missing_ok=True)
                 return existing.file_path, existing.doc_id, True
-            # File registered but not indexed — re-index it
-            import logging
-            logging.getLogger("app").info(f"[FileService] Re-indexing {file.filename} (registered but not in index)")
-            dest = Path(existing.file_path)
-            if dest.exists():
-                doc_id = generate_doc_id(str(dest))
-                return str(dest), doc_id, False
 
-        # Save to disk
-        Path(target_dir).mkdir(parents=True, exist_ok=True)
-        dest = Path(target_dir) / file.filename
-        dest.write_bytes(content)
+        dest = target_dir / safe_name
+        if dest.exists():
+            hasher = hashlib.sha256()
+            with temp.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(block)
+            digest = hasher.hexdigest()[:10]
+            dest = target_dir / f"{dest.stem}-{digest}{dest.suffix}"
+        os.replace(temp, dest)
 
         doc_id = generate_doc_id(str(dest))
-        registry.register(file.filename, str(dest), file_size_kb, file_type, ext)
+        registry.register(dest.name, str(dest), file_size_kb, file_type, ext,
+                          project_id=project_id)
 
         # Sync uploaded file to GCS for persistence across Cloud Run restarts
         try:
@@ -85,7 +94,7 @@ class FileService:
 
         return str(dest), doc_id, False
 
-    def list_files(self, corpus: str = "") -> List[dict]:
+    def list_files(self, corpus: str = "", project_id: str | None = None) -> List[dict]:
         """File listing from SINGLE source: document_registry (GCS-backed).
         Enriches with metadata from RAG and catalog but does NOT add files from them.
         This ensures consistent counts across Cloud Run instances.
@@ -101,7 +110,7 @@ class FileService:
         try:
             from src.document_registry import get_document_registry
             registry = get_document_registry()
-            for rec in registry.get_all():
+            for rec in registry.get_all(project_id=project_id):
                 if rec.file_name in seen_names:
                     continue
                 seen_names.add(rec.file_name)
@@ -134,7 +143,10 @@ class FileService:
         try:
             from src.document_rag import get_document_rag
             rag = get_document_rag()
-            rag_lookup = {fname: info for fname, info in rag.file_registry.items()}
+            rag_lookup = {
+                fname: info for fname, info in rag.file_registry.items()
+                if not project_id or (info.get("project_id", "") or "") == project_id
+            }
             for f in files:
                 info = rag_lookup.get(f["name"])
                 if info:
@@ -149,6 +161,8 @@ class FileService:
             catalog = get_catalog()
             catalog_lookup = {}
             for entry in catalog.entries.values():
+                if project_id and (getattr(entry, "project_id", "") or "") != project_id:
+                    continue
                 fname = Path(entry.source_file).name
                 catalog_lookup[fname] = entry
             for f in files:
@@ -199,10 +213,22 @@ class FileService:
 
         return files
 
-    def delete(self, file_id: str) -> bool:
+    def delete(self, file_id: str, project_id: str = "") -> bool:
         """Delete file by ID. Returns True if found and deleted."""
+        try:
+            from src.document_registry import get_document_registry
+            rec = get_document_registry().get(file_id)
+            if rec and project_id and getattr(rec, "project_id", "") != project_id:
+                return False
+            if rec and Path(rec.file_path).is_file():
+                Path(rec.file_path).unlink(missing_ok=True)
+                return True
+        except Exception:
+            pass
         # Search through directories
-        for dir_path in [DOCUMENTS_DIR, TABLES_DIR, EMAILS_DIR]:
+        dirs = ([self._target_dir(project_id, t) for t in ("document", "data", "email")]
+                if project_id else [Path(DOCUMENTS_DIR), Path(TABLES_DIR), Path(EMAILS_DIR)])
+        for dir_path in dirs:
             d = Path(dir_path)
             if not d.exists():
                 continue

@@ -153,7 +153,7 @@ class UploadResult(BaseModel):
 class IndexingStatus(BaseModel):
     file_id: str
     filename: str
-    status: str = "pending"       # pending | indexing | completed | error
+    status: str = "queued"        # queued | extracting | ocr | metadata | chunking | embedding | indexing | ready | failed
     progress: float = 0.0
     error: Optional[str] = None
     details: dict = Field(default_factory=dict)

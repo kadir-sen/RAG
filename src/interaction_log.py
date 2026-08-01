@@ -131,12 +131,13 @@ class InteractionLog:
 
     def recent(self, limit: int = 200) -> List[Dict]:
         rows = self._con.execute(
-            "SELECT query, route, source_files, scope, verdict FROM interactions "
+            "SELECT interaction_id, ts, username, query, route, source_files, scope, verdict FROM interactions "
             "ORDER BY ts DESC LIMIT ?", [limit],
         ).fetchall()
-        return [{"query": r[0], "route": r[1],
-                 "source_files": json.loads(r[2] or "[]"),
-                 "scope": json.loads(r[3] or "{}"), "verdict": r[4]} for r in rows]
+        return [{"interaction_id": r[0], "ts": r[1], "username": r[2],
+                 "query": r[3], "route": r[4],
+                 "source_files": json.loads(r[5] or "[]"),
+                 "scope": json.loads(r[6] or "{}"), "verdict": r[7]} for r in rows]
 
 
 _instance: Optional[InteractionLog] = None

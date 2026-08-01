@@ -72,6 +72,7 @@ indexing_progress = IndexingProgress()
 # without threading file_id through every function signature. Per-thread:
 # concurrent indexing jobs each see their own value.
 current_file_var: ContextVar[str] = ContextVar("indexing_file", default="")
+current_job_var: ContextVar[str] = ContextVar("indexing_job", default="")
 
 
 def report(stage: str, pct: float) -> None:
@@ -82,5 +83,14 @@ def report(stage: str, pct: float) -> None:
         fid = current_file_var.get()
         if fid:
             indexing_progress.update(fid, float(pct), stage=stage)
+        job_id = current_job_var.get()
+        if job_id:
+            from backend.tasks.ingestion_jobs import get_ingestion_job_store
+            canonical = {
+                "searchable": "extracting", "enriching": "metadata",
+                "tables": "metadata", "chunks": "chunking", "vectors": "embedding",
+                "complete": "ready",
+            }.get(stage, stage)
+            get_ingestion_job_store().update(job_id, stage=canonical, progress=float(pct))
     except Exception:
         pass

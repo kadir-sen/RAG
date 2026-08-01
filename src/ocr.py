@@ -34,6 +34,10 @@ from .config import (
     OCR_MIN_CHARS_THRESHOLD,
     OCR_MIN_ALPHA_RATIO,
     OCR_IMAGE_COVERAGE_THRESHOLD,
+    OCR_VISION_FALLBACK_ENABLED,
+    OCR_VISION_CONFIDENCE_THRESHOLD,
+    GOOGLE_API_KEY,
+    GEMINI_MODEL,
 )
 from .logger import logger
 
@@ -507,6 +511,18 @@ class OCRPipeline:
             if confidence and confidence < 0.5:
                 warnings.append(f"Low OCR confidence: {confidence}")
 
+            if (
+                OCR_VISION_FALLBACK_ENABLED
+                and GOOGLE_API_KEY
+                and (confidence is None or confidence < OCR_VISION_CONFIDENCE_THRESHOLD
+                     or len(text) < 10)
+            ):
+                refined = self._vision_fallback(img_data)
+                if refined and len(refined) >= max(10, int(len(text) * 0.75)):
+                    text = refined
+                    confidence = max(confidence or 0.0, 0.80)
+                    warnings.append("Low-confidence page refined with selective multimodal OCR")
+
             result = OCRResult(
                 text=text,
                 confidence=confidence,
@@ -526,6 +542,28 @@ class OCRPipeline:
                 language=self.language,
                 warnings=[f"OCR error: {str(e)[:100]}"]
             )
+
+    def _vision_fallback(self, image_bytes: bytes) -> str:
+        """Use the quality model only for pages Tesseract could not read well."""
+        try:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=GOOGLE_API_KEY)
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    "Transcribe this construction/legal document page exactly. "
+                    "Preserve dates, reference numbers, names, amounts and paragraph order. "
+                    "Do not summarize, infer, translate, or add commentary.",
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                ],
+                config=types.GenerateContentConfig(max_output_tokens=8192),
+            )
+            return self._normalize_text(response.text or "")
+        except Exception as exc:
+            logger.warning(f"   Selective multimodal OCR failed: {exc}")
+            return ""
 
     def _normalize_text(self, text: str) -> str:
         """Clean up OCR output text."""

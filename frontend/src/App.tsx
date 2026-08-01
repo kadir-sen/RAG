@@ -7,11 +7,14 @@ import ChatPage from './pages/ChatPage';
 import LoginPage from './pages/LoginPage';
 import ModulePickerPage from './pages/ModulePickerPage';
 import ProtectedRoute from './components/auth/ProtectedRoute';
+import ProjectRequired from './components/auth/ProjectRequired';
+import ProjectsPage from './pages/ProjectsPage';
 
 const SettingsModal = lazy(() => import('./components/shared/SettingsModal'));
 /* Its own area, and a heavy one (timeline + viewer) — not worth carrying in
    the picker's bundle for the visits that never open it. */
 const ChronologyPage = lazy(() => import('./pages/ChronologyPage'));
+const ForensicPage = lazy(() => import('./pages/ForensicPage'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -83,16 +86,18 @@ export default function App() {
                 </ProtectedRoute>
               }
             >
-              <Route path="/" element={<ModulePickerPage />} />
+              <Route path="/projects" element={<ProjectsPage />} />
+              <Route path="/" element={<ProjectRequired><ModulePickerPage /></ProjectRequired>} />
               <Route
                 path="/chronology"
                 element={
                   <Suspense fallback={null}>
-                    <ChronologyPage />
+                    <ProjectRequired><ChronologyPage /></ProjectRequired>
                   </Suspense>
                 }
               />
-              <Route path="/chat" element={<ChatPage />} />
+              <Route path="/chat" element={<ProjectRequired><ChatPage /></ProjectRequired>} />
+              <Route path="/forensic" element={<ProjectRequired><Suspense fallback={null}><ForensicPage /></Suspense></ProjectRequired>} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

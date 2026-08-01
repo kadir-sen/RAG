@@ -7,6 +7,7 @@ from typing import List, Optional, Set
 from fastapi import APIRouter, HTTPException, Depends
 
 from backend.core.security import get_current_user, UserContext
+from backend.core.projects import ProjectContext, get_current_project
 from backend.models.responses import (
     LibraryClusterSummary,
     LibraryDocument,
@@ -34,7 +35,7 @@ _EMAIL_EXTS = {".eml", ".msg"}
 _DATA_EXTS = {".xlsx", ".xls", ".csv"}
 
 
-def _vectors_only_library_docs(known_names: Set[str],
+def _vectors_only_library_docs(known_names: Set[str], project_id: str = "",
                                limit: int = _VECTORS_ONLY_LIMIT) -> List[LibraryDocument]:
     """Documents that live only in the vector/chunk store (ingested without a
     registry entry — e.g. a bulk vectors-only corpus). They are NOT in the
@@ -45,11 +46,13 @@ def _vectors_only_library_docs(known_names: Set[str],
     Read-only on the chunk store — no registry writes, safe under concurrency."""
     from src.chunk_store import get_chunk_store
     con = get_chunk_store().connection()
-    rows = con.execute(
-        "SELECT file_name FROM chunks "
-        "WHERE file_name IS NOT NULL AND file_name <> '' "
-        "GROUP BY file_name ORDER BY file_name"
-    ).fetchall()
+    sql = ("SELECT file_name FROM chunks WHERE file_name IS NOT NULL "
+           "AND file_name <> ''")
+    params = []
+    if project_id:
+        sql += " AND project_id = ?"
+        params.append(project_id)
+    rows = con.execute(sql + " GROUP BY file_name ORDER BY file_name", params).fetchall()
     out: List[LibraryDocument] = []
     for (file_name,) in rows:
         if file_name in known_names:
@@ -146,7 +149,10 @@ def _build_library_doc(r, include_notice: bool = True) -> LibraryDocument:
 
 
 @router.get("/library", response_model=List[LibraryDocument])
-async def list_library(user: UserContext = Depends(get_current_user)):
+async def list_library(
+    user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(get_current_project),
+):
     """List documents for the current user's corpus.
 
     'edinburgh' users see ONLY the bulk vectors-only documents; everyone else sees
@@ -154,6 +160,15 @@ async def list_library(user: UserContext = Depends(get_current_user)):
     (Edinburgh) libraries separate."""
     from src.document_registry import get_document_registry
     registry = get_document_registry()
+
+    # All newly created projects use project_id as the authoritative boundary.
+    # Legacy corpus tags remain below only for pre-project data migration.
+    project_records = registry.get_completed(project_id=project.project_id)
+    if project_records:
+        return [_build_library_doc(r) for r in project_records]
+    project_chunks = _vectors_only_library_docs(set(), project.project_id)
+    if project_chunks:
+        return project_chunks
 
     if _corpus_of(user) == "edinburgh":
         try:
@@ -171,13 +186,30 @@ async def list_library(user: UserContext = Depends(get_current_user)):
 
 
 @router.get("/library/summary")
-async def library_summary(user: UserContext = Depends(get_current_user)):
+async def library_summary(
+    user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(get_current_project),
+):
     """Document classification summary — count by doc_type and file_type, scoped to
     the current user's corpus (mirrors /library and /files)."""
     from src.document_registry import get_document_registry
     from collections import Counter
 
     registry = get_document_registry()
+    completed_for_project = registry.get_completed(project_id=project.project_id)
+    if completed_for_project:
+        by_file_type = Counter(r.file_type for r in completed_for_project)
+        return {
+            "total_files": len(completed_for_project),
+            "by_file_type": dict(by_file_type),
+            "by_doc_type": {},
+            "total_tables": sum(len(r.table_names) for r in completed_for_project),
+        }
+    project_chunk_docs = _vectors_only_library_docs(set(), project.project_id)
+    if project_chunk_docs:
+        by_file_type = Counter(d.file_type for d in project_chunk_docs)
+        return {"total_files": len(project_chunk_docs), "by_file_type": dict(by_file_type),
+                "by_doc_type": {}, "total_tables": 0}
 
     # 'edinburgh' users: stats from the bulk vectors-only corpus (chunk store),
     # so the home PROJECT LIBRARY widget reflects their own documents, not the demo.
@@ -254,7 +286,9 @@ async def library_summary(user: UserContext = Depends(get_current_user)):
 
 
 @router.get("/library/clusters", response_model=List[LibraryClusterSummary])
-async def list_library_clusters():
+async def list_library_clusters(
+    project: ProjectContext = Depends(get_current_project),
+):
     """List topic clusters with doc counts and sample filenames."""
     from src.document_clusterer import get_clusterer
     from src.document_registry import get_document_registry
@@ -264,7 +298,8 @@ async def list_library_clusters():
 
     # Build a quick map: cluster_id -> list of file_names (first 3)
     samples: dict[str, list[str]] = {}
-    for r in registry.get_completed():
+    project_records = registry.get_completed(project_id=project.project_id)
+    for r in project_records:
         cid = getattr(r, "cluster_id", None)
         if not cid:
             continue
@@ -273,7 +308,10 @@ async def list_library_clusters():
             bucket.append(r.file_name)
 
     out: List[LibraryClusterSummary] = []
+    allowed = set(samples)
     for c in clusterer.list_clusters():
+        if c["cluster_id"] not in allowed:
+            continue
         out.append(LibraryClusterSummary(
             cluster_id=c["cluster_id"],
             label=c["label"],
@@ -285,14 +323,17 @@ async def list_library_clusters():
 
 
 @router.post("/library/clusters/recompute")
-async def recompute_library_clusters(force: bool = False):
+async def recompute_library_clusters(
+    force: bool = False,
+    project: ProjectContext = Depends(get_current_project),
+):
     """Trigger a full re-cluster in the background. Returns immediately."""
     from src.document_clusterer import get_clusterer
 
     clusterer = get_clusterer()
     thread = threading.Thread(
         target=clusterer.cluster_all,
-        kwargs={"force": force},
+        kwargs={"force": force, "project_id": project.project_id},
         daemon=True,
     )
     thread.start()
@@ -300,11 +341,14 @@ async def recompute_library_clusters(force: bool = False):
 
 
 @router.get("/library/{doc_id}", response_model=LibraryDocument)
-async def get_library_document(doc_id: str):
+async def get_library_document(
+    doc_id: str,
+    project: ProjectContext = Depends(get_current_project),
+):
     """Get a single document's metadata from the library."""
     from src.document_registry import get_document_registry
     registry = get_document_registry()
     rec = registry.get(doc_id)
-    if not rec:
+    if not rec or (getattr(rec, "project_id", "") or "") != project.project_id:
         raise HTTPException(404, "Document not found in library")
     return _build_library_doc(rec)

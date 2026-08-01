@@ -8,7 +8,15 @@ from fastapi import FastAPI
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await asyncio.to_thread(_startup_sync)
-    yield
+    from backend.tasks.ingestion_jobs import start_ingestion_workers, stop_ingestion_workers
+    from backend.tasks.report_jobs import start_report_workers, stop_report_workers
+    start_ingestion_workers()
+    start_report_workers()
+    try:
+        yield
+    finally:
+        stop_ingestion_workers()
+        stop_report_workers()
 
 
 def _startup_sync():
@@ -146,17 +154,13 @@ def _startup_sync():
     except Exception as e:
         print(f"[Startup] Registry hydration: {e}")
 
-    # ── Step 7: Recover files left mid-index by a crash/deploy/restart ──
-    # FastAPI BackgroundTasks aren't durable; a restart leaves any in-flight upload
-    # stuck at status="processing". Re-queue those (file still on disk) so they don't
-    # hang forever. The ingest semaphore throttles how many index at once.
+    # ── Step 7: Recover legacy files left mid-index by an older deployment ──
+    # New uploads already live in the durable ingestion_jobs queue. This pass
+    # only adopts old registry records that predate it.
     try:
         from pathlib import Path
-        import threading
         from src.document_registry import get_document_registry
-        from src.file_router import delete_document
-        from src.document_rag import generate_doc_id
-        from backend.tasks.indexing import index_file_background
+        from backend.tasks.ingestion_jobs import get_ingestion_job_store
 
         registry = get_document_registry()
         stuck = [r for r in registry.get_all() if r.status in ("processing", "error")]
@@ -165,15 +169,10 @@ def _startup_sync():
             fp = getattr(rec, "file_path", "")
             if not fp or not Path(fp).exists():
                 continue  # vectors-only / missing file → can't re-index, leave as-is
-            try:
-                delete_document(rec.doc_id)
-            except Exception:
-                pass
-            threading.Thread(
-                target=index_file_background,
-                args=(generate_doc_id(fp), fp),
-                daemon=True,
-            ).start()
+            project_id = getattr(rec, "project_id", "") or ""
+            if not project_id:
+                continue
+            get_ingestion_job_store().enqueue(project_id, rec.doc_id, fp, rec.file_name)
             requeued += 1
         if requeued:
             print(f"[Startup] Re-queued {requeued} stuck file(s) for indexing")

@@ -247,7 +247,7 @@ export interface UploadResult {
 export interface IndexingStatus {
   file_id: string;
   filename: string;
-  status: 'pending' | 'indexing' | 'completed' | 'error';
+  status: 'queued' | 'extracting' | 'ocr' | 'metadata' | 'chunking' | 'embedding' | 'indexing' | 'ready' | 'failed' | 'unknown';
   progress: number;
   error: string | null;
   details: Record<string, unknown>;

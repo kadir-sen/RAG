@@ -22,6 +22,7 @@ COLLECTIONS_FILE = STORAGE_DIR / "knowledge_collections.json"
 class KnowledgeCollection:
     collection_id: str
     name: str
+    project_id: str = ""
     description: str = ""
     document_ids: List[str] = field(default_factory=list)
     created_at: str = ""
@@ -62,13 +63,14 @@ class KnowledgeStore:
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    def create(self, name: str, description: str = "") -> KnowledgeCollection:
+    def create(self, name: str, description: str = "", project_id: str = "") -> KnowledgeCollection:
         with self._file_lock:
             col_id = f"col_{uuid.uuid4().hex[:8]}"
             now = datetime.now().isoformat()
             col = KnowledgeCollection(
                 collection_id=col_id,
                 name=name,
+                project_id=project_id,
                 description=description,
                 created_at=now,
                 updated_at=now,
@@ -78,11 +80,15 @@ class KnowledgeStore:
             logger.info(f"[Knowledge] Created collection: {name} ({col_id})")
             return col
 
-    def get(self, col_id: str) -> Optional[KnowledgeCollection]:
-        return self._collections.get(col_id)
+    def get(self, col_id: str, project_id: str = "") -> Optional[KnowledgeCollection]:
+        col = self._collections.get(col_id)
+        if col and project_id and col.project_id != project_id:
+            return None
+        return col
 
-    def list_all(self) -> List[KnowledgeCollection]:
-        items = list(self._collections.values())
+    def list_all(self, project_id: str = "") -> List[KnowledgeCollection]:
+        items = [c for c in self._collections.values()
+                 if not project_id or c.project_id == project_id]
         items.sort(key=lambda c: c.updated_at, reverse=True)
         return items
 
@@ -91,10 +97,13 @@ class KnowledgeStore:
         col_id: str,
         name: Optional[str] = None,
         description: Optional[str] = None,
+        project_id: str = "",
     ) -> Optional[KnowledgeCollection]:
         with self._file_lock:
             col = self._collections.get(col_id)
             if not col:
+                return None
+            if project_id and col.project_id != project_id:
                 return None
             if name is not None:
                 col.name = name
@@ -104,19 +113,24 @@ class KnowledgeStore:
             self._save()
             return col
 
-    def delete(self, col_id: str) -> bool:
+    def delete(self, col_id: str, project_id: str = "") -> bool:
         with self._file_lock:
-            if col_id in self._collections:
+            if col_id in self._collections and (
+                not project_id or self._collections[col_id].project_id == project_id
+            ):
                 del self._collections[col_id]
                 self._save()
                 logger.info(f"[Knowledge] Deleted collection: {col_id}")
                 return True
             return False
 
-    def add_documents(self, col_id: str, doc_ids: List[str]) -> Optional[KnowledgeCollection]:
+    def add_documents(self, col_id: str, doc_ids: List[str],
+                      project_id: str = "") -> Optional[KnowledgeCollection]:
         with self._file_lock:
             col = self._collections.get(col_id)
             if not col:
+                return None
+            if project_id and col.project_id != project_id:
                 return None
             existing = set(col.document_ids)
             for did in doc_ids:
@@ -127,9 +141,12 @@ class KnowledgeStore:
             self._save()
             return col
 
-    def remove_document(self, col_id: str, doc_id: str) -> Optional[KnowledgeCollection]:
+    def remove_document(self, col_id: str, doc_id: str,
+                        project_id: str = "") -> Optional[KnowledgeCollection]:
         with self._file_lock:
             col = self._collections.get(col_id)
+            if col and project_id and col.project_id != project_id:
+                return None
             if not col or doc_id not in col.document_ids:
                 return col
             col.document_ids.remove(doc_id)
