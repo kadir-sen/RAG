@@ -68,6 +68,9 @@ class LexicalIndex:
 
         Each item: {chunk_id, doc_id, file_name, page_number, text, lex_score}.
         """
+        project_id = (project_id or "").strip()
+        if not project_id:
+            raise ValueError("project_id is required for lexical search")
         query = (query or "").strip()
         if not query:
             return []
@@ -81,9 +84,8 @@ class LexicalIndex:
             try:
                 where = "score IS NOT NULL"
                 params = [query]
-                if project_id:
-                    where += " AND project_id = ?"
-                    params.append(project_id)
+                where += " AND project_id = ?"
+                params.append(project_id)
                 params.append(top_k)
                 rows = con.execute(
                     "SELECT chunk_id, doc_id, file_name, page_number, text, "
@@ -108,12 +110,12 @@ class LexicalIndex:
                 ["(CASE WHEN LOWER(text) LIKE ? THEN 1 ELSE 0 END)" for _ in tokens]
             )
             params = [f"%{t}%" for t in tokens]
-            project_clause = " AND project_id = ?" if project_id else ""
+            project_clause = " AND project_id = ?"
             sql = (
                 f"SELECT chunk_id, doc_id, file_name, page_number, text, ({score_expr}) AS score "
                 f"FROM chunks WHERE {score_expr} > 0{project_clause} ORDER BY score DESC LIMIT ?"
             )
-            tail = ([project_id] if project_id else []) + [top_k]
+            tail = [project_id, top_k]
             rows = con.execute(sql, params + params + tail).fetchall()
             return [
                 {"chunk_id": r[0], "doc_id": r[1], "file_name": r[2],
@@ -131,6 +133,9 @@ class LexicalIndex:
 
         Aggregates three keyword sources, normalized to a 0..1 boost per doc_id.
         """
+        project_id = (project_id or "").strip()
+        if not project_id:
+            raise ValueError("project_id is required for lexical document matching")
         terms = [t for t in (terms or []) if t and len(t) >= 2]
         if not terms:
             return {}
@@ -140,6 +145,8 @@ class LexicalIndex:
         try:
             from .light_graph import get_light_graph
             for node in get_light_graph().search_broad(terms, limit=limit):
+                if (node.get("project_id") or "") != project_id:
+                    continue
                 did = node.get("doc_id")
                 if did:
                     scores[did] = scores.get(did, 0.0) + float(node.get("relevance_score", 1))

@@ -52,7 +52,9 @@ def main() -> int:
 
     off = None
     seen = inserted = 0
-    payload_fields = ["_node_content", "text", "file_name", "page_number", "doc_id"]
+    payload_fields = [
+        "_node_content", "text", "file_name", "page_number", "doc_id", "project_id",
+    ]
     while True:
         points, off = client.scroll(args.collection, limit=args.batch, offset=off,
                                      with_payload=payload_fields, with_vectors=False)
@@ -60,13 +62,15 @@ def main() -> int:
         for p in points:
             md = p.payload or {}
             text = _text_from_payload(md)
-            if not text:
+            project_id = str(md.get("project_id") or "").strip()
+            if not text or not project_id:
                 continue
             rows.append({
                 "doc_id": md.get("doc_id", ""),
                 "file_name": md.get("file_name", "Unknown"),
                 "page_number": md.get("page_number", 1),
                 "text": text,
+                "project_id": project_id,
             })
         seen += len(points)
         inserted += store.add_chunks(rows)

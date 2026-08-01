@@ -218,6 +218,7 @@ export default function ProjectsPage() {
                     </div>
                     <p className="mt-2 font-mono text-[9px] text-[var(--text-secondary)]">{project.stats.files.document} docs · {project.stats.files.email} mail · {project.stats.files.data} sheets</p>
                     <p className="mt-1 text-[10px] text-[var(--text-muted)]">{project.stats.report_ready ? 'Ready for reports' : `${project.stats.queued + project.stats.processing} remaining · ETA ${duration(project.stats.eta_seconds)}`}</p>
+                    <p className="mt-1 font-mono text-[8px] uppercase text-[var(--text-muted)]">Vectors · {project.stats.vector.status} · {project.stats.vector.point_count.toLocaleString()}</p>
                   </button>
                 ))}
                 {!loading && projects.length === 0 && <p className="py-5 text-[11px] text-[var(--text-secondary)]">Create the first project to begin.</p>}
@@ -249,6 +250,7 @@ export default function ProjectsPage() {
                       <div className="mt-1 flex items-center gap-2">
                         <h2 className="text-[17px] font-semibold text-[var(--text-primary)]">{current.name}</h2>
                         <span className="border border-[var(--border)] px-1.5 py-0.5 font-mono text-[8px] uppercase text-[var(--text-muted)]">{current.stats.report_ready ? 'ready' : 'processing'}</span>
+                        <span className="border border-[var(--border)] px-1.5 py-0.5 font-mono text-[8px] uppercase text-[var(--text-muted)]">vector {current.stats.vector.status}</span>
                       </div>
                       <p className="mt-1 text-[11px] text-[var(--text-muted)]">Only this record is available in Chatbot, Chronology and Forensic Reports.</p>
                     </div>
@@ -261,11 +263,12 @@ export default function ProjectsPage() {
                     )}
                   </div>
 
-                  <div className="grid sm:grid-cols-4 border-b border-[var(--border)]">
+                  <div className="grid sm:grid-cols-5 border-b border-[var(--border)]">
                     {[
                       ['Documents', current.stats.files.document],
                       ['Mail', current.stats.files.email],
                       ['Spreadsheets', current.stats.files.data],
+                      ['Vector points', current.stats.vector.point_count],
                       ['Remaining', current.stats.queued + current.stats.processing],
                     ].map(([label, value]) => (
                       <div key={label} className="p-4 border-b sm:border-b-0 sm:border-r last:border-r-0 border-[var(--border)]">

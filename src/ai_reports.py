@@ -106,8 +106,8 @@ def retrieve_evidence(project_id: str, questions: Sequence[str], top_k: int = 12
     def dense(question: str) -> List[Dict]:
         try:
             return (rag.query(
-                question, top_k=top_k, payload_filters={"project_id": project_id},
-                synthesize=False, rerank=True,
+                question, top_k=top_k, synthesize=False, rerank=True,
+                project_id=project_id,
             ) or {}).get("sources", [])
         except Exception:
             return []

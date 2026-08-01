@@ -31,6 +31,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", default=str(ROOT / "data" / "edinburgh_tram" / "manifest.csv"))
     parser.add_argument("--project", default="Edinburgh Tram Inquiry")
+    parser.add_argument("--project-id", required=True)
     parser.add_argument("--collection", default=os.getenv("QDRANT_COLLECTION", "coair"))
     parser.add_argument("--qdrant-url", default=os.getenv("QDRANT_URL", "http://localhost:6333"))
     parser.add_argument("--limit", type=int, default=0)
@@ -68,9 +69,16 @@ def main() -> int:
             "doc_type": (r.get("category") or "").strip(),
             "date": (r.get("date") or "").strip(),
             "title": (r.get("title") or "").strip()[:300],
+            "project_id": args.project_id,
         }
-        flt = qmodels.Filter(must=[qmodels.FieldCondition(
-            key="file_name", match=qmodels.MatchValue(value=file_name))])
+        flt = qmodels.Filter(must=[
+            qmodels.FieldCondition(
+                key="project_id", match=qmodels.MatchValue(value=args.project_id),
+            ),
+            qmodels.FieldCondition(
+                key="file_name", match=qmodels.MatchValue(value=file_name),
+            ),
+        ])
         try:
             # wait=False keeps it fast; payload is merged onto all of the doc's points.
             client.set_payload(collection_name=args.collection, payload=payload,

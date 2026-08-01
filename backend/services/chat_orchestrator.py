@@ -103,7 +103,7 @@ class ChatOrchestrator:
 
         # 3. Build email context for correspondence mode (email files only)
         if email_ids:
-            email_context = self._build_email_context(email_ids)
+            email_context = self._build_email_context(email_ids, project_id)
             if email_context:
                 augmented = f"{email_context}\n\n{augmented}"
                 # Also scope doc_ids to selected emails for RAG
@@ -115,7 +115,7 @@ class ChatOrchestrator:
         # selection and PDF "conversations" picked in correspondence mode (those
         # are not .eml/.msg, so the email path skips them and they land here).
         doc_context = self._build_document_context(
-            list(dict.fromkeys((email_ids or []) + explicit_doc_ids))
+            list(dict.fromkeys((email_ids or []) + explicit_doc_ids)), project_id,
         )
         if doc_context:
             augmented = f"{doc_context}\n\n{augmented}"
@@ -159,7 +159,7 @@ class ChatOrchestrator:
         # contract terms / costs / prior decisions, not just the emails. Conversation
         # state is already in `augmented` (step 2).
         if email_ids and self._is_draft_intent(query):
-            support = self._build_draft_support_context(query)
+            support = self._build_draft_support_context(query, project_id=project_id)
             if support:
                 augmented = f"{augmented}\n\n{support}"
 
@@ -343,14 +343,19 @@ class ChatOrchestrator:
     def _is_draft_intent(self, query: str) -> bool:
         return bool(self._DRAFT_INTENT_RE.search(query or ""))
 
-    def _build_draft_support_context(self, query: str, max_facts: int = 6) -> str:
+    def _build_draft_support_context(
+        self, query: str, max_facts: int = 6, *, project_id: str,
+    ) -> str:
         """Corpus-scoped supporting facts for a reply draft. Retrieve-only (no
         synthesis LLM) over the WHOLE corpus (NOT the selected emails) so the draft
         can ground itself in contract terms / costs / prior decisions. corpus_var is
         already set by the caller, so this stays within the user's corpus."""
         try:
             from src.document_rag import get_document_rag
-            r = get_document_rag().query(query, top_k=max_facts * 2, synthesize=False)
+            r = get_document_rag().query(
+                query, top_k=max_facts * 2, synthesize=False,
+                project_id=project_id,
+            )
         except Exception:
             return ""
         srcs = (r or {}).get("sources", []) if isinstance(r, dict) else []
@@ -373,7 +378,7 @@ class ChatOrchestrator:
                 "reply — cite the file where relevant; never contradict the selected "
                 "emails):\n" + "\n".join(lines))
 
-    def _build_email_context(self, email_ids: List[str]) -> str:
+    def _build_email_context(self, email_ids: List[str], project_id: str) -> str:
         """Build full email body context from selected email IDs for correspondence mode."""
         try:
             from src.document_registry import get_document_registry
@@ -386,7 +391,7 @@ class ChatOrchestrator:
             emails = []
             for doc_id in email_ids:
                 rec = registry.get(doc_id)
-                if not rec:
+                if not rec or (getattr(rec, "project_id", "") or "") != project_id:
                     continue
 
                 # Only real email files belong here. Non-email selections (e.g. a
@@ -428,6 +433,7 @@ class ChatOrchestrator:
                                 f"full content of {rec.file_name}",
                                 top_k=10,
                                 doc_ids=[doc_id],
+                                project_id=project_id,
                             )
                             body = result.get("answer", "")
                     except Exception:
@@ -489,7 +495,7 @@ class ChatOrchestrator:
     _DOC_CONTEXT_PER_DOC_MAX = 8000
     _DOC_CONTEXT_TOTAL_MAX = 16000
 
-    def _build_document_context(self, doc_ids: List[str]) -> str:
+    def _build_document_context(self, doc_ids: List[str], project_id: str) -> str:
         """Inject the full OCR/extracted text of explicitly selected NON-email
         documents (PDF/DOCX/TXT) into the prompt.
 
@@ -521,7 +527,7 @@ class ChatOrchestrator:
                 continue
             seen.add(doc_id)
             rec = registry.get(doc_id)
-            if not rec:
+            if not rec or (getattr(rec, "project_id", "") or "") != project_id:
                 continue
             file_name = rec.file_name or doc_id
             fl = file_name.lower()
@@ -534,13 +540,15 @@ class ChatOrchestrator:
             text = ""
             try:
                 rows = con.execute(
-                    "SELECT text FROM chunks WHERE doc_id = ? ORDER BY page_number",
-                    [doc_id],
+                    "SELECT text FROM chunks WHERE project_id=? AND doc_id=? "
+                    "ORDER BY page_number",
+                    [project_id, doc_id],
                 ).fetchall()
                 if not rows and file_name:
                     rows = con.execute(
-                        "SELECT text FROM chunks WHERE file_name = ? ORDER BY page_number",
-                        [file_name],
+                        "SELECT text FROM chunks WHERE project_id=? AND file_name=? "
+                        "ORDER BY page_number",
+                        [project_id, file_name],
                     ).fetchall()
                 text = "\n\n".join((r[0] or "") for r in rows).strip()
             except Exception:

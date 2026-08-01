@@ -106,6 +106,8 @@ class ChunkStore:
                         project_id = get_current_project_id()
                     except Exception:
                         pass
+                if not project_id:
+                    raise ValueError("project_id is required for chunk storage")
                 cid = _chunk_id(fname, page, text, project_id)
                 try:
                     self._con.execute(
@@ -124,16 +126,16 @@ class ChunkStore:
         return inserted
 
     def delete_by_file(self, file_name: str, project_id: str = "") -> int:
+        project_id = (project_id or "").strip()
+        if not project_id:
+            raise ValueError("project_id is required for chunk deletion")
         with self._db_lock:
             try:
                 before = self.count()
-                if project_id:
-                    self._con.execute(
-                        "DELETE FROM chunks WHERE file_name = ? AND project_id = ?",
-                        [file_name, project_id],
-                    )
-                else:
-                    self._con.execute("DELETE FROM chunks WHERE file_name = ?", [file_name])
+                self._con.execute(
+                    "DELETE FROM chunks WHERE file_name = ? AND project_id = ?",
+                    [file_name, project_id],
+                )
                 removed = before - self.count()
                 if removed:
                     self._dirty = True

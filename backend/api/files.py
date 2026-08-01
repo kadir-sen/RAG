@@ -100,7 +100,7 @@ def _delete_legacy_project_file(file_id: str, project_id: str) -> dict | None:
     # clear_file is project-filtered through the request's ProjectContext and
     # removes both Qdrant points and mirrored lexical chunks.
     from src.document_rag import get_document_rag
-    get_document_rag().clear_file(file_name)
+    get_document_rag().clear_file(file_name, project_id=project_id)
     result["rag_cleaned"] = True
 
     try:
@@ -235,6 +235,8 @@ async def upload_file(
             status="completed",
         )
     from backend.tasks.ingestion_jobs import get_ingestion_job_store
+    from src.project_store import get_project_store
+    get_project_store().set_vector_state(project.project_id, "provisioning")
     job = get_ingestion_job_store().enqueue(
         project.project_id, file_id, saved_path, file.filename or "upload",
     )
@@ -385,14 +387,7 @@ async def get_stats(project: ProjectContext = Depends(get_current_project)):
     try:
         from src.document_rag import get_document_rag
         rag = get_document_rag()
-        vectors = len(rag.file_registry) if rag.file_registry else 0
-        # Try getting actual vector count from index
-        if hasattr(rag, 'index') and rag.index is not None:
-            try:
-                stats = rag.index._pinecone_index.describe_index_stats()
-                vectors = stats.get("total_vector_count", vectors)
-            except Exception:
-                pass
+        vectors = rag.count_project_points(project.project_id)
     except Exception:
         pass
     try:

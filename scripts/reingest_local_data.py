@@ -57,6 +57,7 @@ def main() -> int:
     parser.add_argument("--corpus", default="",
                         help="Tag ingested tables/docs with this corpus for isolation "
                              "(e.g. 'edinburgh'). Empty → 'demo' default.")
+    parser.add_argument("--project-id", required=True)
     args = parser.parse_args()
 
     # Set the ingest corpus ContextVar so catalog.add_entry / the SQL loader tag
@@ -91,13 +92,19 @@ def main() -> int:
     t0 = time.time()
     for i, fp in enumerate(files, 1):
         rel = fp.relative_to(ROOT)
-        if _rag is not None and _rag.fetch_doc_vectors(fp.name, max_chunks=1):
+        from src.document_rag import generate_doc_id
+        file_id = generate_doc_id(str(fp))
+        if _rag is not None and _rag.fetch_doc_vectors(
+            fp.name, project_id=args.project_id, file_id=file_id, max_chunks=1,
+        ):
             skipped += 1
             if skipped % 200 == 0:
                 print(f"  [{i:4d}/{len(files)}] … {skipped} already-indexed skipped")
             continue
         try:
-            result = route_file(str(fp))
+            result = route_file(
+                str(fp), project_id=args.project_id, file_id=file_id,
+            )
             tag = "✓" if result.success else "✗"
             extra = ""
             if result.notice_extracted:
@@ -128,7 +135,7 @@ def main() -> int:
     print("\nRunning final cluster_all(force=True)…")
     from src.document_clusterer import get_clusterer
     clusterer = get_clusterer()
-    result = clusterer.cluster_all(force=True)
+    result = clusterer.cluster_all(force=True, project_id=args.project_id)
     print(f"\n✅ Clusters: {len(result)}")
     for cid, docs in sorted(result.items(), key=lambda x: -len(x[1])):
         entry = clusterer._clusters.get(cid)  # type: ignore[attr-defined]

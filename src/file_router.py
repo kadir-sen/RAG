@@ -52,7 +52,9 @@ class ProcessingResult:
     schema_match_details: List[Dict[str, Any]] = field(default_factory=list)
 
 
-def route_file(file_path: str) -> ProcessingResult:
+def route_file(
+    file_path: str, *, project_id: str, file_id: str = "",
+) -> ProcessingResult:
     """
     Route a file to the correct processing pipeline based on extension.
 
@@ -62,6 +64,9 @@ def route_file(file_path: str) -> ProcessingResult:
     Returns:
         ProcessingResult with processing outcome
     """
+    project_id = (project_id or "").strip()
+    if not project_id:
+        raise ValueError("project_id is required for file routing")
     ext = Path(file_path).suffix.lower()
     file_type = EXTENSION_MAP.get(ext, "unknown")
 
@@ -81,13 +86,15 @@ def route_file(file_path: str) -> ProcessingResult:
         file_size_kb=file_size_kb,
         file_type=file_type,
         extension=ext,
+        project_id=project_id,
     )
     doc_id = record.doc_id
+    file_id = file_id or doc_id
 
     if file_type == "document":
-        result = _process_document(file_path)
+        result = _process_document(file_path, project_id=project_id, file_id=file_id)
     elif file_type == "email":
-        result = _process_email(file_path)
+        result = _process_email(file_path, project_id=project_id, file_id=file_id)
     elif file_type == "data":
         result = _process_data_file(file_path)
     else:
@@ -129,6 +136,7 @@ def route_file(file_path: str) -> ProcessingResult:
 
 
 def _enrich_document_llm(file_path: str, full_text: str,
+                         *, project_id: str, file_id: str,
                          notice_summary: Optional[dict] = None,
                          set_scope_payload: bool = True) -> None:
     """Generate a one-line summary + 3-5 topic tags for a document at ingest time.
@@ -152,8 +160,6 @@ def _enrich_document_llm(file_path: str, full_text: str,
         from . import llm_client
         from .document_rag import generate_doc_id, get_document_rag
         from .document_registry import get_document_registry
-        from .project_context import get_current_project_id
-        project_id = get_current_project_id()
 
         # One unified, cheap call returns everything the downstream layers need:
         # routing summary/topics + a construction doc_type (classification) + any
@@ -236,7 +242,9 @@ def _enrich_document_llm(file_path: str, full_text: str,
         scope = {"doc_type": doc_type, "date": doc_date, "project_id": project_id}
         if set_scope_payload and any(scope.values()):
             try:
-                get_document_rag().update_payload_scope(file_name, scope)
+                get_document_rag().update_payload_scope(
+                    file_name, scope, project_id=project_id, file_id=file_id,
+                )
             except Exception as e:
                 logger.debug(f"[FileRouter] scope payload skipped: {e}")
     except Exception as e:
@@ -315,7 +323,9 @@ def _learn_jargon_from_terms(new_terms: list) -> None:
         logger.warning(f"[FileRouter] jargon learning skipped: {e}")
 
 
-def _process_document(file_path: str) -> ProcessingResult:
+def _process_document(
+    file_path: str, *, project_id: str, file_id: str,
+) -> ProcessingResult:
     """Process a document file (PDF, DOCX, TXT) through RAG pipeline."""
     from .document_rag import get_document_rag
     from .data_analyzer_sql import get_data_analyzer
@@ -332,11 +342,13 @@ def _process_document(file_path: str) -> ProcessingResult:
     try:
         rag = get_document_rag()
         report("extracting", 0.10)          # OCR / text extraction (slowest stage for scans)
-        new_docs = rag.add_document(file_path)
+        new_docs = rag.add_document(
+            file_path, project_id=project_id, file_id=file_id,
+        )
 
         if new_docs:
             report("embedding", 0.55)        # chunk + local embed + Qdrant upsert + lexical
-            rag.insert_documents(new_docs)
+            rag.insert_documents(new_docs, project_id=project_id, file_id=file_id)
             result.success = True
             report("searchable", 0.78)       # ← document is now queryable; tail is enrichment only
 
@@ -385,7 +397,8 @@ def _process_document(file_path: str) -> ProcessingResult:
             # enrichment has either completed or failed non-fatally.
             report("metadata", 0.90)
             _enrich_document_llm(
-                file_path, doc_full_text, notice_summary=result.notice_summary,
+                file_path, doc_full_text, project_id=project_id, file_id=file_id,
+                notice_summary=result.notice_summary,
             )
 
             # Table extraction for PDFs (direct — skips duplicate OCR analysis).
@@ -414,7 +427,9 @@ def _process_document(file_path: str) -> ProcessingResult:
     return result
 
 
-def _process_email(file_path: str) -> ProcessingResult:
+def _process_email(
+    file_path: str, *, project_id: str, file_id: str,
+) -> ProcessingResult:
     """Process an email file (EML, MSG) - parse, index body, extract notice, handle attachments."""
     from .email_parser import EmailParser
     from .document_rag import get_document_rag
@@ -436,9 +451,11 @@ def _process_email(file_path: str) -> ProcessingResult:
                 file_path=file_path,
                 page_texts=page_texts,
                 metadata={"source_type": "email", "subject": parsed.subject},
+                project_id=project_id,
+                file_id=file_id,
             )
             if new_docs:
-                rag.insert_documents(new_docs)
+                rag.insert_documents(new_docs, project_id=project_id, file_id=file_id)
 
         # 2. Notice extraction from email body
         try:
@@ -481,7 +498,9 @@ def _process_email(file_path: str) -> ProcessingResult:
             )
 
         # 2d. LLM enrichment (Phase 2): one-line summary + topic tags for routing
-        _enrich_document_llm(file_path, email_full_text)
+        _enrich_document_llm(
+            file_path, email_full_text, project_id=project_id, file_id=file_id,
+        )
 
         # 3. Process attachments recursively
         if parsed.attachments:
@@ -492,7 +511,7 @@ def _process_email(file_path: str) -> ProcessingResult:
                 att_ext = Path(att_path).suffix.lower()
                 if att_ext in EXTENSION_MAP:
                     try:
-                        att_result = route_file(att_path)
+                        att_result = route_file(att_path, project_id=project_id)
                         result.attachment_results.append({
                             "filename": Path(att_path).name,
                             "success": att_result.success,
@@ -824,7 +843,9 @@ def delete_document(doc_id: str) -> Dict[str, Any]:
     # 3. RAG / Pinecone vectors
     try:
         from .document_rag import get_document_rag
-        get_document_rag().clear_file(record.file_name)
+        get_document_rag().clear_file(
+            record.file_name, project_id=project_id, file_id=doc_id,
+        )
         result["rag_cleaned"] = True
     except Exception as e:
         logger.warning(f"[Delete] RAG cleanup failed: {e}")

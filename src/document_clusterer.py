@@ -212,14 +212,16 @@ class DocumentClusterer:
 
         # Resolve file_name from registry — that's our actual Pinecone handle.
         file_name: Optional[str] = None
+        project_id = ""
         try:
             from .document_registry import get_document_registry
             rec = get_document_registry().get(doc_id)
             if rec is not None:
                 file_name = rec.file_name
+                project_id = (getattr(rec, "project_id", "") or "").strip()
         except Exception as e:
             logger.warning(f"[Clusterer] Registry lookup failed for {doc_id}: {e}")
-        if not file_name:
+        if not file_name or not project_id:
             return None
 
         try:
@@ -230,7 +232,10 @@ class DocumentClusterer:
             return None
 
         # Backend-agnostic: fetch raw chunk vectors for this file (Pinecone or Qdrant).
-        raw = rag.fetch_doc_vectors(file_name, max_chunks=max_chunks)
+        raw = rag.fetch_doc_vectors(
+            file_name, project_id=project_id, file_id=doc_id,
+            max_chunks=max_chunks,
+        )
         vectors: List[np.ndarray] = []
         for values in raw:
             if not values:

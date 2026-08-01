@@ -29,3 +29,21 @@ def test_embedding_profile_is_fixed_when_project_is_created(tmp_path):
     store = ProjectStore(tmp_path / "projects.db")
     project = store.create_project("Local corpus", "owner")
     assert project["embedding_profile"] == "local-bge-v1"
+
+
+def test_project_vector_lifecycle_is_durable(tmp_path):
+    store = ProjectStore(tmp_path / "projects.db")
+    project = store.create_project("Vector matter", "owner")
+    project_id = project["project_id"]
+
+    assert store.get_vector_state(project_id)["status"] == "empty"
+    store.set_vector_state(project_id, "provisioning")
+    store.set_vector_state(project_id, "indexing", point_count=0)
+    ready = store.set_vector_state(project_id, "ready", point_count=42)
+
+    assert ready["point_count"] == 42
+    assert ready["provisioned_at"]
+    assert ready["collection_name"]
+
+    assert store.archive(project_id)
+    assert store.get_vector_state(project_id)["status"] == "archived"

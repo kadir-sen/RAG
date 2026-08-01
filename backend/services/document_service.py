@@ -188,6 +188,8 @@ class DocumentService:
             from src.document_rag import get_document_rag, generate_doc_id
             rag = get_document_rag()
             for fname, info in rag.file_registry.items():
+                if (info.get("project_id", "") or "") != project_id:
+                    continue
                 stored_doc_id = info.get("doc_id", "")
                 # Match by: exact doc_id, file_name, or MD5 hash of file_name
                 import hashlib

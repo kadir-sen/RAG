@@ -116,6 +116,23 @@ def _startup_sync():
         if vec_count > 0 and not rag.index:
             rag.load_index()
             print(f"[Startup] Loaded {vec_count} vectors from {rag.backend}")
+        # Reconcile durable per-project vector readiness after restarts and
+        # migrations. Orphan points have no project_id and are intentionally
+        # excluded from every project count.
+        from src.project_store import get_project_store
+        project_store = get_project_store()
+        for project in project_store.list_all():
+            project_id = project["project_id"]
+            point_count = rag.count_project_points(project_id)
+            current = project_store.get_vector_state(project_id)
+            if point_count > 0:
+                project_store.set_vector_state(
+                    project_id, "ready", point_count=point_count,
+                )
+            elif current.get("status") not in ("provisioning", "indexing", "error"):
+                project_store.set_vector_state(
+                    project_id, "empty", point_count=0,
+                )
     except Exception as e:
         print(f"[Startup] Vector store sync: {e}")
 

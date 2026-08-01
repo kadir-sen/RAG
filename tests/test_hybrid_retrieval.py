@@ -9,15 +9,17 @@ import pytest
 from src.chunk_store import get_chunk_store, _chunk_id
 from src.lexical_index import get_lexical_index, rrf_fuse
 
+PROJECT_ID = "test-hybrid-project"
+
 
 @pytest.fixture
 def clean_store():
     cs = get_chunk_store()
     for f in ("a.pdf", "b.pdf", "c.pdf"):
-        cs.delete_by_file(f)
+        cs.delete_by_file(f, project_id=PROJECT_ID)
     yield cs
     for f in ("a.pdf", "b.pdf", "c.pdf"):
-        cs.delete_by_file(f)
+        cs.delete_by_file(f, project_id=PROJECT_ID)
 
 
 # ── chunk_store ─────────────────────────────────────────────────────────────
@@ -33,18 +35,18 @@ class TestChunkStore:
         cs = clean_store
         before = cs.count()
         n = cs.add_chunks([
-            {"doc_id": "d1", "file_name": "a.pdf", "page_number": 1, "text": "alpha text one"},
-            {"doc_id": "d1", "file_name": "a.pdf", "page_number": 2, "text": "beta text two"},
-            {"doc_id": "d1", "file_name": "a.pdf", "page_number": 1, "text": "alpha text one"},  # dup
+            {"doc_id": "d1", "file_name": "a.pdf", "page_number": 1, "text": "alpha text one", "project_id": PROJECT_ID},
+            {"doc_id": "d1", "file_name": "a.pdf", "page_number": 2, "text": "beta text two", "project_id": PROJECT_ID},
+            {"doc_id": "d1", "file_name": "a.pdf", "page_number": 1, "text": "alpha text one", "project_id": PROJECT_ID},  # dup
         ])
         assert n == 2  # duplicate skipped
         assert cs.count() == before + 2
-        assert cs.delete_by_file("a.pdf") == 2
+        assert cs.delete_by_file("a.pdf", project_id=PROJECT_ID) == 2
         assert cs.count() == before
 
     def test_empty_text_skipped(self, clean_store):
         cs = clean_store
-        assert cs.add_chunks([{"doc_id": "d1", "file_name": "a.pdf", "page_number": 1, "text": "   "}]) == 0
+        assert cs.add_chunks([{"doc_id": "d1", "file_name": "a.pdf", "page_number": 1, "text": "   ", "project_id": PROJECT_ID}]) == 0
 
     def test_chunk_id_stable(self):
         assert _chunk_id("a.pdf", 1, "x") == _chunk_id("a.pdf", 1, "x")
@@ -57,18 +59,22 @@ class TestLexicalSearch:
         cs = clean_store
         cs.add_chunks([
             {"doc_id": "d1", "file_name": "a.pdf", "page_number": 1,
-             "text": "Extension of time EOT delay notice for Block A concrete works"},
+             "text": "Extension of time EOT delay notice for Block A concrete works", "project_id": PROJECT_ID},
             {"doc_id": "d1", "file_name": "a.pdf", "page_number": 2,
-             "text": "Liquidated damages clause 12.3 payment terms and conditions"},
+             "text": "Liquidated damages clause 12.3 payment terms and conditions", "project_id": PROJECT_ID},
             {"doc_id": "d2", "file_name": "b.pdf", "page_number": 1,
-             "text": "Crane equipment utilization hours by block manpower"},
+             "text": "Crane equipment utilization hours by block manpower", "project_id": PROJECT_ID},
         ])
-        res = get_lexical_index().search_chunks("extension of time delay Block A", top_k=5)
+        res = get_lexical_index().search_chunks(
+            "extension of time delay Block A", top_k=5, project_id=PROJECT_ID,
+        )
         assert res, "lexical search returned nothing"
         assert res[0]["file_name"] == "a.pdf" and res[0]["page_number"] == 1
 
     def test_empty_query_returns_empty(self, clean_store):
-        assert get_lexical_index().search_chunks("   ", top_k=5) == []
+        assert get_lexical_index().search_chunks(
+            "   ", top_k=5, project_id=PROJECT_ID,
+        ) == []
 
 
 # ── RRF fusion (pure) ───────────────────────────────────────────────────────

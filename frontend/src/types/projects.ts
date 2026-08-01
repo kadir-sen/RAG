@@ -9,6 +9,12 @@ export interface ProjectStats {
   calibration_size: number;
   calibration_complete: boolean;
   report_ready: boolean;
+  vector: {
+    status: 'empty' | 'provisioning' | 'provisioned' | 'indexing' | 'ready' | 'error' | 'archived';
+    point_count: number;
+    embedding_profile: 'local-bge-v1' | 'gemini-embedding-2';
+    last_error: string | null;
+  };
 }
 
 export interface Project {

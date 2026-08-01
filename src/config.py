@@ -98,6 +98,9 @@ VECTOR_STORE_BACKEND = os.getenv("VECTOR_STORE_BACKEND", "pinecone").lower()
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "constructioniq")
+QDRANT_STRICT_MODE = os.getenv("QDRANT_STRICT_MODE", "false").lower() in (
+    "1", "true", "yes", "on",
+)
 
 # Paths
 BASE_DIR = Path(__file__).parent.parent

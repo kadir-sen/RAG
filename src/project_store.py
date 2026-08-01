@@ -17,11 +17,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from .config import STORAGE_DIR
+from .config import QDRANT_COLLECTION, STORAGE_DIR
 
 
 PROJECTS_DB = Path(STORAGE_DIR) / "projects.db"
 PROJECT_ROLES = ("owner", "editor", "viewer")
+VECTOR_STATUSES = (
+    "empty", "provisioning", "provisioned", "indexing", "ready", "error", "archived",
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -44,6 +47,17 @@ CREATE TABLE IF NOT EXISTS project_members (
 );
 CREATE INDEX IF NOT EXISTS idx_project_members_user
     ON project_members(username, project_id);
+CREATE TABLE IF NOT EXISTS project_vector_state (
+    project_id          TEXT PRIMARY KEY,
+    embedding_profile   TEXT NOT NULL,
+    collection_name     TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'empty',
+    point_count         INTEGER NOT NULL DEFAULT 0,
+    last_error          TEXT,
+    provisioned_at      TEXT,
+    updated_at          TEXT NOT NULL,
+    FOREIGN KEY(project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
 """
 
 
@@ -123,7 +137,68 @@ class ProjectStore:
                 "INSERT INTO project_members VALUES (?,?,?,?)",
                 [project_id, owner, "owner", now],
             )
+            conn.execute(
+                "INSERT INTO project_vector_state "
+                "(project_id,embedding_profile,collection_name,status,point_count,updated_at) "
+                "VALUES (?,?,?,'empty',0,?)",
+                [project_id, embedding_profile, QDRANT_COLLECTION, now],
+            )
         return self.get_for_user(project_id, owner) or {}
+
+    def get_vector_state(self, project_id: str) -> Dict[str, Any]:
+        """Return the durable vector lifecycle for a project.
+
+        Existing projects predate this table, so the row is created lazily from
+        the immutable embedding profile.  Collection names are operational
+        metadata and are deliberately omitted by the API layer.
+        """
+        with self._write_lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM project_vector_state WHERE project_id=?", [project_id]
+            ).fetchone()
+            if row is None:
+                project = conn.execute(
+                    "SELECT embedding_profile,archived_at FROM projects WHERE project_id=?",
+                    [project_id],
+                ).fetchone()
+                if project is None:
+                    return {}
+                status = "archived" if project["archived_at"] else "empty"
+                now = _now()
+                conn.execute(
+                    "INSERT INTO project_vector_state "
+                    "(project_id,embedding_profile,collection_name,status,point_count,updated_at) "
+                    "VALUES (?,?,?,?,0,?)",
+                    [project_id, project["embedding_profile"], QDRANT_COLLECTION, status, now],
+                )
+                row = conn.execute(
+                    "SELECT * FROM project_vector_state WHERE project_id=?", [project_id]
+                ).fetchone()
+        return dict(row) if row else {}
+
+    def set_vector_state(
+        self,
+        project_id: str,
+        status: str,
+        *,
+        point_count: Optional[int] = None,
+        last_error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if status not in VECTOR_STATUSES:
+            raise ValueError("invalid vector status")
+        self.get_vector_state(project_id)
+        now = _now()
+        with self._write_lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE project_vector_state SET status=?, "
+                "point_count=COALESCE(?,point_count), last_error=?, "
+                "provisioned_at=CASE "
+                "WHEN ? IN ('provisioned','indexing','ready') "
+                "THEN COALESCE(provisioned_at,?) ELSE provisioned_at END, "
+                "updated_at=? WHERE project_id=?",
+                [status, point_count, (last_error or None), status, now, now, project_id],
+            )
+        return self.get_vector_state(project_id)
 
     def list_for_user(self, username: str, *, include_archived: bool = False) -> List[Dict[str, Any]]:
         sql = (
@@ -179,7 +254,10 @@ class ProjectStore:
                 "WHERE project_id=? AND archived_at IS NULL",
                 [now, now, project_id],
             )
-        return cur.rowcount > 0
+        archived = cur.rowcount > 0
+        if archived:
+            self.set_vector_state(project_id, "archived")
+        return archived
 
     def rename(self, project_id: str, name: str) -> Optional[Dict[str, Any]]:
         clean = (name or "").strip()
@@ -197,4 +275,6 @@ def get_project_store() -> ProjectStore:
     return ProjectStore.instance()
 
 
-__all__ = ["PROJECT_ROLES", "ProjectStore", "get_project_store"]
+__all__ = [
+    "PROJECT_ROLES", "VECTOR_STATUSES", "ProjectStore", "get_project_store",
+]

@@ -39,7 +39,20 @@ def index_file_background(file_id: str, file_path: str, corpus: str = "",
         report("queued", 0.02)
         _INGEST_SEM.acquire()
     try:
-        result = route_file(file_path)
+        from src.document_rag import get_document_rag
+        from src.project_store import get_project_store
+        project_store = get_project_store()
+        vector_state = project_store.get_vector_state(project_id)
+        profile = str(vector_state.get("embedding_profile") or "local-bge-v1")
+        rag = get_document_rag()
+        existing_points = rag.ensure_project_partition(project_id, profile)
+        project_store.set_vector_state(
+            project_id, "indexing", point_count=existing_points,
+        )
+
+        result = route_file(
+            file_path, project_id=project_id, file_id=file_id,
+        )
 
         # Determine data_table_status only for Excel/CSV files
         data_table_status: str | None = None
@@ -78,6 +91,12 @@ def index_file_background(file_id: str, file_path: str, corpus: str = "",
             if job_id:
                 from backend.tasks.ingestion_jobs import get_ingestion_job_store
                 get_ingestion_job_store().complete(job_id, completion_details)
+            point_count = rag.count_project_points(project_id)
+            project_store.set_vector_state(
+                project_id,
+                "ready" if point_count > 0 else "provisioned",
+                point_count=point_count,
+            )
         else:
             error = result.error or "Unknown error"
             indexing_progress.fail(file_id, error)
@@ -85,6 +104,7 @@ def index_file_background(file_id: str, file_path: str, corpus: str = "",
             if job_id:
                 from backend.tasks.ingestion_jobs import get_ingestion_job_store
                 get_ingestion_job_store().fail(job_id, error)
+            project_store.set_vector_state(project_id, "error", last_error=error)
             if data_table_status:
                 # Even on failure, record status for data files so the UI can flag them
                 with registry._file_lock:
@@ -98,6 +118,13 @@ def index_file_background(file_id: str, file_path: str, corpus: str = "",
         if job_id:
             from backend.tasks.ingestion_jobs import get_ingestion_job_store
             get_ingestion_job_store().fail(job_id, str(e))
+        try:
+            from src.project_store import get_project_store
+            get_project_store().set_vector_state(
+                project_id, "error", last_error=str(e),
+            )
+        except Exception:
+            pass
     finally:
         try:
             _INGEST_SEM.release()

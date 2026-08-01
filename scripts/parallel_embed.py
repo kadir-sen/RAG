@@ -39,7 +39,7 @@ def _gather(source_dir: Path) -> list[Path]:
 
 
 def _worker(worker_id: int, num_workers: int, files: list[str],
-            counter, threads: int) -> None:
+            counter, threads: int, project_id: str) -> None:
     # Keep per-process thread pools small so N workers don't oversubscribe cores.
     # Critically, cap tesseract (OMP_THREAD_LIMIT) to 1 — otherwise each worker's
     # OCR tries to grab all cores and N workers thrash (~26s/page instead of ~2-4s).
@@ -58,11 +58,17 @@ def _worker(worker_id: int, num_workers: int, files: list[str],
     done = skipped = failed = 0
     for fp in shard:
         name = Path(fp).name
+        from src.document_rag import generate_doc_id
+        file_id = generate_doc_id(fp)
         try:
-            if rag.fetch_doc_vectors(name, max_chunks=1):
+            if rag.fetch_doc_vectors(
+                name, project_id=project_id, file_id=file_id, max_chunks=1,
+            ):
                 skipped += 1
             else:
-                n = rag.embed_file_to_vectors(fp)
+                n = rag.embed_file_to_vectors(
+                    fp, project_id=project_id, file_id=file_id,
+                )
                 if n > 0:
                     done += 1
                 else:
@@ -84,6 +90,7 @@ def main() -> int:
     parser.add_argument("--source-dir", required=True)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--project-id", required=True)
     args = parser.parse_args()
 
     source_dir = Path(args.source_dir).resolve()
@@ -100,7 +107,10 @@ def main() -> int:
     counter = mp.Value("i", 0)
     procs = []
     for wid in range(args.workers):
-        p = mp.Process(target=_worker, args=(wid, args.workers, files, counter, threads))
+        p = mp.Process(
+            target=_worker,
+            args=(wid, args.workers, files, counter, threads, args.project_id),
+        )
         p.start()
         procs.append(p)
     for p in procs:

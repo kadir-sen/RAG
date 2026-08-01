@@ -38,6 +38,7 @@ from .config import (
     QDRANT_URL,
     QDRANT_API_KEY,
     QDRANT_COLLECTION,
+    QDRANT_STRICT_MODE,
     CHUNK_SIZE,
     CHUNK_OVERLAP,
     OCR_MODE,
@@ -78,6 +79,23 @@ def _current_project_id() -> str:
         return get_current_project_id()
     except Exception:
         return ""
+
+
+class ProjectScopeRequired(ValueError):
+    """Raised before any vector operation that lacks an authenticated project."""
+
+
+def _require_project_id(project_id: str = "") -> str:
+    """Resolve the server-authenticated project and fail closed when absent.
+
+    Explicit IDs are used by ingestion/report jobs.  Request-time deep routing
+    currently transports the already-authorized project through a ContextVar;
+    unlike the old behavior, an absent scope never becomes an unfiltered query.
+    """
+    resolved = (project_id or _current_project_id() or "").strip()
+    if not resolved:
+        raise ProjectScopeRequired("project_id is required for vector access")
+    return resolved
 
 
 _EDIN_NAMES_CACHE = {"set": None, "ts": 0.0}
@@ -362,28 +380,128 @@ class DocumentRAG:
             collection_name=QDRANT_COLLECTION,
         )
 
+        # Payload indexes are part of the collection contract, not an optional
+        # per-query optimization.  In particular project_id is Qdrant's tenant
+        # partition, which co-locates each project's points on disk.
+        self._ensure_qdrant_payload_indexes()
+        if QDRANT_STRICT_MODE:
+            self._enable_qdrant_strict_mode()
+
         try:
             info = self.qdrant_client.get_collection(QDRANT_COLLECTION)
             logger.info(f"   Total vectors: {info.points_count or 0}")
         except Exception as e:
             logger.warning(f"   Could not read collection info: {e}")
 
-    def _delete_file_vectors(self, file_name: str):
+    @staticmethod
+    def _project_filter(project_id: str, *conditions):
+        from qdrant_client.http import models as qmodels
+
+        pid = _require_project_id(project_id)
+        return qmodels.Filter(must=[
+            qmodels.FieldCondition(
+                key="project_id", match=qmodels.MatchValue(value=pid),
+            ),
+            *conditions,
+        ])
+
+    def _ensure_qdrant_payload_indexes(self) -> None:
+        if self.backend != "qdrant":
+            return
+        from qdrant_client.http import models as qmodels
+
+        info = self.qdrant_client.get_collection(QDRANT_COLLECTION)
+        schema = getattr(info, "payload_schema", {}) or {}
+        fields = (
+            "file_id", "doc_id", "file_name", "corpus", "doc_type",
+            "project", "reference", "date",
+        )
+        if "project_id" not in schema:
+            self.qdrant_client.create_payload_index(
+                collection_name=QDRANT_COLLECTION,
+                field_name="project_id",
+                field_schema=qmodels.KeywordIndexParams(
+                    type=qmodels.KeywordIndexType.KEYWORD,
+                    is_tenant=True,
+                ),
+                wait=True,
+            )
+            logger.info("[Qdrant] project_id tenant index created")
+        for field in fields:
+            if field in schema:
+                continue
+            self.qdrant_client.create_payload_index(
+                collection_name=QDRANT_COLLECTION,
+                field_name=field,
+                field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                wait=True,
+            )
+            logger.info(f"[Qdrant] payload index created: {field}")
+
+    def _enable_qdrant_strict_mode(self) -> None:
+        from qdrant_client.http import models as qmodels
+
+        self.qdrant_client.update_collection(
+            collection_name=QDRANT_COLLECTION,
+            strict_mode_config=qmodels.StrictModeConfig(
+                enabled=True,
+                unindexed_filtering_retrieve=False,
+                unindexed_filtering_update=False,
+            ),
+        )
+        logger.info("[Qdrant] strict indexed-filter mode enabled")
+
+    def ensure_project_partition(
+        self,
+        project_id: str,
+        embedding_profile: str = "local-bge-v1",
+    ) -> int:
+        """Validate the shared collection and provision one logical tenant."""
+        pid = _require_project_id(project_id)
+        if self.backend != "qdrant":
+            return 0
+        if embedding_profile != (
+            "gemini-embedding-2" if EMBEDDING_PROVIDER == "gemini" else "local-bge-v1"
+        ):
+            raise ValueError("project embedding profile does not match the server")
+        info = self.qdrant_client.get_collection(QDRANT_COLLECTION)
+        vectors = info.config.params.vectors
+        size = getattr(vectors, "size", None)
+        if size is not None and int(size) != int(EMBEDDING_DIMENSION):
+            raise RuntimeError(
+                f"Qdrant dimension mismatch: collection={size}, server={EMBEDDING_DIMENSION}"
+            )
+        self._ensure_qdrant_payload_indexes()
+        return self.count_project_points(pid)
+
+    def count_project_points(self, project_id: str) -> int:
+        pid = _require_project_id(project_id)
+        if self.backend == "qdrant":
+            result = self.qdrant_client.count(
+                collection_name=QDRANT_COLLECTION,
+                count_filter=self._project_filter(pid),
+                exact=True,
+            )
+            return int(result.count or 0)
+        stats = self.pinecone_index.describe_index_stats(
+            filter={"project_id": {"$eq": pid}}
+        )
+        return int(stats.get("total_vector_count", 0))
+
+    def _delete_file_vectors(
+        self, file_name: str, *, project_id: str, file_id: str = "",
+    ):
         """Delete existing vectors for a file before re-indexing."""
-        project_id = _current_project_id()
+        project_id = _require_project_id(project_id)
         try:
             if self.backend == "qdrant":
                 from qdrant_client.http import models as qmodels
-                must = [
-                    qmodels.FieldCondition(
-                        key="file_name",
-                        match=qmodels.MatchValue(value=file_name),
-                    )
-                ]
-                if project_id:
-                    must.append(qmodels.FieldCondition(
-                        key="project_id", match=qmodels.MatchValue(value=project_id)))
-                flt = qmodels.Filter(must=must)
+                identity = (qmodels.FieldCondition(
+                    key="file_id", match=qmodels.MatchValue(value=file_id),
+                ) if file_id else qmodels.FieldCondition(
+                    key="file_name", match=qmodels.MatchValue(value=file_name),
+                ))
+                flt = self._project_filter(project_id, identity)
                 self.qdrant_client.delete(
                     collection_name=QDRANT_COLLECTION,
                     points_selector=qmodels.FilterSelector(filter=flt),
@@ -391,8 +509,9 @@ class DocumentRAG:
             else:
                 # Pinecone metadata filter delete (unchanged behavior).
                 flt = {"file_name": {"$eq": file_name}}
-                if project_id:
-                    flt["project_id"] = {"$eq": project_id}
+                if file_id:
+                    flt = {"file_id": {"$eq": file_id}}
+                flt["project_id"] = {"$eq": project_id}
                 self.pinecone_index.delete(filter=flt)
             logger.info(f"   Cleared existing vectors for: {file_name}")
         except Exception as e:
@@ -571,6 +690,9 @@ class DocumentRAG:
     def add_document(
         self,
         file_path: str,
+        *,
+        project_id: str,
+        file_id: str,
         ocr_mode: Optional[str] = None,
         ocr_language: Optional[str] = None,
     ) -> Optional[List[Document]]:
@@ -588,11 +710,16 @@ class DocumentRAG:
         path = Path(file_path)
         file_name = path.name
         extension = path.suffix.lower()
+        project_id = _require_project_id(project_id)
+        if not file_id:
+            raise ValueError("file_id is required for vector ingestion")
 
         log_document_processing(file_name, "Processing", f"Type: {extension}")
 
         # Delete existing vectors for this file (prevent duplicates)
-        self._delete_file_vectors(file_name)
+        self._delete_file_vectors(
+            file_name, project_id=project_id, file_id=file_id,
+        )
 
         # Parse based on file type
         if extension == ".pdf":
@@ -606,10 +733,14 @@ class DocumentRAG:
             return None
 
         if new_docs:
-            project_id = _current_project_id()
             for doc in new_docs:
-                if project_id:
-                    doc.metadata["project_id"] = project_id
+                # Reserved identity is stamped last so extractor/user metadata
+                # can never redirect a point into another tenant.
+                doc.metadata["project_id"] = project_id
+                doc.metadata["file_id"] = file_id
+                doc.metadata["embedding_profile"] = (
+                    "gemini-embedding-2" if EMBEDDING_PROVIDER == "gemini" else "local-bge-v1"
+                )
             self.documents.extend(new_docs)
 
             # Count OCR pages
@@ -633,6 +764,9 @@ class DocumentRAG:
         file_path: str,
         page_texts: Dict[int, str],
         metadata: Optional[Dict] = None,
+        *,
+        project_id: str,
+        file_id: str,
     ) -> Optional[List[Document]]:
         """
         Create Document objects from pre-parsed page texts (e.g., email body).
@@ -647,9 +781,14 @@ class DocumentRAG:
         """
         path = Path(file_path)
         file_name = path.name
+        project_id = _require_project_id(project_id)
+        if not file_id:
+            raise ValueError("file_id is required for vector ingestion")
 
         # Delete existing vectors for this file
-        self._delete_file_vectors(file_name)
+        self._delete_file_vectors(
+            file_name, project_id=project_id, file_id=file_id,
+        )
 
         new_docs = []
         for page_num, text in sorted(page_texts.items()):
@@ -662,10 +801,17 @@ class DocumentRAG:
                 "page_number": page_num,
                 "total_pages": len(page_texts),
                 "doc_id": generate_doc_id(file_path),
-                "project_id": _current_project_id(),
+                "project_id": project_id,
+                "file_id": file_id,
+                "embedding_profile": (
+                    "gemini-embedding-2" if EMBEDDING_PROVIDER == "gemini" else "local-bge-v1"
+                ),
             }
             if metadata:
                 doc_meta.update(metadata)
+            # Never allow caller/extractor metadata to override security fields.
+            doc_meta["project_id"] = project_id
+            doc_meta["file_id"] = file_id
 
             new_docs.append(Document(text=text.strip(), metadata=doc_meta))
 
@@ -677,14 +823,15 @@ class DocumentRAG:
                 "page_count": len(new_docs),
                 "ocr_pages": 0,
                 "doc_id": generate_doc_id(file_path),
-                "project_id": _current_project_id(),
+                "project_id": project_id,
+                "file_id": file_id,
             }
             log_document_processing(file_name, "Added", f"{len(new_docs)} pages (from pages)")
             return new_docs
 
         return None
 
-    def add_documents_from_folder(self, folder_path: str) -> int:
+    def add_documents_from_folder(self, folder_path: str, *, project_id: str) -> int:
         """Add all supported documents from a folder."""
         count = 0
         supported = {".pdf", ".docx", ".doc", ".txt"}
@@ -698,7 +845,10 @@ class DocumentRAG:
 
         for file_path in folder.rglob("*"):
             if file_path.suffix.lower() in supported:
-                if self.add_document(str(file_path)):
+                if self.add_document(
+                    str(file_path), project_id=project_id,
+                    file_id=generate_doc_id(str(file_path)),
+                ):
                     count += 1
 
         logger.info(f"📁 Added {count} documents from {folder.name}")
@@ -733,13 +883,24 @@ class DocumentRAG:
             logger.error(traceback.format_exc())
             return False
 
-    def insert_documents(self, new_docs: List[Document]) -> bool:
+    def insert_documents(
+        self, new_docs: List[Document], *, project_id: str, file_id: str,
+    ) -> bool:
         """
         Add new documents to existing Pinecone index incrementally.
         Uses batch embedding + batch upsert for performance.
         """
         if not new_docs:
             return False
+        project_id = _require_project_id(project_id)
+        if not file_id:
+            raise ValueError("file_id is required for vector ingestion")
+        for doc in new_docs:
+            doc.metadata["project_id"] = project_id
+            doc.metadata["file_id"] = file_id
+            doc.metadata["embedding_profile"] = (
+                "gemini-embedding-2" if EMBEDDING_PROVIDER == "gemini" else "local-bge-v1"
+            )
 
         # Ensure index exists (load from Pinecone or build fresh)
         if not self.index:
@@ -758,6 +919,18 @@ class DocumentRAG:
             nodes = []
             for doc in new_docs:
                 parsed = node_parser.get_nodes_from_documents([doc])
+                for ordinal, node in enumerate(parsed):
+                    node.metadata["project_id"] = project_id
+                    node.metadata["file_id"] = file_id
+                    node.metadata["embedding_profile"] = doc.metadata["embedding_profile"]
+                    # Stable IDs make retries idempotent and include the tenant,
+                    # so identical files in two projects cannot overwrite.
+                    identity = (
+                        f"{project_id}|{file_id}|{ordinal}|"
+                        f"{hashlib.sha256(node.get_content().encode('utf-8')).hexdigest()}"
+                    )
+                    import uuid
+                    node.id_ = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
                 nodes.extend(parsed)
 
             if not nodes:
@@ -778,7 +951,7 @@ class DocumentRAG:
                         "file_name": meta.get("file_name", "Unknown"),
                         "page_number": meta.get("page_number", 1),
                         "text": node.get_content(),
-                        "project_id": meta.get("project_id", "") or _current_project_id(),
+                        "project_id": project_id,
                     })
                 get_chunk_store().add_chunks(rows)
             except Exception as e:
@@ -832,13 +1005,14 @@ class DocumentRAG:
 
         except Exception as e:
             logger.error(f"Error in batch insert: {e}")
-            # Fallback to sequential insert with retry per document
-            logger.info("Falling back to sequential insert...")
+            # Fallback to sequential point upserts while preserving the stable
+            # tenant-aware node IDs prepared above.
+            logger.info("Falling back to sequential vector upsert...")
             inserted = 0
-            for doc in new_docs:
+            for node in locals().get("nodes", []):
                 for attempt in range(3):
                     try:
-                        self.index.insert(doc)
+                        self.vector_store.add([node])
                         inserted += 1
                         break
                     except Exception as e2:
@@ -853,14 +1027,18 @@ class DocumentRAG:
             logger.error("All insert attempts failed")
             return False
 
-    def embed_file_to_vectors(self, file_path: str) -> int:
+    def embed_file_to_vectors(
+        self, file_path: str, *, project_id: str, file_id: str,
+    ) -> int:
         """Parse a file (with OCR), embed its chunks, and upsert ONLY to the vector
         store — NO chunk_store / registry / light_graph writes. This makes it safe
         to run from parallel worker processes (Qdrant upserts are concurrent-safe),
         unlike route_file()/insert_documents() which touch shared local state.
 
         Returns the number of chunks indexed (0 on parse failure)."""
-        docs = self.add_document(file_path)  # parse + OCR + delete-existing-vectors
+        docs = self.add_document(
+            file_path, project_id=project_id, file_id=file_id,
+        )  # parse + OCR + delete-existing-vectors
         # add_document accumulates into self.documents; clear it so long-lived
         # workers don't leak memory across thousands of files.
         self.documents.clear()
@@ -878,7 +1056,15 @@ class DocumentRAG:
         EMBED_BATCH = 50
         for i in range(0, len(texts), EMBED_BATCH):
             embeddings.extend(embed_model.get_text_embedding_batch(texts[i:i + EMBED_BATCH]))
-        for n, e in zip(nodes, embeddings):
+        import uuid
+        for ordinal, (n, e) in enumerate(zip(nodes, embeddings)):
+            n.metadata["project_id"] = project_id
+            n.metadata["file_id"] = file_id
+            identity = (
+                f"{project_id}|{file_id}|{ordinal}|"
+                f"{hashlib.sha256(n.get_content().encode('utf-8')).hexdigest()}"
+            )
+            n.id_ = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
             n.embedding = e
         self.vector_store.add(nodes)
         return len(nodes)
@@ -913,6 +1099,7 @@ class DocumentRAG:
         payload_filters: Optional[Dict[str, Any]] = None,
         synthesize: bool = True,
         rerank: bool = True,
+        project_id: str = "",
     ) -> dict:
         """Query documents with proper page-level citations.
 
@@ -935,6 +1122,7 @@ class DocumentRAG:
         agent's document tool) so the per-source answer isn't paid for and then
         discarded. ``answer`` is "" in that mode; ``sources`` are always populated.
         """
+        project_id = _require_project_id(project_id)
         log_separator("Document Query")
         logger.info(f"🔍 Question: {question[:100]}...")
 
@@ -974,7 +1162,7 @@ class DocumentRAG:
                     raw_question=original_question,   # cleaner text for lexical + rerank
                     top_k=top_k, doc_ids=doc_ids, file_names=file_names,
                     payload_filters=payload_filters, synthesize=synthesize,
-                    rerank=rerank,
+                    rerank=rerank, project_id=project_id,
                 )
                 # Empty-scope safety net: a scoped query that found nothing retries
                 # once unscoped rather than reporting "not found".
@@ -984,6 +1172,7 @@ class DocumentRAG:
                         question=question, raw_question=original_question,
                         top_k=top_k, doc_ids=doc_ids, file_names=file_names,
                         synthesize=synthesize, rerank=rerank,
+                        project_id=project_id,
                     )
                 if hybrid is not None:
                     return hybrid
@@ -991,7 +1180,9 @@ class DocumentRAG:
                 logger.warning(f"   Hybrid retrieval failed → dense fallback: {e}")
 
         logger.info(f"   Retrieving top {top_k} matches...")
-        filters = self._build_metadata_filters(doc_ids, file_names, payload_filters)
+        filters = self._build_metadata_filters(
+            doc_ids, file_names, payload_filters, project_id=project_id,
+        )
 
         if not synthesize:
             # Retrieve-only fast path: use a retriever (no synthesizing query
@@ -1002,7 +1193,9 @@ class DocumentRAG:
             nodes = list(retriever.retrieve(question))
             if payload_filters and not nodes:
                 logger.info("   Scoped dense retrieve empty → retrying (corpus-only)")
-                retry_filters = self._build_metadata_filters(doc_ids, file_names, None)
+                retry_filters = self._build_metadata_filters(
+                    doc_ids, file_names, None, project_id=project_id,
+                )
                 retriever = (self.index.as_retriever(similarity_top_k=top_k, filters=retry_filters)
                              if retry_filters is not None
                              else self.index.as_retriever(similarity_top_k=top_k))
@@ -1041,7 +1234,9 @@ class DocumentRAG:
         # the doc_type/project scope), so the retry never leaks another corpus.
         if payload_filters and not getattr(response, "source_nodes", None):
             logger.info("   Scoped dense query empty → retrying (corpus-only)")
-            retry_filters = self._build_metadata_filters(doc_ids, file_names, None)
+            retry_filters = self._build_metadata_filters(
+                doc_ids, file_names, None, project_id=project_id,
+            )
             engine = (self.index.as_query_engine(similarity_top_k=top_k, filters=retry_filters)
                       if retry_filters is not None
                       else self.index.as_query_engine(similarity_top_k=top_k))
@@ -1124,7 +1319,8 @@ class DocumentRAG:
                       file_names: Optional[List[str]] = None,
                       payload_filters: Optional[Dict[str, Any]] = None,
                       synthesize: bool = True,
-                      rerank: bool = True) -> Optional[dict]:
+                      rerank: bool = True,
+                      project_id: str = "") -> Optional[dict]:
         """Dense + lexical candidate fusion (RRF) + optional LLM rerank, then
         synthesize an answer from the final chunks. Returns None when there are
         no candidates at all (caller falls back to the dense path).
@@ -1144,8 +1340,11 @@ class DocumentRAG:
             pass
 
         # 1. Dense candidates (existing vector lane, widened pool)
-        dense = self._dense_candidates(question, RAG_CANDIDATE_K, doc_ids, file_names,
-                                       payload_filters)
+        project_id = _require_project_id(project_id)
+        dense = self._dense_candidates(
+            question, RAG_CANDIDATE_K, doc_ids, file_names,
+            payload_filters, project_id=project_id,
+        )
 
         # 2. Lexical candidates (BM25 over chunk store) + doc-keyword boost.
         # The chunk store mirrors only the bulk (edinburgh) corpus, so skip the
@@ -1158,7 +1357,7 @@ class DocumentRAG:
                 from .lexical_index import get_lexical_index
                 li = get_lexical_index()
                 lexical = li.search_chunks(
-                    raw_question, RAG_CANDIDATE_K, project_id=_current_project_id() or None,
+                    raw_question, RAG_CANDIDATE_K, project_id=project_id,
                 )
                 if doc_ids:
                     ids = set(doc_ids)
@@ -1169,7 +1368,7 @@ class DocumentRAG:
                 for c in lexical:
                     c["key"] = f"{c.get('file_name')}::{c.get('page_number')}"
                 doc_boost = li.match_docs(
-                    self._lexical_terms(raw_question), project_id=_current_project_id() or None,
+                    self._lexical_terms(raw_question), project_id=project_id,
                 )
             except Exception as e:
                 logger.debug(f"   Lexical lane skipped: {e}")
@@ -1221,7 +1420,8 @@ class DocumentRAG:
     @staticmethod
     def _build_metadata_filters(doc_ids: Optional[List[str]],
                                 file_names: Optional[List[str]],
-                                payload_filters: Optional[Dict[str, Any]] = None):
+                                payload_filters: Optional[Dict[str, Any]] = None,
+                                *, project_id: str):
         """Compose a LlamaIndex MetadataFilters from (doc_ids OR file_names) AND
         scope (doc_type / project / …). The document selector stays OR (either an
         explicit doc_id or a filename-resolved file matches), but scope is AND-ed
@@ -1240,7 +1440,15 @@ class DocumentRAG:
                 MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN))
 
         scope_specs = []
+        allowed_filter_keys = {"doc_type", "project", "reference", "date", "corpus"}
+        unknown = set((payload_filters or {}).keys()) - allowed_filter_keys - {
+            "project_id", "file_id", "embedding_profile",
+        }
+        if unknown:
+            raise ValueError(f"unsupported vector payload filters: {sorted(unknown)}")
         for key, val in (payload_filters or {}).items():
+            if key in {"project_id", "file_id", "embedding_profile"}:
+                continue
             if val in (None, "", [], {}):
                 continue
             if isinstance(val, (list, tuple, set)):
@@ -1257,10 +1465,9 @@ class DocumentRAG:
         if corpus:
             scope_specs.append(MetadataFilter(key="corpus", value=corpus,
                                               operator=FilterOperator.EQ))
-        project_id = _current_project_id()
-        if project_id:
-            scope_specs.append(MetadataFilter(key="project_id", value=project_id,
-                                              operator=FilterOperator.EQ))
+        project_id = _require_project_id(project_id)
+        scope_specs.append(MetadataFilter(key="project_id", value=project_id,
+                                          operator=FilterOperator.EQ))
 
         if not doc_file_specs and not scope_specs:
             return None
@@ -1283,10 +1490,13 @@ class DocumentRAG:
     def _dense_candidates(self, question: str, candidate_k: int,
                           doc_ids: Optional[List[str]],
                           file_names: Optional[List[str]],
-                          payload_filters: Optional[Dict[str, Any]] = None) -> List[Dict]:
+                          payload_filters: Optional[Dict[str, Any]] = None,
+                          *, project_id: str) -> List[Dict]:
         """Retrieve dense candidates as normalized node dicts."""
         retriever_kwargs = {"similarity_top_k": candidate_k}
-        flt = self._build_metadata_filters(doc_ids, file_names, payload_filters)
+        flt = self._build_metadata_filters(
+            doc_ids, file_names, payload_filters, project_id=project_id,
+        )
         if flt is not None:
             retriever_kwargs["filters"] = flt
         try:
@@ -1479,9 +1689,11 @@ class DocumentRAG:
 
     def query_with_provider(self, question: str, provider: str, top_k: int = 10,
                             doc_ids: Optional[List[str]] = None,
-                            file_names: Optional[List[str]] = None) -> dict:
+                            file_names: Optional[List[str]] = None,
+                            project_id: str = "") -> dict:
         """Query documents using a specific LLM provider for answer synthesis."""
         from .llm_client import create_llm
+        project_id = _require_project_id(project_id)
 
         logger.info(f"[DocumentRAG] Query with provider={provider}: {question[:80]}...")
 
@@ -1507,32 +1719,15 @@ class DocumentRAG:
         # For Claude: LlamaIndex query_engine doesn't support custom wrappers,
         # so we retrieve chunks via default engine and synthesize with Claude directly.
         if provider == "claude":
-            return self._query_with_direct_synthesis(question, llm, top_k, doc_ids, file_names)
+            return self._query_with_direct_synthesis(
+                question, llm, top_k, doc_ids, file_names,
+                project_id=project_id,
+            )
 
         kwargs = {"similarity_top_k": top_k, "llm": llm}
-        filter_specs = []
-        if doc_ids:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, MetadataFilter, FilterOperator,
-            )
-            filter_specs.append(
-                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
-            )
-        if file_names:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, MetadataFilter, FilterOperator,
-            )
-            filter_specs.append(
-                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN)
-            )
-        if filter_specs:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, FilterCondition,
-            )
-            kwargs["filters"] = MetadataFilters(
-                filters=filter_specs,
-                condition=FilterCondition.OR if len(filter_specs) > 1 else None,
-            )
+        kwargs["filters"] = self._build_metadata_filters(
+            doc_ids, file_names, None, project_id=project_id,
+        )
         query_engine = self.index.as_query_engine(**kwargs)
         response = query_engine.query(question)
         sources = self._extract_sources(response)
@@ -1542,35 +1737,19 @@ class DocumentRAG:
 
     def _query_with_direct_synthesis(self, question: str, llm, top_k: int = 10,
                                      doc_ids: Optional[List[str]] = None,
-                                     file_names: Optional[List[str]] = None) -> dict:
+                                     file_names: Optional[List[str]] = None,
+                                     *, project_id: str) -> dict:
         """Retrieve chunks via Pinecone, then synthesize answer with a non-LlamaIndex LLM."""
         from llama_index.core import VectorStoreIndex
 
         # Step 1: Retrieve relevant chunks
-        retriever_kwargs = {"similarity_top_k": top_k}
-        filter_specs = []
-        if doc_ids:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, MetadataFilter, FilterOperator,
-            )
-            filter_specs.append(
-                MetadataFilter(key="doc_id", value=doc_ids, operator=FilterOperator.IN)
-            )
-        if file_names:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, MetadataFilter, FilterOperator,
-            )
-            filter_specs.append(
-                MetadataFilter(key="file_name", value=file_names, operator=FilterOperator.IN)
-            )
-        if filter_specs:
-            from llama_index.core.vector_stores.types import (
-                MetadataFilters, FilterCondition,
-            )
-            retriever_kwargs["filters"] = MetadataFilters(
-                filters=filter_specs,
-                condition=FilterCondition.OR if len(filter_specs) > 1 else None,
-            )
+        project_id = _require_project_id(project_id)
+        retriever_kwargs = {
+            "similarity_top_k": top_k,
+            "filters": self._build_metadata_filters(
+                doc_ids, file_names, None, project_id=project_id,
+            ),
+        }
         retriever = self.index.as_retriever(**retriever_kwargs)
         nodes = retriever.retrieve(question)
 
@@ -1654,7 +1833,14 @@ class DocumentRAG:
                 return node_content if isinstance(node_content, str) else ""
         return md.get("text", "") or ""
 
-    def update_payload_scope(self, file_name: str, scope: Dict[str, Any]) -> bool:
+    def update_payload_scope(
+        self,
+        file_name: str,
+        scope: Dict[str, Any],
+        *,
+        project_id: str,
+        file_id: str = "",
+    ) -> bool:
         """Stamp scoped-metadata keys (doc_type / project / date / …) onto every
         vector of a document, in-place, without re-embedding. This is what makes
         the `payload_filters` lane of retrieval usable — at ingest we know a
@@ -1665,14 +1851,30 @@ class DocumentRAG:
         doc_id filter would full-scan and time out on a large collection).
         Best-effort and idempotent (set_payload merges). Empty values dropped.
         """
-        clean = {k: v for k, v in (scope or {}).items() if v not in (None, "", [], {})}
+        project_id = _require_project_id(project_id)
+        reserved = {"project_id", "file_id", "embedding_profile"}
+        clean = {
+            k: v for k, v in (scope or {}).items()
+            if k not in reserved and v not in (None, "", [], {})
+        }
+        # Identity fields are reserved; server truth always wins.
+        clean["project_id"] = project_id
+        if file_id:
+            clean["file_id"] = file_id
+        clean["embedding_profile"] = (
+            "gemini-embedding-2" if EMBEDDING_PROVIDER == "gemini" else "local-bge-v1"
+        )
         if not file_name or not clean:
             return False
         try:
             if self.backend == "qdrant":
                 from qdrant_client.http import models as qmodels
-                flt = qmodels.Filter(must=[qmodels.FieldCondition(
-                    key="file_name", match=qmodels.MatchValue(value=file_name))])
+                identity = (qmodels.FieldCondition(
+                    key="file_id", match=qmodels.MatchValue(value=file_id),
+                ) if file_id else qmodels.FieldCondition(
+                    key="file_name", match=qmodels.MatchValue(value=file_name),
+                ))
+                flt = self._project_filter(project_id, identity)
                 self.qdrant_client.set_payload(
                     collection_name=QDRANT_COLLECTION,
                     payload=clean,
@@ -1681,7 +1883,9 @@ class DocumentRAG:
             else:
                 # Pinecone has no filter-based metadata update; fetch the doc's
                 # chunk ids by file_name then update each.
-                ids = self._pinecone_ids_for_file(file_name)
+                ids = self._pinecone_ids_for_file(
+                    file_name, project_id=project_id, file_id=file_id,
+                )
                 for cid in ids:
                     self.pinecone_index.update(id=cid, set_metadata=clean,
                                                namespace="__default__")
@@ -1691,13 +1895,22 @@ class DocumentRAG:
             logger.warning(f"[ScopePayload] update skipped for {file_name[:40]}: {e}")
             return False
 
-    def _pinecone_ids_for_file(self, file_name: str) -> List[str]:
+    def _pinecone_ids_for_file(
+        self, file_name: str, *, project_id: str, file_id: str = "",
+    ) -> List[str]:
         """Best-effort list of Pinecone vector ids for a document (metadata-only
         query). Used by update_payload_scope on the Pinecone backend."""
         try:
+            project_id = _require_project_id(project_id)
+            flt = {
+                "project_id": {"$eq": project_id},
+                ("file_id" if file_id else "file_name"): {
+                    "$eq": file_id if file_id else file_name,
+                },
+            }
             res = self.pinecone_index.query(
                 vector=[0.0] * EMBEDDING_DIMENSION, top_k=10000,
-                include_metadata=False, filter={"file_name": {"$eq": file_name}},
+                include_metadata=False, filter=flt,
                 namespace="__default__",
             )
             matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
@@ -1713,6 +1926,7 @@ class DocumentRAG:
     def _vector_query(
         self, qvec: List[float], top_k: int, file_names: Optional[List[str]] = None,
         payload_filters: Optional[Dict[str, Any]] = None,
+        *, project_id: str,
     ) -> List[Dict[str, Any]]:
         """Backend-agnostic vector search returning [{text, metadata, score}].
 
@@ -1725,6 +1939,11 @@ class DocumentRAG:
         Works with both Pinecone (direct .query) and Qdrant (query_points + filter).
         """
         chunks: List[Dict[str, Any]] = []
+        project_id = _require_project_id(project_id)
+        allowed_filter_keys = {"doc_type", "project", "reference", "date", "corpus"}
+        unknown = set((payload_filters or {}).keys()) - allowed_filter_keys
+        if unknown:
+            raise ValueError(f"unsupported vector payload filters: {sorted(unknown)}")
         try:
             if self.backend == "qdrant":
                 from qdrant_client.http import models as qmodels
@@ -1743,11 +1962,9 @@ class DocumentRAG:
                 if _corpus:
                     must.append(qmodels.FieldCondition(
                         key="corpus", match=qmodels.MatchValue(value=_corpus)))
-                _project = _current_project_id()
-                if _project:
-                    must.append(qmodels.FieldCondition(
-                        key="project_id", match=qmodels.MatchValue(value=_project)))
-                flt = qmodels.Filter(must=must) if must else None
+                must.append(qmodels.FieldCondition(
+                    key="project_id", match=qmodels.MatchValue(value=project_id)))
+                flt = qmodels.Filter(must=must)
                 res = self.qdrant_client.query_points(
                     collection_name=QDRANT_COLLECTION,
                     query=qvec,
@@ -1765,9 +1982,7 @@ class DocumentRAG:
                     pc_filter["file_name"] = {"$in": list(file_names)}
                 for key, val in (payload_filters or {}).items():
                     pc_filter[key] = {"$in": list(val)} if isinstance(val, (list, tuple, set)) else {"$eq": val}
-                _project = _current_project_id()
-                if _project:
-                    pc_filter["project_id"] = {"$eq": _project}
+                pc_filter["project_id"] = {"$eq": project_id}
                 kwargs = dict(vector=qvec, top_k=top_k, include_metadata=True,
                               namespace="__default__")
                 if pc_filter:
@@ -1783,15 +1998,27 @@ class DocumentRAG:
             logger.warning(f"[VectorQuery] {self.backend} query failed: {e}")
         return chunks
 
-    def fetch_doc_vectors(self, file_name: str, max_chunks: int = 50) -> List[List[float]]:
+    def fetch_doc_vectors(
+        self,
+        file_name: str,
+        *,
+        project_id: str,
+        file_id: str = "",
+        max_chunks: int = 50,
+    ) -> List[List[float]]:
         """Return raw stored chunk vectors for a document (for centroid pooling).
         Backend-agnostic: Qdrant scroll(with_vectors) or Pinecone zero-vector query."""
         out: List[List[float]] = []
+        project_id = _require_project_id(project_id)
         try:
             if self.backend == "qdrant":
                 from qdrant_client.http import models as qmodels
-                flt = qmodels.Filter(must=[qmodels.FieldCondition(
-                    key="file_name", match=qmodels.MatchValue(value=file_name))])
+                identity = (qmodels.FieldCondition(
+                    key="file_id", match=qmodels.MatchValue(value=file_id),
+                ) if file_id else qmodels.FieldCondition(
+                    key="file_name", match=qmodels.MatchValue(value=file_name),
+                ))
+                flt = self._project_filter(project_id, identity)
                 points, _ = self.qdrant_client.scroll(
                     collection_name=QDRANT_COLLECTION,
                     scroll_filter=flt, limit=max_chunks,
@@ -1805,9 +2032,15 @@ class DocumentRAG:
                         out.append(list(vec))
             else:
                 zero_vec = [0.0] * EMBEDDING_DIMENSION
+                flt = {
+                    "project_id": {"$eq": project_id},
+                    ("file_id" if file_id else "file_name"): {
+                        "$eq": file_id if file_id else file_name,
+                    },
+                }
                 res = self.pinecone_index.query(
                     vector=zero_vec, top_k=max_chunks, include_values=True,
-                    include_metadata=False, filter={"file_name": {"$eq": file_name}},
+                    include_metadata=False, filter=flt,
                     namespace="",
                 )
                 matches = res.get("matches") if isinstance(res, dict) else getattr(res, "matches", [])
@@ -1821,6 +2054,7 @@ class DocumentRAG:
 
     def _fetch_named_doc_chunks(
         self, question: str, file_names: List[str], top_k: int = 10,
+        *, project_id: str,
     ) -> List[Dict[str, Any]]:
         """Fetch top-k chunks for the given file_names, ranked by query similarity.
         Returns a list of {text, metadata, score} dicts ordered by descending similarity."""
@@ -1832,11 +2066,14 @@ class DocumentRAG:
         except Exception as e:
             logger.warning(f"[NamedDoc] embed failed: {e}")
             return []
-        return self._vector_query(qvec, top_k, file_names=file_names)
+        return self._vector_query(
+            qvec, top_k, file_names=file_names, project_id=project_id,
+        )
 
     def query_named_docs_with_provider(
         self, question: str, provider: str, file_names: List[str],
         top_k_named: int = 10, top_k_semantic: int = 5,
+        project_id: str = "",
     ) -> dict:
         """Generate an answer for a named-document query.
 
@@ -1852,6 +2089,7 @@ class DocumentRAG:
         semantic chunks after.
         """
         from .llm_client import create_llm
+        project_id = _require_project_id(project_id)
 
         logger.info(
             f"[NamedDoc] provider={provider} files={file_names} "
@@ -1869,7 +2107,7 @@ class DocumentRAG:
             pass
 
         named_chunks = self._fetch_named_doc_chunks(
-            question, file_names, top_k=top_k_named,
+            question, file_names, top_k=top_k_named, project_id=project_id,
         )
 
         # Semantic neighbours (no scope) — keep small to leave room for named.
@@ -1878,7 +2116,9 @@ class DocumentRAG:
             try:
                 from llama_index.core import Settings
                 qvec = Settings.embed_model.get_query_embedding(question)
-                semantic_chunks = self._vector_query(qvec, top_k_semantic)
+                semantic_chunks = self._vector_query(
+                    qvec, top_k_semantic, project_id=project_id,
+                )
             except Exception as e:
                 logger.warning(f"[NamedDoc] semantic fetch failed: {e}")
 
@@ -1956,10 +2196,12 @@ class DocumentRAG:
     def query_named_docs_dual(
         self, question: str, file_names: List[str],
         top_k_named: int = 10, top_k_semantic: int = 5,
+        project_id: str = "",
     ) -> dict:
         """Multi-provider variant of query_named_docs_with_provider."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
+        project_id = _require_project_id(project_id)
 
         results: Dict[str, Any] = {}
 
@@ -1967,6 +2209,7 @@ class DocumentRAG:
             return prov, self.query_named_docs_with_provider(
                 question, prov, file_names,
                 top_k_named=top_k_named, top_k_semantic=top_k_semantic,
+                project_id=project_id,
             )
 
         with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as ex:
@@ -1986,16 +2229,19 @@ class DocumentRAG:
 
     def query_dual(self, question: str, top_k: int = 10,
                    doc_ids: Optional[List[str]] = None,
-                   file_names: Optional[List[str]] = None) -> dict:
+                   file_names: Optional[List[str]] = None,
+                   project_id: str = "") -> dict:
         """Query with both OpenAI and Claude in parallel."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
+        project_id = _require_project_id(project_id)
 
         results = {}
 
         def _query_provider(prov):
             return prov, self.query_with_provider(
                 question, prov, top_k, doc_ids=doc_ids, file_names=file_names
+                , project_id=project_id
             )
 
         with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
@@ -2041,37 +2287,22 @@ class DocumentRAG:
         return None
 
     def clear_index(self):
-        """Clear all vectors from the index."""
-        try:
-            if self.backend == "qdrant":
-                from qdrant_client.http import models as qmodels
-                logger.info("[Qdrant] Clearing entire collection...")
-                # Recreate is the simplest way to truly empty a collection.
-                self.qdrant_client.delete_collection(QDRANT_COLLECTION)
-                self.qdrant_client.create_collection(
-                    collection_name=QDRANT_COLLECTION,
-                    vectors_config=qmodels.VectorParams(
-                        size=EMBEDDING_DIMENSION,
-                        distance=qmodels.Distance.COSINE,
-                    ),
-                )
-            else:
-                log_pinecone("Clearing entire index...")
-                self.pinecone_index.delete(delete_all=True)
-            self.documents = []
-            self.file_registry = {}
-            self.index = None
-            logger.info("✅ Index cleared")
-        except Exception as e:
-            logger.error(f"Error clearing index: {e}")
+        """Global collection deletion is intentionally unavailable."""
+        raise PermissionError(
+            "global vector deletion is disabled; use a project-scoped manifest"
+        )
 
-    def clear_file(self, file_name: str):
+    def clear_file(
+        self, file_name: str, *, project_id: str, file_id: str = "",
+    ):
         """Clear vectors for a specific file."""
         try:
-            self._delete_file_vectors(file_name)
+            project_id = _require_project_id(project_id)
+            self._delete_file_vectors(
+                file_name, project_id=project_id, file_id=file_id,
+            )
             if file_name in self.file_registry:
                 del self.file_registry[file_name]
-            project_id = _current_project_id()
             self.documents = [d for d in self.documents if not (
                 d.metadata.get("file_name") == file_name and
                 (not project_id or d.metadata.get("project_id") == project_id)

@@ -1457,91 +1457,11 @@ def render_sidebar():
         # Template management
         _render_template_management()
 
-        # Clear all data (Pinecone + notices + graph)
         st.markdown("---")
-        if st.button("Clear All Data", use_container_width=True):
-            from src.document_rag import get_document_rag
-            from src.notice_extractor import NOTICES_DIR
-            from src.light_graph import GRAPH_DIR, get_light_graph
-
-            rag = get_document_rag()
-            rag.clear_index()
-
-            # Clear notice JSON files
-            for f in NOTICES_DIR.glob("*.json"):
-                f.unlink()
-
-            # Clear graph JSON files
-            for f in GRAPH_DIR.glob("*.json"):
-                f.unlink()
-
-            # Reset light graph singleton
-            graph = get_light_graph()
-            graph.graph.nodes = {}
-            graph.graph.edges = []
-            graph._sync_notices_to_duckdb()
-
-            # Clear table catalog (local + GCS)
-            try:
-                from src.catalog import get_catalog
-                get_catalog().clear_all()
-            except Exception:
-                pass
-
-            # Clear DuckDB table registry
-            try:
-                from src.data_analyzer_sql import get_data_analyzer
-                analyzer = get_data_analyzer()
-                for tbl in list(analyzer.tables.keys()):
-                    try:
-                        analyzer.conn.execute(f'DROP TABLE IF EXISTS "{tbl}"')
-                    except Exception:
-                        pass
-                analyzer.tables.clear()
-                analyzer.file_paths.clear()
-            except Exception:
-                pass
-
-            # Clear review session files
-            try:
-                from src.config import REVIEW_SESSIONS_DIR
-                for f in REVIEW_SESSIONS_DIR.glob("*.json"):
-                    f.unlink()
-            except Exception:
-                pass
-
-            # Clear converter registry
-            try:
-                from src.config import CONVERTER_REGISTRY_FILE
-                if CONVERTER_REGISTRY_FILE.exists():
-                    CONVERTER_REGISTRY_FILE.unlink()
-            except Exception:
-                pass
-
-            st.session_state.docs_count = 0
-            st.session_state.tables_count = 0
-            st.session_state.processed_files = set()
-            st.session_state.uploaded_files_log = []
-            st.session_state.messages = []
-            st.session_state["_startup_synced"] = False
-
-            # Reset inline source state
-            st.session_state.citation_verifications = {}
-            st.session_state["expanded_pdf_sources"] = set()
-            st.session_state["expanded_excel_sources"] = set()
-            st.session_state["selected_pdf_source"] = None
-            st.session_state["selected_excel_source"] = None
-            st.session_state["notice_cache"] = {}
-
-            # Reset current conversation
-            conv_id = st.session_state.get("active_conversation_id")
-            if conv_id:
-                conv_store = _get_conversation_store()
-                conv_store.delete_conversation(conv_id)
-                new_meta = conv_store.create_conversation()
-                st.session_state["active_conversation_id"] = new_meta.conversation_id
-
-                st.rerun()
+        st.caption(
+            "Global data deletion is disabled. Delete documents from the selected "
+            "project so other project records remain protected."
+        )
 
 
 def _render_pdf_page(file_path: str, page_num: int, highlight: str = "", show_download: bool = False):

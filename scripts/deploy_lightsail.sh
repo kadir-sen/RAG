@@ -195,8 +195,10 @@ log "Restarting docker compose on remote (no -v, volumes preserved)"
 $SSH "$SSH_TARGET" "
     set -e
     cd $REMOTE_APP_DIR
+    QDRANT_SERVER_API_KEY=\$(sudo sed -n 's/^QDRANT_API_KEY=//p' .env.production | tail -1)
+    export QDRANT_SERVER_API_KEY
     sudo docker compose -f docker-compose.prod.yml down || true
-    sudo docker compose -f docker-compose.prod.yml up -d
+    sudo env QDRANT_SERVER_API_KEY=\"\$QDRANT_SERVER_API_KEY\" docker compose -f docker-compose.prod.yml up -d
     sudo docker compose -f docker-compose.prod.yml ps
 "
 

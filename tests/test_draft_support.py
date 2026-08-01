@@ -22,8 +22,9 @@ def test_draft_support_builds_grounding_block(monkeypatch):
     o = _orch()
 
     class _RAG:
-        def query(self, q, top_k=12, synthesize=True):
+        def query(self, q, top_k=12, synthesize=True, project_id=""):
             assert synthesize is False  # retrieve-only (no synthesis LLM)
+            assert project_id == "project-a"
             return {"sources": [
                 {"file_name": "contract.pdf", "page_number": 80, "highlight_text": "clause 80 risk"},
                 {"file_name": "contract.pdf", "page_number": 80, "highlight_text": "dup"},  # deduped
@@ -32,7 +33,9 @@ def test_draft_support_builds_grounding_block(monkeypatch):
 
     import src.document_rag as dr
     monkeypatch.setattr(dr, "get_document_rag", lambda: _RAG())
-    block = o._build_draft_support_context("reply about the cost overrun")
+    block = o._build_draft_support_context(
+        "reply about the cost overrun", project_id="project-a",
+    )
     assert "SUPPORTING FACTS" in block
     assert "contract.pdf p.80" in block and "audit.pdf p.3" in block
     assert block.count("- [") == 2  # the duplicate (contract.pdf p.80) collapsed
@@ -42,12 +45,12 @@ def test_draft_support_empty_when_no_sources(monkeypatch):
     o = _orch()
 
     class _RAG:
-        def query(self, q, top_k=12, synthesize=True):
+        def query(self, q, top_k=12, synthesize=True, project_id=""):
             return {"sources": []}
 
     import src.document_rag as dr
     monkeypatch.setattr(dr, "get_document_rag", lambda: _RAG())
-    assert o._build_draft_support_context("reply") == ""
+    assert o._build_draft_support_context("reply", project_id="project-a") == ""
 
 
 def test_draft_support_graceful_on_error(monkeypatch):
@@ -58,4 +61,6 @@ def test_draft_support_graceful_on_error(monkeypatch):
         raise RuntimeError("rag down")
 
     monkeypatch.setattr(dr, "get_document_rag", boom)
-    assert o._build_draft_support_context("reply") == ""  # never raises
+    assert o._build_draft_support_context(
+        "reply", project_id="project-a",
+    ) == ""  # never raises

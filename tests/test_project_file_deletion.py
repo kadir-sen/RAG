@@ -44,7 +44,12 @@ def _install_fakes(monkeypatch, tmp_path, *, member=True, shared=False):
     monkeypatch.setattr(src.chunk_store, "get_chunk_store", lambda: SimpleNamespace(connection=lambda: connection))
     monkeypatch.setattr(src.catalog, "get_catalog", lambda: SimpleNamespace(entries={}, remove_entry=lambda *_a, **_k: None))
     cleared = []
-    monkeypatch.setattr(src.document_rag, "get_document_rag", lambda: SimpleNamespace(clear_file=cleared.append))
+    monkeypatch.setattr(
+        src.document_rag, "get_document_rag",
+        lambda: SimpleNamespace(
+            clear_file=lambda name, **kwargs: cleared.append((name, kwargs)),
+        ),
+    )
     monkeypatch.setattr(src.document_registry, "get_document_registry", lambda: SimpleNamespace(get_all=lambda: []))
     monkeypatch.setattr(src.event_timeline, "get_event_timeline", lambda: SimpleNamespace(delete_by_document=lambda *_a, **_k: 1))
     monkeypatch.setattr(src.config, "DATA_DIR", tmp_path / "data")
@@ -71,7 +76,7 @@ def test_legacy_delete_removes_only_project_owned_source(monkeypatch, tmp_path):
     assert result["source_files_deleted"] == 1
     assert result["shared_source_retained"] is False
     assert not source.exists()
-    assert cleared == ["record.pdf"]
+    assert cleared == [("record.pdf", {"project_id": "project-a"})]
 
 
 def test_legacy_delete_retains_source_referenced_by_another_project(monkeypatch, tmp_path):
@@ -86,7 +91,7 @@ def test_legacy_delete_retains_source_referenced_by_another_project(monkeypatch,
     assert result["source_files_deleted"] == 0
     assert result["shared_source_retained"] is True
     assert source.exists()
-    assert cleared == ["record.pdf"]
+    assert cleared == [("record.pdf", {"project_id": "project-a"})]
 
 
 def test_edinburgh_listing_keeps_legacy_inventory_after_new_upload(monkeypatch):

@@ -106,6 +106,20 @@ def _stats(project_id: str) -> Dict:
         status["failed"] = max(status["failed"], job_stats.get("failed", 0))
     except Exception:
         job_stats = {}
+    try:
+        vector_state = get_project_store().get_vector_state(project_id)
+        vector = {
+            "status": vector_state.get("status", "empty"),
+            "point_count": int(vector_state.get("point_count") or 0),
+            "embedding_profile": vector_state.get("embedding_profile", "local-bge-v1"),
+            "last_error": vector_state.get("last_error"),
+        }
+    except Exception:
+        vector = {
+            "status": "error", "point_count": 0,
+            "embedding_profile": "local-bge-v1",
+            "last_error": "vector_state_unavailable",
+        }
     return {
         "files": counts,
         "total_files": sum(counts.values()),
@@ -115,6 +129,7 @@ def _stats(project_id: str) -> Dict:
         "calibration_complete": job_stats.get("calibration_complete", False) if job_stats else False,
         "report_ready": bool(seen_names) and status["processing"] == 0 and status["queued"] == 0
                         and status["ready"] > 0,
+        "vector": vector,
     }
 
 

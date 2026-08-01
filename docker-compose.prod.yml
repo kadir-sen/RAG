@@ -51,6 +51,10 @@ services:
     image: qdrant/qdrant:v1.15.4
     container_name: mvp-qdrant
     restart: unless-stopped
+    environment:
+      # Exported by the deploy workflow from .env.production. Only this secret
+      # reaches Qdrant; LLM/provider credentials stay in the API container.
+      - QDRANT__SERVICE__API_KEY=${QDRANT_SERVER_API_KEY:-}
     # Bound to loopback only (for SSH-tunnel ingestion); the API talks to it over
     # the internal compose network, so no public exposure.
     ports:
