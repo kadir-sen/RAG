@@ -530,7 +530,7 @@ Local environment notes:
 
 ## 12. Post-deploy run results — Lightsail (2026-05-13)
 
-Image rebuilt locally (cross-build `linux/amd64`), shipped to `18.185.38.217` via `docker save | ssh | docker load`, and brought up via `docker compose -f docker-compose.prod.yml`.
+Image rebuilt locally (cross-build `linux/amd64`), shipped to `63.184.32.196` via `docker save | ssh | docker load`, and brought up via `docker compose -f docker-compose.prod.yml`.
 
 Pre-deploy: tagged the previous image as `mvp-api:previous` on the host for rollback.
 
@@ -546,7 +546,7 @@ Post-deploy server smoke (curl):
 Post-deploy Playwright run:
 
 ```bash
-BASE_URL=http://18.185.38.217 npm run e2e -- \
+BASE_URL=http://63.184.32.196 npm run e2e -- \
   tests/smoke/ tests/chat/branding.spec.ts tests/chat/provider-hidden.spec.ts \
   tests/chat/composer-layout.spec.ts tests/usage/usage-badge.spec.ts \
   tests/modals/settings.spec.ts tests/navigation/topnav.spec.ts \
@@ -559,7 +559,7 @@ BASE_URL=http://18.185.38.217 npm run e2e -- \
 Rollback procedure (if needed in the next few hours):
 
 ```bash
-ssh -i ~/Downloads/LightsailDefaultKey-eu-central-1.pem ubuntu@18.185.38.217 '
+ssh -i ~/Downloads/LightsailDefaultKey-eu-central-1.pem ubuntu@63.184.32.196 '
   cd /opt/mvp-api &&
   sudo docker compose -f docker-compose.prod.yml down &&
   sudo docker tag mvp-api:previous mvp-api:latest &&

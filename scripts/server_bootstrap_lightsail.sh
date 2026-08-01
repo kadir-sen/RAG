@@ -4,9 +4,9 @@
 #
 # Usage (from local Mac):
 #   scp -i ~/Downloads/LightsailDefaultKey-eu-central-1.pem \
-#       scripts/server_bootstrap_lightsail.sh ubuntu@18.185.38.217:/tmp/
+#       scripts/server_bootstrap_lightsail.sh ubuntu@63.184.32.196:/tmp/
 #   ssh -i ~/Downloads/LightsailDefaultKey-eu-central-1.pem \
-#       ubuntu@18.185.38.217 'bash /tmp/server_bootstrap_lightsail.sh'
+#       ubuntu@63.184.32.196 'bash /tmp/server_bootstrap_lightsail.sh'
 
 set -euo pipefail
 

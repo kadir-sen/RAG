@@ -1,6 +1,6 @@
 # Server'a geçiş — Qdrant + yerel embedding deploy (adım adım)
 
-Server zaten var (Lightsail Frankfurt, `18.185.38.217`, app şu an Pinecone'la çalışıyor).
+Server zaten var (Lightsail Frankfurt, `63.184.32.196`, app şu an Pinecone'la çalışıyor).
 Yapacağımız: aynı server'a **Qdrant + yerel bge embedding** ile yeniden deploy + yerelde
 ürettiğimiz **156.200 vektörü** taşımak. Mevcut genel runbook: [LIGHTSAIL_DEPLOYMENT.md](LIGHTSAIL_DEPLOYMENT.md).
 
@@ -50,7 +50,7 @@ cd /Users/kadirsen/Desktop/projects/ML_project_V2
 Qdrant'ın on-disk verisini **tutarlı kopyalamak için her iki tarafı da durdur**, sonra rsync:
 ```bash
 SSH_KEY=~/Downloads/LightsailDefaultKey-eu-central-1.pem
-SRV=ubuntu@18.185.38.217
+SRV=ubuntu@63.184.32.196
 
 # 1) server qdrant'ı durdur (volume'e temiz yazalım)
 ssh -i "$SSH_KEY" $SRV "cd /opt/mvp-api && sudo docker compose -f docker-compose.prod.yml stop qdrant"
@@ -68,7 +68,7 @@ ssh -i "$SSH_KEY" $SRV "cd /opt/mvp-api && sudo docker compose -f docker-compose
 ## Adım 4 — Doğrula
 
 ```bash
-curl -i http://18.185.38.217/api/health                 # 200 {"status":"ok"}
+curl -i http://63.184.32.196/api/health                 # 200 {"status":"ok"}
 # Qdrant içeride (public değil) — server üzerinden say:
 ssh -i "$SSH_KEY" $SRV "curl -s localhost:6333/collections/coair | python3 -c 'import sys,json;print(json.load(sys.stdin)[\"result\"][\"points_count\"])'"
 # → 156200 görmeli

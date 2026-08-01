@@ -3,7 +3,7 @@ import { test } from '@playwright/test';
 test('capture welcome/intro/chat surfaces', async ({ page, context }) => {
   test.setTimeout(180_000);
   await context.clearCookies();
-  await page.goto('http://18.185.38.217/', { waitUntil: 'networkidle' });
+  await page.goto('http://63.184.32.196/', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1000);
   await page.screenshot({ path: '/tmp/screenshots/01-welcome-fresh.png' });
 

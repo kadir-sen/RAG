@@ -18,7 +18,7 @@ job_hunter şu an Docker'lı değil; aşağıda hem **Docker** (önerilen) hem d
 | Bölge | eu-central-1 (Frankfurt) |
 | OS | Ubuntu (Lightsail base) |
 | Plan | **2 GB RAM / 2 vCPU / 60 GB SSD** |
-| Public IPv4 | `18.185.38.217` |
+| Public IPv4 | `63.184.32.196` |
 | SSH user | `ubuntu` |
 | SSH key | `~/Downloads/LightsailDefaultKey-eu-central-1.pem` (chmod 400) |
 | Mevcut app dizini | `/opt/mvp-api` (COAir — dokunma) |
@@ -27,7 +27,7 @@ job_hunter şu an Docker'lı değil; aşağıda hem **Docker** (önerilen) hem d
 ```bash
 SSH_KEY=~/Downloads/LightsailDefaultKey-eu-central-1.pem
 chmod 400 "$SSH_KEY"
-ssh -i "$SSH_KEY" ubuntu@18.185.38.217
+ssh -i "$SSH_KEY" ubuntu@63.184.32.196
 ```
 
 ---
@@ -237,7 +237,7 @@ riskidir. İki seçenek:
   docker buildx build --platform linux/amd64 --load -t job-hunter-api:latest -f api.Dockerfile .
   docker buildx build --platform linux/amd64 --load -t job-hunter-ui:latest  ./web
   docker save job-hunter-api:latest job-hunter-ui:latest | gzip | \
-    ssh -i "$SSH_KEY" ubuntu@18.185.38.217 'gunzip | sudo docker load'
+    ssh -i "$SSH_KEY" ubuntu@63.184.32.196 'gunzip | sudo docker load'
   ```
   Bu durumda compose'daki `build:` yerine `image: job-hunter-api:latest` /
   `image: job-hunter-ui:latest` kullanın.
@@ -249,7 +249,7 @@ riskidir. İki seçenek:
 
 ```bash
 SSH_KEY=~/Downloads/LightsailDefaultKey-eu-central-1.pem
-ssh -i "$SSH_KEY" ubuntu@18.185.38.217 \
+ssh -i "$SSH_KEY" ubuntu@63.184.32.196 \
   "mkdir -p /opt/job-hunter/data /opt/job-hunter/Job_Archive"
 
 rsync -az --delete \
@@ -257,16 +257,16 @@ rsync -az --delete \
   --exclude '.git' --exclude '.venv' --exclude '__pycache__' \
   --exclude 'web/node_modules' --exclude 'web/dist' \
   --exclude '.env' --exclude '.env.*' \
-  ./ ubuntu@18.185.38.217:/opt/job-hunter/
+  ./ ubuntu@63.184.32.196:/opt/job-hunter/
 
 # prod compose + gerçek secrets ayrı gönder
-scp -i "$SSH_KEY" docker-compose.prod.yml ubuntu@18.185.38.217:/opt/job-hunter/
-scp -i "$SSH_KEY" .env.production         ubuntu@18.185.38.217:/opt/job-hunter/.env.production
-scp -i "$SSH_KEY" client_secret_*.json    ubuntu@18.185.38.217:/opt/job-hunter/client_secret.json
-ssh -i "$SSH_KEY" ubuntu@18.185.38.217 "chmod 600 /opt/job-hunter/.env.production /opt/job-hunter/client_secret.json"
+scp -i "$SSH_KEY" docker-compose.prod.yml ubuntu@63.184.32.196:/opt/job-hunter/
+scp -i "$SSH_KEY" .env.production         ubuntu@63.184.32.196:/opt/job-hunter/.env.production
+scp -i "$SSH_KEY" client_secret_*.json    ubuntu@63.184.32.196:/opt/job-hunter/client_secret.json
+ssh -i "$SSH_KEY" ubuntu@63.184.32.196 "chmod 600 /opt/job-hunter/.env.production /opt/job-hunter/client_secret.json"
 
 # (opsiyonel) local'de scrape edilmiş veriyi gönder
-rsync -az -e "ssh -i $SSH_KEY" data/ Job_Archive/ ubuntu@18.185.38.217:/opt/job-hunter/ 2>/dev/null || true
+rsync -az -e "ssh -i $SSH_KEY" data/ Job_Archive/ ubuntu@63.184.32.196:/opt/job-hunter/ 2>/dev/null || true
 ```
 
 `.env.production` içeriği (`.env.example`'dan üretilir):
@@ -324,7 +324,7 @@ server {
 ```bash
 sudo ln -s /etc/nginx/sites-available/job-hunter /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
-# DNS A kaydı jobs.example.com -> 18.185.38.217, sonra:
+# DNS A kaydı jobs.example.com -> 63.184.32.196, sonra:
 sudo apt-get install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d jobs.example.com
 ```
@@ -420,7 +420,7 @@ Güncellenmiş hedef tablo:
 job_hunter Google ile giriş kullanıyor. Google Cloud Console → Credentials →
 OAuth 2.0 Client → **Authorized redirect URIs**'e yeni public adresi ekleyin:
 
-- Yöntem A: `http://18.185.38.217:8081/...` (callback path'i `routes_auth.py`'den teyit edin)
+- Yöntem A: `http://63.184.32.196:8081/...` (callback path'i `routes_auth.py`'den teyit edin)
 - Yöntem C: `https://jobs.example.com/...`
 
 Aksi halde giriş `redirect_uri_mismatch` hatası verir.
@@ -431,14 +431,14 @@ Aksi halde giriş `redirect_uri_mismatch` hatası verir.
 
 ```bash
 # Yöntem A / B
-curl -i http://18.185.38.217:8081/               # 200, SPA HTML
-curl -i http://18.185.38.217:8081/api/jobs       # 200, JSON
+curl -i http://63.184.32.196:8081/               # 200, SPA HTML
+curl -i http://63.184.32.196:8081/api/jobs       # 200, JSON
 
 # Yöntem C
 curl -i https://jobs.example.com/api/jobs        # 200
 
 # COAir regresyon kontrolü (etkilenmemeli)
-curl -i http://18.185.38.217/api/health          # {"status":"ok"}
+curl -i http://63.184.32.196/api/health          # {"status":"ok"}
 ```
 
 Sunucu tarafı:
@@ -456,7 +456,7 @@ sudo docker logs --tail 50 job-hunter-api   # uvicorn started, hata yok
 
 | İşlem | Komut (Docker) |
 |---|---|
-| Loglar | `ssh -i $SSH_KEY ubuntu@18.185.38.217 "sudo docker logs -f job-hunter-api"` |
+| Loglar | `ssh -i $SSH_KEY ubuntu@63.184.32.196 "sudo docker logs -f job-hunter-api"` |
 | Restart | `... "cd /opt/job-hunter && sudo docker compose -f docker-compose.prod.yml restart"` |
 | Stop | `... "cd /opt/job-hunter && sudo docker compose -f docker-compose.prod.yml stop"` |
 | Güncelle | local build → `docker save \| ssh \| docker load` → `up -d` |
@@ -484,7 +484,7 @@ free -h   # Swap: 4.0Gi
 ## Ek-B: Geri alma (rollback)
 
 ```bash
-ssh -i "$SSH_KEY" ubuntu@18.185.38.217
+ssh -i "$SSH_KEY" ubuntu@63.184.32.196
 cd /opt/job-hunter && sudo docker compose -f docker-compose.prod.yml down   # -v YOK
 # Yöntem C/native ise nginx bloğunu kaldır:
 sudo rm -f /etc/nginx/sites-enabled/job-hunter && sudo systemctl reload nginx
