@@ -147,8 +147,7 @@ class JargonManager:
         self._synonyms: Dict[str, str] = {}
         # Uppercase canonical key -> every spelling present in the source JSON.
         self._term_variants: Dict[str, Set[str]] = {}
-        self._match_pattern: Optional[re.Pattern] = None
-        self._match_variant_to_canonical: Dict[str, str] = {}
+        self._match_trie: Optional[Dict[str, dict]] = None
         # User-added custom terms (subset of _abbr_to_meaning, not built-in)
         self._custom_terms: Dict[str, Dict[str, str]] = {}
         self._builtin_keys = {term.strip().upper() for term in self.BUILTIN_JARGON}
@@ -172,7 +171,7 @@ class JargonManager:
         meaning_clean = meaning.strip()
 
         self._term_variants.setdefault(abbr_upper, set()).add(source_term)
-        self._match_pattern = None
+        self._match_trie = None
         existing = self._abbr_to_meaning.get(abbr_upper, "")
         senses = [part.strip() for part in existing.split(" | ") if part.strip()]
         if meaning_clean not in senses:
@@ -257,40 +256,73 @@ class JargonManager:
         )
 
     def _ensure_match_index(self) -> None:
-        """Compile one longest-first matcher for the complete glossary."""
-        if self._match_pattern is not None:
+        """Build a token trie for one-pass matching of the full glossary.
+
+        A single regular expression containing roughly 2,700 alternatives is
+        convenient for short queries but becomes prohibitively expensive for
+        corpus backfills.  The trie preserves longest-term-first matching while
+        making runtime proportional to the number of words in the input.
+        """
+        if self._match_trie is not None:
             return
-        variant_map: Dict[str, str] = {}
-        variants: List[str] = []
+        trie: Dict[str, dict] = {}
         for canonical, spellings in self._term_variants.items():
             for spelling in spellings or {canonical}:
-                key = spelling.casefold()
-                variant_map[key] = canonical
-                variants.append(spelling)
-        variants.sort(key=len, reverse=True)
-        alternatives = "|".join(re.escape(value) for value in variants)
-        self._match_pattern = re.compile(
-            rf"(?<![A-Za-z0-9])(?:{alternatives})(?![A-Za-z0-9])",
-            re.IGNORECASE,
-        )
-        self._match_variant_to_canonical = variant_map
+                tokens = tuple(
+                    match.group(0).casefold()
+                    for match in re.finditer(r"[A-Za-z0-9]+", spelling)
+                )
+                if not tokens:
+                    continue
+                node = trie
+                for token in tokens:
+                    node = node.setdefault(token, {})
+                node[""] = canonical
+        self._match_trie = trie
 
     def _matching_hits(
         self, text: str, *, max_terms: Optional[int] = None,
     ) -> List[Tuple[str, str, int, int]]:
         self._ensure_match_index()
-        if self._match_pattern is None:
+        if self._match_trie is None:
             return []
+        words = list(re.finditer(r"[A-Za-z0-9]+", str(text or "")))
         hits: List[Tuple[str, str, int, int]] = []
         seen: Set[str] = set()
-        for match in self._match_pattern.finditer(str(text or "")):
-            canonical = self._match_variant_to_canonical.get(match.group(0).casefold())
-            if not canonical or canonical in seen:
+        index = 0
+        while index < len(words):
+            node = self._match_trie.get(words[index].group(0).casefold())
+            if node is None:
+                index += 1
                 continue
-            seen.add(canonical)
-            hits.append((canonical, self._abbr_to_meaning[canonical], match.start(), match.end()))
-            if max_terms is not None and len(hits) >= max_terms:
-                break
+            cursor = index
+            match_end = -1
+            canonical = node.get("")
+            if canonical:
+                match_end = cursor
+            while cursor + 1 < len(words):
+                child = node.get(words[cursor + 1].group(0).casefold())
+                if child is None:
+                    break
+                cursor += 1
+                node = child
+                if node.get(""):
+                    canonical = node[""]
+                    match_end = cursor
+            if canonical and match_end >= index:
+                if canonical not in seen:
+                    seen.add(canonical)
+                    hits.append((
+                        canonical,
+                        self._abbr_to_meaning[canonical],
+                        words[index].start(),
+                        words[match_end].end(),
+                    ))
+                    if max_terms is not None and len(hits) >= max_terms:
+                        break
+                index = match_end + 1
+            else:
+                index += 1
         return hits
 
     def find_matching_terms(
