@@ -147,6 +147,8 @@ class JargonManager:
         self._synonyms: Dict[str, str] = {}
         # Uppercase canonical key -> every spelling present in the source JSON.
         self._term_variants: Dict[str, Set[str]] = {}
+        self._match_pattern: Optional[re.Pattern] = None
+        self._match_variant_to_canonical: Dict[str, str] = {}
         # User-added custom terms (subset of _abbr_to_meaning, not built-in)
         self._custom_terms: Dict[str, Dict[str, str]] = {}
         self._builtin_keys = {term.strip().upper() for term in self.BUILTIN_JARGON}
@@ -170,6 +172,7 @@ class JargonManager:
         meaning_clean = meaning.strip()
 
         self._term_variants.setdefault(abbr_upper, set()).add(source_term)
+        self._match_pattern = None
         existing = self._abbr_to_meaning.get(abbr_upper, "")
         senses = [part.strip() for part in existing.split(" | ") if part.strip()]
         if meaning_clean not in senses:
@@ -216,30 +219,7 @@ class JargonManager:
         if not original.strip():
             return PreparedQuery(original, (), "", original, (original,))
 
-        occupied: List[Tuple[int, int]] = []
-        hits: List[Tuple[str, str, int, int]] = []
-        for canonical, meaning in sorted(
-            self._abbr_to_meaning.items(), key=lambda item: len(item[0]), reverse=True,
-        ):
-            variants = sorted(
-                self._term_variants.get(canonical) or {canonical},
-                key=len, reverse=True,
-            )
-            found = None
-            for variant in variants:
-                match = self._term_pattern(variant).search(original)
-                if match and not any(match.start() < end and match.end() > start
-                                     for start, end in occupied):
-                    found = match
-                    break
-            if found is None:
-                continue
-            occupied.append((found.start(), found.end()))
-            hits.append((canonical, meaning, found.start(), found.end()))
-            if len(hits) >= max(1, int(max_terms)):
-                break
-
-        hits.sort(key=lambda item: item[2])
+        hits = self._matching_hits(original, max_terms=max(1, int(max_terms)))
         context_lines: List[str] = []
         accepted: List[Tuple[str, str, int, int]] = []
         used = len("Relevant domain terminology:\n")
@@ -275,6 +255,51 @@ class JargonManager:
             llm_query=f"{original}\n\n{context}" if context else original,
             retrieval_queries=tuple(variants),
         )
+
+    def _ensure_match_index(self) -> None:
+        """Compile one longest-first matcher for the complete glossary."""
+        if self._match_pattern is not None:
+            return
+        variant_map: Dict[str, str] = {}
+        variants: List[str] = []
+        for canonical, spellings in self._term_variants.items():
+            for spelling in spellings or {canonical}:
+                key = spelling.casefold()
+                variant_map[key] = canonical
+                variants.append(spelling)
+        variants.sort(key=len, reverse=True)
+        alternatives = "|".join(re.escape(value) for value in variants)
+        self._match_pattern = re.compile(
+            rf"(?<![A-Za-z0-9])(?:{alternatives})(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        self._match_variant_to_canonical = variant_map
+
+    def _matching_hits(
+        self, text: str, *, max_terms: Optional[int] = None,
+    ) -> List[Tuple[str, str, int, int]]:
+        self._ensure_match_index()
+        if self._match_pattern is None:
+            return []
+        hits: List[Tuple[str, str, int, int]] = []
+        seen: Set[str] = set()
+        for match in self._match_pattern.finditer(str(text or "")):
+            canonical = self._match_variant_to_canonical.get(match.group(0).casefold())
+            if not canonical or canonical in seen:
+                continue
+            seen.add(canonical)
+            hits.append((canonical, self._abbr_to_meaning[canonical], match.start(), match.end()))
+            if max_terms is not None and len(hits) >= max_terms:
+                break
+        return hits
+
+    def find_matching_terms(
+        self, text: str, *, max_terms: Optional[int] = None,
+    ) -> List[Tuple[str, str]]:
+        """Return canonical glossary matches without prompt-size truncation."""
+        return [(key, meaning) for key, meaning, _, _ in self._matching_hits(
+            text, max_terms=max_terms,
+        )]
 
     def load_from_excel(self, file_path: str) -> int:
         """
