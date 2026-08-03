@@ -42,8 +42,9 @@ def test_demo_forces_gemini_36_and_minimal_for_lite_tasks(monkeypatch):
     assert attributed["reasoning_tokens"] == 5
 
 
-def test_demo_structured_reports_use_gemini(monkeypatch):
-    monkeypatch.setattr(llm_client, "_current_model_policy", lambda: "demo-gemini-3.6-v1")
+@pytest.mark.parametrize("policy", ["demo-gemini-3.6-v1", ""])
+def test_structured_reports_use_gemini_for_every_account(monkeypatch, policy):
+    monkeypatch.setattr(llm_client, "_current_model_policy", lambda: policy)
     captured = {}
 
     def fake_generate(prompt, **kwargs):

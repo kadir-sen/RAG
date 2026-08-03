@@ -604,7 +604,8 @@ def generate_text(
         _tr = get_current_trace()
         if _tr is not None:
             _real_calls = max(0, _tr.llm_calls - _tr.cache_hits)
-            if _real_calls >= MAX_LLM_CALLS_PER_QUERY and provider == "gemini":
+            if (_real_calls >= MAX_LLM_CALLS_PER_QUERY and provider == "gemini"
+                    and task_type != "report_structured"):
                 if model != GEMINI_MODEL_LITE or thinking:
                     logger.warning(
                         f"[LLMClient] soft budget hit ({_real_calls} calls) — "
@@ -880,99 +881,28 @@ def generate_response_json(
     cache_key: Optional[str] = None,
     ttl_s: int = CACHE_TTL_SECONDS,
 ) -> LLMResponse:
-    """Structured JSON through OpenAI Responses API for quality-critical reports."""
-    if _current_model_policy() == "demo-gemini-3.6-v1":
-        response = generate_text(
-            prompt,
-            system=system,
-            model="gemini-3.6-flash",
-            provider="gemini",
-            json_mode=True,
-            response_schema=schema,
-            thinking_level="medium",
-            task_type="report_structured",
-            cache_key=cache_key,
-            ttl_s=ttl_s,
-            max_tokens=8192,
-        )
-        response.raw = json.loads(response.text)
-        return response
-    model = model or OPENAI_MODEL
-    if cache_key is None:
-        material = f"responses:{model}:{reasoning_effort}:{schema_name}:{system}:{prompt}"
-        cache_key = "llm:" + hashlib.sha256(material.encode()).hexdigest()[:32]
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        usage = LLMUsage(
-            prompt_tokens=estimate_tokens(system + prompt),
-            completion_tokens=estimate_tokens(cached),
-            total_tokens=estimate_tokens(system + prompt + cached),
-            model=model, provider="openai", cache_hit=True,
-            cached_tokens=estimate_tokens(system + prompt),
-        )
-        _record_run_usage(usage)
-        return LLMResponse(text=cached, usage=usage, raw=json.loads(cached))
+    """Generate quality-critical structured reports with Gemini JSON schema.
 
-    enforce_budget()
-    _enforce_user_quota()
-    from openai import OpenAI
-    client = OpenAI(api_key=OPENAI_API_KEY, timeout=LLM_TIMEOUT_SECONDS)
-    reasoning: Dict[str, str] = {"effort": reasoning_effort}
-    if pro_mode:
-        reasoning["mode"] = "pro"
-    started = time.time()
-    response = client.responses.create(
-        model=model,
-        instructions=system,
-        input=prompt,
-        reasoning=reasoning,
-        text={
-            "verbosity": "medium",
-            "format": {
-                "type": "json_schema",
-                "name": schema_name,
-                "strict": True,
-                "schema": schema,
-            },
-        },
-        store=False,
+    The legacy OpenAI Responses path made report completion depend on a second
+    provider and bypassed the Gemini-only report policy.  Keep the older
+    arguments for call-site compatibility, but all structured reports now use
+    the same metered Gemini 3.6 Flash path and medium thinking.
+    """
+    response = generate_text(
+        prompt,
+        system=system,
+        model="gemini-3.6-flash",
+        provider="gemini",
+        json_mode=True,
+        response_schema=schema,
+        thinking_level="medium",
+        task_type="report_structured",
+        cache_key=cache_key,
+        ttl_s=ttl_s,
+        max_tokens=8192,
     )
-    elapsed_ms = (time.time() - started) * 1000
-    raw_text = (response.output_text or "").strip()
-    parsed = json.loads(raw_text)
-    api_usage = getattr(response, "usage", None)
-    prompt_tokens = int(getattr(api_usage, "input_tokens", 0) or estimate_tokens(system + prompt))
-    completion_tokens = int(getattr(api_usage, "output_tokens", 0) or estimate_tokens(raw_text))
-    input_details = getattr(api_usage, "input_tokens_details", None)
-    output_details = getattr(api_usage, "output_tokens_details", None)
-    cached_tokens = int(getattr(input_details, "cached_tokens", 0) or 0)
-    reasoning_tokens = int(getattr(output_details, "reasoning_tokens", 0) or 0)
-    pricing = LLM_PRICING.get(model, {})
-    uncached = max(0, prompt_tokens - cached_tokens)
-    cost = (
-        uncached / 1_000_000 * float(pricing.get("input", 0))
-        + cached_tokens / 1_000_000 * float(pricing.get("cached_input", pricing.get("input", 0)))
-        + completion_tokens / 1_000_000 * float(pricing.get("output", 0))
-    )
-    usage = LLMUsage(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
-        cost_estimate=round(cost, 8), model=model, latency_ms=round(elapsed_ms, 1),
-        provider="openai", reasoning_tokens=reasoning_tokens,
-        cached_tokens=cached_tokens,
-    )
-    _cache_set(cache_key, raw_text, ttl_s)
-    record_usage(prompt_tokens, completion_tokens, usage.cost_estimate)
-    _attribute_to_current_user(
-        prompt_tokens, completion_tokens, provider="openai", model=model,
-        reasoning_tokens=reasoning_tokens, cached_tokens=cached_tokens,
-        cost_nanos=int((Decimal(str(cost)) * Decimal(1_000_000_000)).quantize(
-            Decimal("1"), rounding=ROUND_HALF_UP
-        )), task_type="report_structured",
-    )
-    _record_run_usage(usage)
-    return LLMResponse(text=raw_text, usage=usage, raw=parsed)
+    response.raw = json.loads(response.text)
+    return response
 
 
 # ── Dual-Provider API ────────────────────────────────────────
