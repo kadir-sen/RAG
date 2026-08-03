@@ -32,6 +32,12 @@ RUN cd frontend && npm run build
 # Copy application code
 COPY src/ ./src/
 COPY backend/ ./backend/
+# The jargon manager loads this version-controlled glossary during module
+# import, before the API can answer its health check. Keep the copy explicit so
+# future files under config/ (which may be deployment-specific) are not baked
+# into the image accidentally.
+COPY config/jargon_terms.json ./config/jargon_terms.json
+RUN python -c "import json; p='config/jargon_terms.json'; d=json.load(open(p, encoding='utf-8')); assert isinstance(d, dict) and len(d) == 2703"
 COPY app.py .
 COPY debug_app.py .
 COPY entrypoint.sh .

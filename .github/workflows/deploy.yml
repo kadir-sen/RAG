@@ -191,6 +191,6 @@ jobs:
               fi
               sleep 5
             done
-            echo "Health check FAILED after ~100s — last logs:"
+            echo "Health check FAILED after ~240s — last logs:"
             $SUDO docker compose -f docker-compose.prod.yml logs --tail=100 api
             exit 1
