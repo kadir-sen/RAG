@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -169,7 +169,7 @@ def _out(project: Dict, user: UserContext) -> Dict:
 def list_projects(
     user: UserContext = Depends(get_current_user),
     store: ProjectStore = Depends(get_project_store),
-) -> Dict[str, List[Dict]]:
+) -> Dict[str, Any]:
     projects = store.list_all() if user.role == "admin" else store.list_for_user(user.username)
     from src.user_store import get_user_store
     return {
