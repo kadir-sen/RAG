@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 import FileUploadArea from '../components/files/FileUploadArea';
 import { archiveProject, createProject, renameProject } from '../api/projectApi';
-import { deleteFile, getIndexingStatus, listFiles, uploadFile } from '../api/fileApi';
+import { deleteFile, getIndexingStatus, listFiles, retryFileIndexing, uploadFile } from '../api/fileApi';
 import type { FileInfo, IndexingStatus } from '../types/api';
 import { useProjectStore } from '../stores/projectStore';
 import QueryHistory from '../components/projects/QueryHistory';
+import { useAuthStore } from '../stores/authStore';
+import ModuleTile from '../components/modules/ModuleTile';
+import { ChatbotMark, ChronologyMark, ReportsMark } from '../components/modules/ModuleMarks';
 
 const PAGE_SIZE = 50;
 
@@ -23,8 +25,11 @@ function typeLabel(fileType: string) {
   return 'Document';
 }
 
+function storage(value: number) {
+  return `${(value / 1_000_000_000).toFixed(2)} GB`;
+}
+
 export default function ProjectsPage() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const projects = useProjectStore((s) => s.projects);
   const selectedProjectId = useProjectStore((s) => s.selectedProjectId);
@@ -41,6 +46,8 @@ export default function ProjectsPage() {
   const [filePage, setFilePage] = useState(1);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
+  const user = useAuthStore((s) => s.user);
+  const refreshMe = useAuthStore((s) => s.refreshMe);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -74,7 +81,10 @@ export default function ProjectsPage() {
     setActionError('');
   }, [current?.project_id, current?.name]);
 
-  const active = useMemo(() => jobs.filter((j) => !['ready', 'failed'].includes(j.status)), [jobs]);
+  const active = useMemo(
+    () => jobs.filter((j) => !['ready', 'failed', 'credit_balance_exhausted'].includes(j.status)),
+    [jobs],
+  );
   const canOpen = Boolean(current?.stats.report_ready) && active.length === 0;
   const canEditFiles = Boolean(current && current.role !== 'viewer');
   const canRename = Boolean(current && ['owner', 'admin'].includes(current.role));
@@ -128,7 +138,10 @@ export default function ProjectsPage() {
       await queryClient.invalidateQueries({ queryKey: ['library', selectedProjectId] });
     } catch {
       setActionError('One or more files could not be uploaded. Completed uploads remain queued.');
-    } finally { setUploading(false); }
+    } finally {
+      await refreshMe();
+      setUploading(false);
+    }
   };
 
   const saveName = async () => {
@@ -158,12 +171,23 @@ export default function ProjectsPage() {
         queryClient.invalidateQueries({ queryKey: ['library', selectedProjectId] }),
         queryClient.invalidateQueries({ queryKey: ['chronology', selectedProjectId] }),
         load(),
+        refreshMe(),
       ]);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Deletion failed';
       setActionError(`“${file.name}” was not deleted. ${message}`);
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const retryJob = async (fileId: string) => {
+    setActionError('');
+    try {
+      await retryFileIndexing(fileId);
+      setJobs(await getIndexingStatus());
+    } catch {
+      setActionError('The job could not be restarted. Check the credit balance and try again.');
     }
   };
 
@@ -188,13 +212,6 @@ export default function ProjectsPage() {
             <h1 className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">Projects and source records</h1>
             <p className="mt-2 text-[13px] text-[var(--text-secondary)]">Each module can only see the documents in the active project shown in the top-left selector.</p>
           </div>
-          {current && (
-            <div className="flex items-center gap-3 border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2">
-              <span className={`h-2 w-2 rounded-full ${current.stats.report_ready ? 'bg-[var(--green)]' : 'bg-[var(--amber)]'}`} />
-              <span className="text-[11px] text-[var(--text-secondary)]"><strong className="text-[var(--text-primary)]">{current.name}</strong> is active</span>
-              <button type="button" disabled={!canOpen} onClick={() => navigate('/')} className="ml-2 px-3 py-1.5 bg-[var(--accent)] text-[var(--accent-ink)] font-mono text-[9px] uppercase tracking-[.14em] disabled:opacity-40">{canOpen ? 'Open modules →' : 'Processing…'}</button>
-            </div>
-          )}
         </header>
 
         {actionError && <div role="alert" className="mb-5 border border-[var(--danger)] bg-[var(--bg-primary)] px-4 py-3 text-[11px] text-[var(--danger)]">{actionError}</div>}
@@ -224,6 +241,20 @@ export default function ProjectsPage() {
                 {!loading && projects.length === 0 && <p className="py-5 text-[11px] text-[var(--text-secondary)]">Create the first project to begin.</p>}
               </div>
             </section>
+
+            {user?.plan_type === 'demo' && (
+              <section className="border border-[var(--border)] bg-[var(--wash)] p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="font-mono text-[10px] uppercase tracking-[.16em] text-[var(--text-muted)]">Account capacity</h2>
+                  <span className="font-mono text-[10px] text-[var(--text-secondary)]">{user.storage_percent_used.toFixed(1)}% used</span>
+                </div>
+                <div className="mt-3 h-1.5 bg-[var(--wash-firm)]">
+                  <div className="h-full bg-[var(--accent)]" style={{ width: `${Math.min(100, user.storage_percent_used)}%` }} />
+                </div>
+                <p className="mt-2 font-mono text-[9px] text-[var(--text-muted)]">{storage(user.storage_used_bytes)} / {storage(user.storage_limit_bytes)} source files</p>
+                <p className="mt-1 font-mono text-[9px] text-[var(--text-muted)]">{user.credits_remaining.toFixed(2)} / {user.credits_total.toFixed(2)} credits remaining</p>
+              </section>
+            )}
 
             <section className="border border-[var(--border)] bg-[var(--wash)] p-4">
               <h2 className="font-mono text-[10px] uppercase tracking-[.16em] text-[var(--text-muted)]">New project</h2>
@@ -263,19 +294,33 @@ export default function ProjectsPage() {
                     )}
                   </div>
 
-                  <div className="grid sm:grid-cols-5 border-b border-[var(--border)]">
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-7 border-b border-[var(--border)]">
                     {[
                       ['Documents', current.stats.files.document],
                       ['Mail', current.stats.files.email],
                       ['Spreadsheets', current.stats.files.data],
                       ['Vector points', current.stats.vector.point_count],
                       ['Remaining', current.stats.queued + current.stats.processing],
+                      ['Model tokens', current.usage.prompt_tokens + current.usage.completion_tokens],
+                      ['Credits used', current.usage.credits_used.toFixed(2)],
                     ].map(([label, value]) => (
                       <div key={label} className="p-4 border-b sm:border-b-0 sm:border-r last:border-r-0 border-[var(--border)]">
                         <p className="font-mono text-[9px] uppercase text-[var(--text-muted)]">{label}</p>
                         <p className="mt-1 text-xl font-semibold text-[var(--text-primary)]">{Number(value).toLocaleString()}</p>
                       </div>
                     ))}
+                  </div>
+
+                  <div className="border-b border-[var(--border)] bg-[var(--bg-primary)] p-5 md:p-7">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                      <div><p className="font-mono text-[9px] uppercase tracking-[.16em] text-[var(--text-muted)]">Start with a module</p><h3 className="mt-1 text-lg font-semibold text-[var(--text-primary)]">Work in {current.name}</h3></div>
+                      {!canOpen && <p className="font-mono text-[9px] text-[var(--amber)]">{active.length || current.stats.queued + current.stats.processing} remaining · ETA {duration(current.stats.eta_seconds)}</p>}
+                    </div>
+                    <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-5 md:gap-7">
+                      <ModuleTile index="01" name="Chatbot" role="Ask and investigate" blurb={`${current.name} · Search documents, correspondence and project data.`} mark={<ChatbotMark className="h-full w-full" />} to={canOpen ? '/chat' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
+                      <ModuleTile index="02" name="Chronology" role="Build an evidence timeline" blurb={`${current.name} · Generate a sourced English chronology and Word report.`} mark={<ChronologyMark className="h-full w-full" />} to={canOpen ? '/chronology' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
+                      <ModuleTile index="03" name="Forensic Reports" role="Prepare expert analysis" blurb={`${current.name} · Develop evidence-led forensic report drafts.`} mark={<ReportsMark className="h-full w-full" />} to={canOpen ? '/forensic' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
+                    </div>
                   </div>
 
                   <div className="p-3 border-b border-[var(--border)]">
@@ -289,6 +334,11 @@ export default function ProjectsPage() {
                           <div className="flex justify-between gap-4 text-[11px]"><span className="truncate text-[var(--text-primary)]">{job.filename}</span><span className="font-mono uppercase text-[var(--text-muted)]">{job.status}</span></div>
                           <div className="mt-2 h-1 bg-[var(--wash-firm)]"><div className="h-full bg-[var(--accent)]" style={{ width: `${Math.round(job.progress * 100)}%` }} /></div>
                           {job.error && <p className="mt-1 text-[10px] text-[var(--danger)]">{job.error}</p>}
+                          {job.status === 'credit_balance_exhausted' && canEditFiles && (
+                            <button type="button" onClick={() => void retryJob(job.file_id)} className="mt-2 border border-[var(--border)] px-2 py-1 font-mono text-[9px] uppercase text-[var(--text-secondary)]">
+                              Retry after top-up
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>

@@ -22,7 +22,6 @@ router = APIRouter()
 
 class ChronologyGenerateRequest(BaseModel):
     topic: str = Field(min_length=3, max_length=1000)
-    issue_number: int = Field(default=1, ge=1, le=999)
     date_from: str = ""
     date_to: str = ""
     parties: List[str] = Field(default_factory=list, max_length=30)
@@ -89,8 +88,8 @@ def generate_chronology_report(
         title=body.topic,
         request={
             "project_name": project.name, "topic": body.topic,
-            "issue_number": body.issue_number, "date_from": body.date_from,
-            "date_to": body.date_to, "parties": body.parties,
+            "date_from": body.date_from, "date_to": body.date_to,
+            "parties": body.parties,
         },
     )
     return _public(job)

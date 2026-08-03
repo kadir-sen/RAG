@@ -227,7 +227,9 @@ async def upload_file(
     user: UserContext = Depends(get_current_user),
     project: ProjectContext = Depends(require_project_editor),
 ):
-    saved_path, file_id, is_duplicate = await _file_service.save(file, project.project_id)
+    saved_path, file_id, is_duplicate = await _file_service.save(
+        file, project.project_id, username=user.username,
+    )
     if is_duplicate:
         return UploadResult(
             file_id=file_id,
@@ -239,6 +241,7 @@ async def upload_file(
     get_project_store().set_vector_state(project.project_id, "provisioning")
     job = get_ingestion_job_store().enqueue(
         project.project_id, file_id, saved_path, file.filename or "upload",
+        requested_by=user.username,
     )
     return UploadResult(
         file_id=file_id,
@@ -302,6 +305,8 @@ async def delete_file(
     legacy_result = _delete_legacy_project_file(file_id, project.project_id)
     if legacy_result is None:
         raise HTTPException(404, "file_not_found")
+    from src.billing_store import get_billing_store
+    get_billing_store().release_storage(project_id=project.project_id, file_id=file_id)
     return {"ok": True, "cleanup": legacy_result}
 
 

@@ -70,6 +70,13 @@ class UserStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._write_lock = threading.Lock()
         self._init_schema()
+        from .billing_store import BillingStore
+        self.billing = BillingStore(self.db_path)
+        # Schema migration: old accounts stay legacy/unlimited until explicitly
+        # provisioned as demo accounts. This never converts historical tokens to
+        # credits or silently places an existing customer behind a new paywall.
+        for record in self.list_users():
+            self.billing.provision_account(record["username"], plan_type="legacy")
 
     @classmethod
     def instance(cls) -> "UserStore":
@@ -135,6 +142,11 @@ class UserStore:
         role: str = "user",
         token_limit: int = 1_000_000,
         features: Optional[Dict[str, bool]] = None,
+        plan_type: str = "legacy",
+        initial_credits: float = 0,
+        markup_percent: float = 30,
+        storage_limit_bytes: int = 0,
+        model_policy: str = "",
     ) -> Dict[str, Any]:
         if role not in ("user", "admin"):
             raise ValueError(f"invalid role: {role!r}")
@@ -171,6 +183,14 @@ class UserStore:
             except sqlite3.IntegrityError as exc:
                 raise ValueError(f"username already exists: {username}") from exc
         logger.info(f"[UserStore] Created user {username} (role={role})")
+        self.billing.provision_account(
+            username,
+            plan_type=plan_type,
+            initial_credits=initial_credits,
+            markup_bps=round(float(markup_percent) * 100),
+            storage_limit_bytes=storage_limit_bytes,
+            model_policy=model_policy,
+        )
         return self.get_user(username)
 
     def get_user(self, username: str) -> Optional[Dict[str, Any]]:
@@ -322,6 +342,10 @@ class UserStore:
             "completion_tokens": ct,
             "total_calls": int(row["total_calls"]) if row else 0,
         }
+
+    def get_billing_summary(self, username: str) -> Dict[str, Any]:
+        """Return credit/storage state while preserving legacy token counters."""
+        return {**self.get_usage(username), **self.billing.summary(username)}
 
     def reset_usage(self, username: str) -> Dict[str, Any]:
         now = datetime.utcnow().isoformat()

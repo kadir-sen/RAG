@@ -18,7 +18,7 @@ export interface QueryRun {
   output_tokens: number | null;
   reasoning_tokens: number | null;
   cached_tokens: number | null;
-  cost_usd: number | null;
+  cost_usd?: number | null;
   source_count: number | null;
   footnote_count: number | null;
   metrics_complete: boolean;

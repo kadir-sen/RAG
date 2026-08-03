@@ -1,8 +1,9 @@
 """Usage / budget endpoints — exposes the global LLM cost counter."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from src.usage_tracker import get_snapshot, reset_usage
+from src.billing_store import get_billing_store
 
 router = APIRouter()
 
@@ -39,3 +40,15 @@ def reset_usage_counter() -> dict:
         "total_tokens": snap.total_tokens,
         "total_calls": snap.total_calls,
     }
+
+
+@router.get("/admin/usage")
+def billing_usage(
+    username: str = Query(""), project_id: str = Query(""),
+    date_from: str = Query(""), date_to: str = Query(""),
+) -> dict:
+    """Admin-only project/user billing breakdown (router is admin-gated)."""
+    return get_billing_store().usage(
+        username=username, project_id=project_id,
+        date_from=date_from, date_to=date_to,
+    )

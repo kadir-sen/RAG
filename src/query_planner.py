@@ -192,7 +192,10 @@ class QueryPlanner:
             )
 
         # Expand jargon for better planning
-        expanded = self.jargon.expand_query(query)
+        prepared = self.jargon.prepare_query(query)
+        from .jargon_manager import set_current_prepared_query
+        set_current_prepared_query(prepared)
+        expanded = prepared.llm_query
 
         # Use LLM to plan complex queries
         try:
@@ -217,7 +220,8 @@ class QueryPlanner:
             _plan_key = "plan:" + _hl.sha256(f"{_norm}|{_inv}".encode()).hexdigest()[:32]
 
             resp = llm_client.generate_text(prompt, system=system, max_tokens=1024,
-                                            cache_key=_plan_key)
+                                            cache_key=_plan_key,
+                                            task_type="query_plan")
 
             # Record telemetry
             from .telemetry import get_current_trace
@@ -721,7 +725,10 @@ class PlanExecutor:
         )
 
         try:
-            resp = llm_client.generate_text(prompt, system=system, max_tokens=1024, provider=provider)
+            resp = llm_client.generate_text(
+                prompt, system=system, max_tokens=1024, provider=provider,
+                task_type="answer_synthesis",
+            )
 
             from .telemetry import get_current_trace
             trace = get_current_trace()

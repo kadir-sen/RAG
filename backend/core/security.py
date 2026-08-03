@@ -60,6 +60,21 @@ def get_current_username() -> Optional[str]:
     return user.username if user else None
 
 
+def set_current_user_context(username: str) -> Optional[UserContext]:
+    """Stamp a worker thread with the same identity used by request handlers."""
+    record = get_user_store().get_user(username)
+    if not record or not record.get("is_active"):
+        current_user_var.set(None)
+        return None
+    user = UserContext(
+        username=record["username"], role=record["role"],
+        display_name=record["display_name"], features=record["features"],
+        token_limit=record["token_limit"],
+    )
+    current_user_var.set(user)
+    return user
+
+
 # ── Token helpers ───────────────────────────────────────────
 
 def hash_password(plain: str) -> str:
@@ -162,6 +177,7 @@ __all__ = [
     "UserContext",
     "current_user_var",
     "get_current_username",
+    "set_current_user_context",
     "hash_password",
     "verify_password",
     "create_access_token",

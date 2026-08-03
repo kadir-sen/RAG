@@ -44,6 +44,7 @@ from backend.core.security import get_current_user, require_admin
 from backend.core.projects import get_current_project
 from src.usage_tracker import BudgetExceededError
 from src.user_store import UserQuotaExceededError, get_user_store
+from src.billing_store import CreditBalanceExceededError, StorageQuotaExceededError
 
 # Frontend build directory (exists only in Docker / after npm run build)
 _frontend_dist = Path(_project_root) / "frontend" / "dist"
@@ -152,6 +153,23 @@ def create_app() -> FastAPI:
                 "token_limit": exc.limit,
                 "percent_remaining": 0.0,
             },
+        )
+
+    @app.exception_handler(CreditBalanceExceededError)
+    async def _credit_exceeded_handler(_req: Request, exc: CreditBalanceExceededError):
+        return JSONResponse(
+            status_code=402,
+            content={"detail": str(exc), "error": "credit_balance_exhausted",
+                     "credits_remaining": 0.0, "credit_percent_remaining": 0.0},
+        )
+
+    @app.exception_handler(StorageQuotaExceededError)
+    async def _storage_exceeded_handler(_req: Request, exc: StorageQuotaExceededError):
+        return JSONResponse(
+            status_code=413,
+            content={"detail": str(exc), "error": "storage_quota_exceeded",
+                     "storage_used_bytes": exc.used, "storage_limit_bytes": exc.limit,
+                     "attempted_bytes": exc.attempted},
         )
 
     @app.get("/api/health", tags=["health"])

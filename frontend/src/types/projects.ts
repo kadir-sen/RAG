@@ -25,4 +25,12 @@ export interface Project {
   role: 'owner' | 'editor' | 'viewer' | 'admin';
   archived_at: string | null;
   stats: ProjectStats;
+  usage: {
+    calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    credits_used: number;
+    estimated_provider_cost_usd?: number;
+    uncovered_credits?: number;
+  };
 }

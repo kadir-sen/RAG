@@ -1763,7 +1763,10 @@ class DataAnalyzerSQL:
 
         jargon_context = self.jargon.build_column_context(columns)
 
-        expanded_question = self.jargon.expand_query(question)
+        prepared_question = self.jargon.prepare_query(question)
+        from .jargon_manager import set_current_prepared_query
+        set_current_prepared_query(prepared_question)
+        expanded_question = prepared_question.llm_query
         if expanded_question != question:
             logger.info(f"   Expanded query: {expanded_question[:100]}...")
 
@@ -2491,14 +2494,18 @@ class DataAnalyzerSQL:
         """Query with both OpenAI and Claude in parallel."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
+        from .llm_client import effective_providers
+        import contextvars
+        providers = effective_providers(LLM_PROVIDERS)
 
         results = {}
 
         def _query_provider(prov):
             return prov, self.query_with_provider(question, prov, table_name, allowed_tables=allowed_tables)
 
-        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
-            futures = {executor.submit(_query_provider, p): p for p in LLM_PROVIDERS}
+        with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+            futures = {executor.submit(contextvars.copy_context().run,
+                                       _query_provider, p): p for p in providers}
             for future in as_completed(futures):
                 try:
                     prov, result = future.result()

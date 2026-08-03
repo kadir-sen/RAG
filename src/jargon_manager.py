@@ -1,16 +1,20 @@
 """
 Jargon Manager - Central abbreviation and domain terminology system.
 
-Custom (user-added) terms persist to ``storage/jargon_custom.json`` so they
-survive process restarts. Built-in terms are immutable and cannot be removed
-through the admin API.
+Built-in terms are stored as ``term -> description`` pairs in
+``config/jargon_terms.json``. Custom (user-added) terms persist to
+``data/jargon/jargon_custom.json`` so they survive process restarts. Built-in
+terms are immutable and cannot be removed through the admin API.
 Loads jargon dictionaries from Excel and provides:
 - Abbreviation expansion (SOW -> Scope of Work)
 - Reverse lookup (Scope of Work -> SOW)
 - Query expansion for better search/SQL results
 - Column name normalization with domain awareness
 """
+import json
 import re
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Set
 
@@ -24,6 +28,61 @@ from .config import BASE_DIR
 JARGON_DIR = BASE_DIR / "data" / "jargon"
 JARGON_DIR.mkdir(parents=True, exist_ok=True)
 JARGON_CACHE_FILE = JARGON_DIR / "jargon_cache.json"
+JARGON_TERMS_FILE = BASE_DIR / "config" / "jargon_terms.json"
+
+
+@dataclass(frozen=True)
+class PreparedQuery:
+    """One immutable jargon pass shared by routing, retrieval and generation."""
+
+    original: str
+    matches: Tuple[Tuple[str, str], ...]
+    context: str
+    llm_query: str
+    retrieval_queries: Tuple[str, ...]
+
+
+current_prepared_query_var: ContextVar[Optional[PreparedQuery]] = ContextVar(
+    "current_prepared_query", default=None,
+)
+
+
+def _load_builtin_jargon(file_path: Path = JARGON_TERMS_FILE) -> Dict[str, str]:
+    """Load and validate the version-controlled term -> description dictionary."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as jargon_file:
+            raw = json.load(jargon_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Built-in jargon dictionary could not be loaded from {file_path}"
+        ) from exc
+
+    if not isinstance(raw, dict) or not raw:
+        raise RuntimeError(
+            f"Built-in jargon dictionary must be a non-empty JSON object: {file_path}"
+        )
+
+    # Preserve the source spelling here.  The supplied glossary intentionally
+    # contains case-distinct senses (for example CALENDAR, the P6 table, and
+    # Calendar, the scheduling concept).  Runtime lookup merges those senses
+    # under one case-insensitive key instead of rejecting or losing either.
+    terms: Dict[str, str] = {}
+    for term, description in raw.items():
+        if not isinstance(term, str) or not isinstance(description, str):
+            raise RuntimeError(
+                f"Every jargon entry must be a string term-description pair: {file_path}"
+            )
+        clean_term = term.strip()
+        clean_description = description.strip()
+        if not clean_term or not clean_description:
+            raise RuntimeError(
+                f"Jargon terms and descriptions cannot be empty: {file_path}"
+            )
+        if clean_term in terms:
+            raise RuntimeError(f"Duplicate jargon term '{clean_term}' in {file_path}")
+        terms[clean_term] = clean_description
+
+    return terms
 
 
 class JargonManager:
@@ -32,110 +91,8 @@ class JargonManager:
     Loads from Excel files and provides lookup/expansion services.
     """
 
-    # Built-in construction/contract domain abbreviations
-    BUILTIN_JARGON = {
-        # Universal business abbreviations
-        "SOW": "Scope of Work",
-        "SLA": "Service Level Agreement",
-        "NDA": "Non-Disclosure Agreement",
-        "KPI": "Key Performance Indicator",
-        "MTD": "Month to Date",
-        "QTD": "Quarter to Date",
-        "YTD": "Year to Date",
-        "PO": "Purchase Order",
-        "PR": "Purchase Requisition",
-        "T&C": "Terms and Conditions",
-        # Common construction/contract abbreviations
-        "BOQ": "Bill of Quantities",
-        "BOM": "Bill of Materials",
-        "RFI": "Request for Information",
-        "RFP": "Request for Proposal",
-        "RFQ": "Request for Quotation",
-        "EOT": "Extension of Time",
-        "LD": "Liquidated Damages",
-        "LAD": "Liquidated and Ascertained Damages",
-        "VO": "Variation Order",
-        "CO": "Change Order",
-        "WBS": "Work Breakdown Structure",
-        "OBS": "Organization Breakdown Structure",
-        "ITP": "Inspection and Test Plan",
-        "QA": "Quality Assurance",
-        "QC": "Quality Control",
-        "HSE": "Health Safety and Environment",
-        "EHS": "Environment Health and Safety",
-        "QHSE": "Quality Health Safety and Environment",
-        "MEP": "Mechanical Electrical and Plumbing",
-        "HVAC": "Heating Ventilation and Air Conditioning",
-        "P&ID": "Piping and Instrumentation Diagram",
-        "GA": "General Arrangement",
-        "DWG": "Drawing",
-        "SPEC": "Specification",
-        "TBD": "To Be Determined",
-        "TBA": "To Be Announced",
-        "TBC": "To Be Confirmed",
-        "N/A": "Not Applicable",
-        "WIP": "Work in Progress",
-        "PMO": "Project Management Office",
-        "PM": "Project Manager",
-        "CM": "Construction Manager",
-        "RE": "Resident Engineer",
-        "QS": "Quantity Surveyor",
-        "IFC": "Issued for Construction",
-        "IFR": "Issued for Review",
-        "IFA": "Issued for Approval",
-        "AFC": "Approved for Construction",
-        "FIDIC": "Federation Internationale Des Ingenieurs-Conseils",
-        "JV": "Joint Venture",
-        "LOI": "Letter of Intent",
-        "LOA": "Letter of Acceptance",
-        "MOM": "Minutes of Meeting",
-        "NCR": "Non-Conformance Report",
-        "NCN": "Non-Conformance Notice",
-        "RCA": "Root Cause Analysis",
-        "CAPA": "Corrective and Preventive Action",
-        "EPC": "Engineering Procurement and Construction",
-        "EPCC": "Engineering Procurement Construction and Commissioning",
-        "FEED": "Front End Engineering Design",
-        "BIM": "Building Information Modeling",
-        "CAD": "Computer Aided Design",
-        "CPI": "Cost Performance Index",
-        "SPI": "Schedule Performance Index",
-        "EV": "Earned Value",
-        "PV": "Planned Value",
-        "AC": "Actual Cost",
-        "EAC": "Estimate at Completion",
-        "ETC": "Estimate to Complete",
-        "BAC": "Budget at Completion",
-        "VAC": "Variance at Completion",
-        "FAT": "Factory Acceptance Test",
-        "SAT": "Site Acceptance Test",
-        "O&M": "Operation and Maintenance",
-        # Project-specific (TABH / Dubai construction)
-        "TABH": "The Address Boulevard Hotel",
-        "DPR": "Daily Progress Report",
-        "NOC": "No Objection Certificate",
-        "NOD": "Notice of Delay",
-        "NOP": "Notice of Progress",
-        "CCTV": "Closed Circuit Television",
-        "UPS": "Uninterruptible Power Supply",
-        "LTR": "Letter",
-        "DEWA": "Dubai Electricity and Water Authority",
-        "DM": "Dubai Municipality",
-        "JAFZA": "Jebel Ali Free Zone Authority",
-        "AED": "United Arab Emirates Dirham",
-        "UAE": "United Arab Emirates",
-        "GCC": "Gulf Cooperation Council",
-        "LEED": "Leadership in Energy and Environmental Design",
-        "MDC": "Main Distribution Center",
-        "CMAR": "Construction Management at Risk",
-        "TIR": "Technical Inspection Report",
-        "DPS": "Dubai Properties",
-        "MVP": "Material Verification Procedure",
-        "BMM": "Building Maintenance and Management",
-        "TCI": "TCI Engineering",
-        "SIRA": "Systematic Integrated Risk Assessment",
-        "FASTA": "Fire Alarm System Testing and Approval",
-    }
+    # Version-controlled construction/contract term -> description dictionary.
+    BUILTIN_JARGON = _load_builtin_jargon()
 
     # Domain concept groups: maps a concept to related search terms
     DOMAIN_CONCEPT_GROUPS = {
@@ -188,8 +145,11 @@ class JargonManager:
         self._meaning_to_abbr: Dict[str, str] = {}
         # synonym groups: maps any form to canonical form
         self._synonyms: Dict[str, str] = {}
+        # Uppercase canonical key -> every spelling present in the source JSON.
+        self._term_variants: Dict[str, Set[str]] = {}
         # User-added custom terms (subset of _abbr_to_meaning, not built-in)
         self._custom_terms: Dict[str, Dict[str, str]] = {}
+        self._builtin_keys = {term.strip().upper() for term in self.BUILTIN_JARGON}
         # Path for custom term persistence
         self._custom_store_path = JARGON_DIR / "jargon_custom.json"
 
@@ -205,11 +165,21 @@ class JargonManager:
 
     def _add_term(self, abbreviation: str, meaning: str):
         """Add a jargon term to the dictionaries."""
-        abbr_upper = abbreviation.upper().strip()
+        source_term = abbreviation.strip()
+        abbr_upper = source_term.upper()
         meaning_clean = meaning.strip()
 
-        self._abbr_to_meaning[abbr_upper] = meaning_clean
-        self._meaning_to_abbr[meaning_clean.lower()] = abbr_upper
+        self._term_variants.setdefault(abbr_upper, set()).add(source_term)
+        existing = self._abbr_to_meaning.get(abbr_upper, "")
+        senses = [part.strip() for part in existing.split(" | ") if part.strip()]
+        if meaning_clean not in senses:
+            senses.append(meaning_clean)
+        merged_meaning = " | ".join(senses)
+        self._abbr_to_meaning[abbr_upper] = merged_meaning
+        # The source glossary contains aliases with the same expansion. Keep
+        # its first (canonical) spelling instead of allowing a later alias such
+        # as BQ to replace BOQ for reverse compression.
+        self._meaning_to_abbr.setdefault(meaning_clean.lower(), abbr_upper)
 
         # Build synonym mappings
         self._synonyms[abbr_upper.lower()] = abbr_upper
@@ -222,6 +192,89 @@ class JargonManager:
             key_phrase = " ".join(words[-2:])
             if key_phrase not in self._synonyms:
                 self._synonyms[key_phrase] = abbr_upper
+
+    @staticmethod
+    def _term_pattern(term: str) -> re.Pattern:
+        """Boundary-safe matcher that also supports punctuation-heavy terms."""
+        return re.compile(
+            rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+
+    def prepare_query(
+        self, query: str, *, max_terms: int = 12, max_context_chars: int = 2000,
+    ) -> PreparedQuery:
+        """Prepare a query once without destroying the user's original wording.
+
+        The glossary is deliberately large, so only exact, boundary-safe hits
+        are included.  Longest terms win overlapping spans.  Retrieval keeps
+        the original as its first lane and receives at most two semantic
+        variants; LLMs receive a compact terminology block rather than the
+        entire 2,700-term dictionary.
+        """
+        original = str(query or "")
+        if not original.strip():
+            return PreparedQuery(original, (), "", original, (original,))
+
+        occupied: List[Tuple[int, int]] = []
+        hits: List[Tuple[str, str, int, int]] = []
+        for canonical, meaning in sorted(
+            self._abbr_to_meaning.items(), key=lambda item: len(item[0]), reverse=True,
+        ):
+            variants = sorted(
+                self._term_variants.get(canonical) or {canonical},
+                key=len, reverse=True,
+            )
+            found = None
+            for variant in variants:
+                match = self._term_pattern(variant).search(original)
+                if match and not any(match.start() < end and match.end() > start
+                                     for start, end in occupied):
+                    found = match
+                    break
+            if found is None:
+                continue
+            occupied.append((found.start(), found.end()))
+            hits.append((canonical, meaning, found.start(), found.end()))
+            if len(hits) >= max(1, int(max_terms)):
+                break
+
+        hits.sort(key=lambda item: item[2])
+        context_lines: List[str] = []
+        accepted: List[Tuple[str, str, int, int]] = []
+        used = len("Relevant domain terminology:\n")
+        for hit in hits:
+            line = f"- {hit[0]}: {hit[1]}"
+            if used + len(line) + 1 > max_context_chars:
+                continue
+            context_lines.append(line)
+            accepted.append(hit)
+            used += len(line) + 1
+        context = (
+            "Relevant domain terminology:\n" + "\n".join(context_lines)
+            if context_lines else ""
+        )
+
+        semantic = original
+        parenthetical = original
+        for canonical, meaning, start, end in reversed(accepted):
+            semantic = semantic[:start] + meaning + semantic[end:]
+            parenthetical = (
+                parenthetical[:start]
+                + f"{parenthetical[start:end]} ({meaning})"
+                + parenthetical[end:]
+            )
+        variants: List[str] = []
+        for value in (original, semantic, parenthetical):
+            if value and value not in variants:
+                variants.append(value)
+        return PreparedQuery(
+            original=original,
+            matches=tuple((canonical, meaning) for canonical, meaning, _, _ in accepted),
+            context=context,
+            llm_query=f"{original}\n\n{context}" if context else original,
+            retrieval_queries=tuple(variants),
+        )
 
     def load_from_excel(self, file_path: str) -> int:
         """
@@ -634,7 +687,7 @@ class JargonManager:
         abbr_upper = abbreviation.strip().upper()
         if not abbr_upper or not full_form.strip():
             raise ValueError("abbreviation and full_form are required")
-        if abbr_upper in self.BUILTIN_JARGON:
+        if abbr_upper in self._builtin_keys:
             raise ValueError(f"'{abbr_upper}' is a built-in term and cannot be overridden")
 
         record = {"abbreviation": abbr_upper, "full_form": full_form.strip()}
@@ -661,7 +714,7 @@ class JargonManager:
     def remove_custom_term(self, abbreviation: str) -> bool:
         """Remove a previously-added custom term. Built-ins are protected."""
         abbr_upper = abbreviation.strip().upper()
-        if abbr_upper in self.BUILTIN_JARGON:
+        if abbr_upper in self._builtin_keys:
             raise ValueError(f"'{abbr_upper}' is a built-in term and cannot be removed")
         if abbr_upper not in self._custom_terms:
             return False
@@ -716,7 +769,7 @@ class JargonManager:
                 concept = record.get("concept_group")
                 if not abbr or not full:
                     continue
-                if abbr in self.BUILTIN_JARGON:
+                if abbr in self._builtin_keys:
                     continue
                 self._add_term(abbr, full)
                 self._custom_terms[abbr] = {
@@ -751,3 +804,23 @@ def get_jargon_manager() -> JargonManager:
         _jargon_manager.auto_discover_and_load()
         _jargon_manager.load_from_disk()
     return _jargon_manager
+
+
+def prepare_query(
+    query: str, *, max_terms: int = 12, max_context_chars: int = 2000,
+) -> PreparedQuery:
+    """Prepare a query with the shared application glossary."""
+    return get_jargon_manager().prepare_query(
+        query, max_terms=max_terms, max_context_chars=max_context_chars,
+    )
+
+
+def set_current_prepared_query(query: str | PreparedQuery):
+    """Set request-local jargon context and return a reset token."""
+    prepared = query if isinstance(query, PreparedQuery) else prepare_query(query)
+    return current_prepared_query_var.set(prepared)
+
+
+def reset_current_prepared_query(token) -> None:
+    """Restore the previous request-local jargon context."""
+    current_prepared_query_var.reset(token)

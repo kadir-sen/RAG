@@ -7,7 +7,7 @@ from typing import Dict, Iterable, List, Tuple
 
 from docx import Document
 from docx.enum.section import WD_SECTION
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.shared import Cm, Pt
 
 from .evidence_model import ChronologyEntry, EvidenceItem, ReportAudit, VerifiedClaim, evidence_map
@@ -53,8 +53,10 @@ def _claim_paragraph(
     unresolved: List[str],
 ):
     p = doc.add_paragraph()
-    p.paragraph_format.first_line_indent = Cm(0)
-    p.paragraph_format.left_indent = Cm(0)
+    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.paragraph_format.left_indent = Cm(1.905)
+    p.paragraph_format.first_line_indent = Cm(-1.905)
+    p.paragraph_format.tab_stops.add_tab_stop(Cm(1.905), WD_TAB_ALIGNMENT.LEFT)
     p.add_run(prefix).bold = True
     for index, claim in enumerate(claims):
         if not claim.supported or not claim.text.strip():
@@ -90,25 +92,30 @@ def build_ai_chronology_docx(
 ) -> Tuple[bytes, ReportAudit]:
     """Render the sample chronology contract with real claim-level footnotes."""
     doc = _base_document()
-    _heading(doc, project_name.upper(), size=12, centered=True)
+    _heading(doc, project_name, size=12, centered=True)
     _heading(doc, "Delay and Prolongation – Chronology of Events", size=12, centered=True)
-    _heading(doc, f"{issue_number}. {title}", size=11, centered=True)
+    _heading(doc, f"{issue_number:02d}.  {title}", size=11, centered=False)
 
     footnotes = FootnoteRegistry()
     sources = evidence_map(evidence)
     exhibits: Dict[str, int] = {}
     unresolved: List[str] = []
 
-    ordered = sorted(entries, key=lambda e: (e.event_date or "9999-99-99", e.entry_ref))
+    overview = [e for e in entries if (e.event_type or "").lower() == "overview"]
+    dated = [e for e in entries if e not in overview]
+    ordered = overview + sorted(dated, key=lambda e: (e.event_date or "9999-99-99", e.entry_ref))
     for position, entry in enumerate(ordered, 1):
         # Numbering is a rendering concern.  Model-provided references are
         # deliberately ignored so an otherwise valid draft cannot escape the
         # sample documents' 6.<issue>.<entry> contract.
         ref = f"6.{issue_number}.{position}"
-        date = entry.event_date or "Date not established"
-        if entry.date_precision != "exact" and not date.endswith("*"):
-            date += "*"
-        prefix = f"{ref}  {date} –"
+        if (entry.event_type or "").lower() == "overview":
+            prefix = f"{ref}\t"
+        else:
+            date = entry.event_date or "Date not established"
+            if entry.date_precision != "exact" and not date.endswith("*"):
+                date += "*"
+            prefix = f"{ref}\t{date} –"
         claims = [c for c in entry.claims if c.supported]
         if not claims:
             claims = [VerifiedClaim(

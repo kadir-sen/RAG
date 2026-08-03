@@ -442,6 +442,9 @@ class HybridExecutor:
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
+        from .llm_client import effective_providers
+        import contextvars
+        providers = effective_providers(LLM_PROVIDERS)
 
         log_separator("Hybrid Executor (Dual-LLM)")
         logger.info(f"[HybridExecutor] Dual query: {query[:100]}...")
@@ -462,8 +465,9 @@ class HybridExecutor:
             result['query_type'] = self._determine_query_type(plan)
             return provider, result
 
-        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
-            futures = {executor.submit(_execute_for_provider, p): p for p in LLM_PROVIDERS}
+        with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+            futures = {executor.submit(contextvars.copy_context().run,
+                                       _execute_for_provider, p): p for p in providers}
             for future in as_completed(futures):
                 prov = futures[future]
                 try:

@@ -7,6 +7,10 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+function formatCredits(n: number): string {
+  return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
 interface UsageRingProps {
   size?: number;
   showLabel?: boolean;
@@ -31,7 +35,12 @@ export default function UsageRing({ size = 18, showLabel = false, showTokens = f
   // the token counts when it's missing or non-numeric (e.g. a user object
   // persisted before this field existed). Without this guard the arc renders
   // empty and the label reads "NaN%", which is what made the ring look broken.
+  const isDemo = user.plan_type === 'demo';
   const remaining = (() => {
+    if (isDemo) {
+      const p = Number(user.credit_percent_remaining);
+      return Number.isFinite(p) ? Math.max(0, Math.min(100, p)) : 0;
+    }
     const p = Number(user.percent_remaining);
     if (Number.isFinite(p)) return Math.max(0, Math.min(100, p));
     if (user.token_limit > 0) {
@@ -57,17 +66,23 @@ export default function UsageRing({ size = 18, showLabel = false, showTokens = f
   const dashOffset = circumference * (1 - remaining / 100);
   const center = size / 2;
 
-  const title = [
-    `${remaining.toFixed(1)}% quota remaining`,
-    `${formatTokens(remainingTokens)} of ${formatTokens(user.token_limit)} tokens left`,
-    `Used so far: ${formatTokens(user.used_tokens)}`,
-  ].join('\n');
+  const title = isDemo
+    ? [
+        `${remaining.toFixed(1)}% credit remaining`,
+        `${formatCredits(user.credits_remaining)} of ${formatCredits(user.credits_total)} credits left`,
+        `Used so far: ${formatCredits(user.credits_used)} credits`,
+      ].join('\n')
+    : [
+        `${remaining.toFixed(1)}% quota remaining`,
+        `${formatTokens(remainingTokens)} of ${formatTokens(user.token_limit)} tokens left`,
+        `Used so far: ${formatTokens(user.used_tokens)}`,
+      ].join('\n');
 
   return (
     <span
       className="inline-flex items-center gap-1.5"
       title={title}
-      aria-label={`Token quota: ${remaining.toFixed(0)}% remaining`}
+      aria-label={`${isDemo ? 'Credit balance' : 'Token quota'}: ${remaining.toFixed(0)}% remaining`}
       role="img"
     >
       <svg
@@ -106,7 +121,9 @@ export default function UsageRing({ size = 18, showLabel = false, showTokens = f
       )}
       {showTokens && (
         <span className="font-mono text-[10px] tabular-nums text-[var(--text-muted)]">
-          {formatTokens(user.used_tokens)}/{formatTokens(user.token_limit)}
+          {isDemo
+            ? `${formatCredits(user.credits_remaining)}/${formatCredits(user.credits_total)} cr`
+            : `${formatTokens(user.used_tokens)}/${formatTokens(user.token_limit)}`}
         </span>
       )}
     </span>

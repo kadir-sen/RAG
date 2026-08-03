@@ -4,6 +4,7 @@ Tests for the schema-aware + jargon-aware LLM pipeline:
   - JargonManager bidirectional + concept group + custom term lifecycle
   - validate_columns_against_schema
 """
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.catalog import CatalogEntry, TableCatalog, TableMetadata
-from src.jargon_manager import JargonManager
+from src.jargon_manager import JARGON_TERMS_FILE, JargonManager
 from src.schema_context import (
     SchemaContextBuilder,
     analyze_schema_intent,
@@ -106,6 +107,31 @@ class TestSchemaSemanticIntent:
 
 
 class TestJargonBidirectional:
+    def test_builtin_terms_are_loaded_from_term_description_json(self):
+        stored_terms = json.loads(JARGON_TERMS_FILE.read_text(encoding="utf-8"))
+
+        assert stored_terms == JargonManager.BUILTIN_JARGON
+        assert len(stored_terms) == 2703
+
+    def test_case_collisions_merge_without_losing_meanings(self):
+        jm = JargonManager()
+        for upper, mixed in (("CALENDAR", "Calendar"), ("LAG", "Lag"),
+                             ("NOD", "NoD"), ("PROJECT", "Project"),
+                             ("SOC", "SoC")):
+            merged = jm.expand(upper)
+            assert JargonManager.BUILTIN_JARGON[upper] in merged
+            assert JargonManager.BUILTIN_JARGON[mixed] in merged
+
+    def test_prepared_query_preserves_original_and_is_bounded(self):
+        jm = JargonManager()
+        query = "Review the EOT, Bill of Quantities, and NOD positions."
+        prepared = jm.prepare_query(query, max_terms=2, max_context_chars=500)
+        assert prepared.original == query
+        assert len(prepared.matches) == 2
+        assert len(prepared.context) <= 500
+        assert prepared.retrieval_queries[0] == query
+        assert any("Extension of Time" in variant for variant in prepared.retrieval_queries)
+
     def test_compress_full_term_to_abbr(self):
         jm = JargonManager()
         out = jm.compress_query("Extension of Time approved")
@@ -331,7 +357,7 @@ class TestRouterDocumentVsData:
             "Which documents are related to FASTA?",
             mode="document_analysis",
         )
-        assert decision.query_type == QueryType.DOCUMENT, decision.reasons
+        assert decision.query_type == QueryType.FILE_LIST, decision.reasons
 
     def test_dual_document_dispatch_uses_metadata_aware_path(self):
         from src.router import QueryType
@@ -383,4 +409,4 @@ class TestRouterDocumentVsData:
         from src.router import QueryType
         router = self._tables_loaded()
         decision = router.classify_query("Which documents mention BOQ quantity?")
-        assert decision.query_type == QueryType.DOCUMENT, decision.reasons
+        assert decision.query_type == QueryType.FILE_LIST, decision.reasons

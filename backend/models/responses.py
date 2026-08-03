@@ -82,6 +82,14 @@ class QuotaInfo(BaseModel):
     used_tokens: int = 0
     token_limit: int = 0
     percent_remaining: float = 100.0  # 0–100
+    plan_type: str = "legacy"
+    credits_total: float = 0.0
+    credits_remaining: float = 0.0
+    credits_used: float = 0.0
+    credit_percent_remaining: float = 100.0
+    storage_used_bytes: int = 0
+    storage_limit_bytes: int = 0
+    storage_percent_used: float = 0.0
 
 
 class ChatResponse(BaseModel):

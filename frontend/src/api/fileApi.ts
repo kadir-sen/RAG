@@ -59,6 +59,13 @@ export async function getIndexingStatus(): Promise<IndexingStatus[]> {
   return data;
 }
 
+export async function retryFileIndexing(fileId: string): Promise<IndexingStatus> {
+  const { data } = await apiClient.post<IndexingStatus>(
+    `/files/${encodeURIComponent(fileId)}/retry`,
+  );
+  return data;
+}
+
 export interface DashboardStats {
   vectors: number;
   tables: number;

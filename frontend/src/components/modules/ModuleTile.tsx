@@ -26,6 +26,7 @@ interface Props {
       the same window, as if it were part of this app. */
   href?: string;
   status?: 'live' | 'soon';
+  statusLabel?: string;
 }
 
 export default function ModuleTile({
@@ -37,6 +38,7 @@ export default function ModuleTile({
   to,
   href,
   status = 'live',
+  statusLabel,
 }: Props) {
   const disabled = !to && !href;
 
@@ -83,7 +85,7 @@ export default function ModuleTile({
               : 'border-[var(--border)] text-[var(--text-muted)]'
           }`}
         >
-          {status === 'live' ? 'Live' : 'Soon'}
+          {statusLabel ?? (status === 'live' ? 'Live' : 'Soon')}
         </span>
       </span>
     </>

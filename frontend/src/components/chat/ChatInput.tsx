@@ -21,6 +21,10 @@ export default function ChatInput({ onSend, disabled }: Props) {
   // blocked only after burning tokens (previously the badge just turned orange).
   const remainingPct = (() => {
     if (!user) return 100;
+    if (user.plan_type === 'demo') {
+      const p = Number(user.credit_percent_remaining);
+      return Number.isFinite(p) ? Math.max(0, Math.min(100, p)) : 0;
+    }
     const p = Number(user.percent_remaining);
     if (Number.isFinite(p)) return Math.max(0, Math.min(100, p));
     if (user.token_limit > 0) {
@@ -32,6 +36,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
   const quotaLow = remainingPct > 0 && remainingPct < 20;
   const usedTokens = user?.used_tokens ?? 0;
   const tokenLimit = user?.token_limit ?? 0;
+  const isDemo = user?.plan_type === 'demo';
 
   const handleSend = useCallback(() => {
     const text = inputRef.current?.value.trim() ?? '';
@@ -83,9 +88,13 @@ export default function ChatInput({ onSend, disabled }: Props) {
           </svg>
           <span>
             {quotaExhausted
-              ? 'Token quota fully used — new messages are paused. Contact your administrator to top up.'
-              : `Token quota running low — ${remainingPct.toFixed(0)}% left.`}
-            {tokenLimit > 0 && (
+              ? `${isDemo ? 'Credit balance' : 'Token quota'} fully used — new messages are paused. Contact your administrator to top up.`
+              : `${isDemo ? 'Credit balance' : 'Token quota'} running low — ${remainingPct.toFixed(0)}% left.`}
+            {isDemo ? (
+              <span className="opacity-70">
+                {' '}({user?.credits_remaining.toFixed(2)} credits left)
+              </span>
+            ) : tokenLimit > 0 && (
               <span className="opacity-70">
                 {' '}({count(usedTokens)} / {count(tokenLimit)} tokens)
               </span>
@@ -100,7 +109,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
             id="chat-input"
             ref={inputRef}
             rows={1}
-            placeholder={quotaExhausted ? 'Token quota used up' : 'Ask anything…'}
+            placeholder={quotaExhausted ? (isDemo ? 'Credit balance used up' : 'Token quota used up') : 'Ask anything…'}
             onKeyDown={handleKeyDown}
             onInput={handleInput}
             disabled={disabled || quotaExhausted}

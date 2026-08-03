@@ -35,7 +35,8 @@ class FileService:
         )
         return Path(BASE_DIR) / "data" / "projects" / project_id / leaf
 
-    async def save(self, file: UploadFile, project_id: str = "") -> tuple[str, str, bool]:
+    async def save(self, file: UploadFile, project_id: str = "",
+                   username: str = "") -> tuple[str, str, bool]:
         """Save uploaded file to disk. Returns (path, doc_id, is_duplicate)."""
         from src.document_registry import get_document_registry
         from src.document_rag import generate_doc_id
@@ -69,6 +70,13 @@ class FileService:
         if existing:
             if existing.status == "completed":
                 temp.unlink(missing_ok=True)
+                if username and project_id:
+                    from src.billing_store import get_billing_store
+                    get_billing_store().register_storage(
+                        username=username, project_id=project_id,
+                        file_id=existing.doc_id, file_path=existing.file_path,
+                        size_bytes=total,
+                    )
                 return existing.file_path, existing.doc_id, True
 
         dest = target_dir / safe_name
@@ -82,8 +90,23 @@ class FileService:
         os.replace(temp, dest)
 
         doc_id = generate_doc_id(str(dest))
-        registry.register(dest.name, str(dest), file_size_kb, file_type, ext,
-                          project_id=project_id)
+        storage_registered = False
+        try:
+            if username and project_id:
+                from src.billing_store import get_billing_store
+                get_billing_store().register_storage(
+                    username=username, project_id=project_id, file_id=doc_id,
+                    file_path=str(dest), size_bytes=total,
+                )
+                storage_registered = True
+            registry.register(dest.name, str(dest), file_size_kb, file_type, ext,
+                              project_id=project_id)
+        except Exception:
+            if storage_registered:
+                from src.billing_store import get_billing_store
+                get_billing_store().release_storage(project_id=project_id, file_id=doc_id)
+            dest.unlink(missing_ok=True)
+            raise
 
         # Sync uploaded file to GCS for persistence across Cloud Run restarts
         try:

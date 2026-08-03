@@ -546,19 +546,15 @@ class OCRPipeline:
     def _vision_fallback(self, image_bytes: bytes) -> str:
         """Use the quality model only for pages Tesseract could not read well."""
         try:
-            from google import genai
-            from google.genai import types
-
-            client = genai.Client(api_key=GOOGLE_API_KEY)
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[
-                    "Transcribe this construction/legal document page exactly. "
-                    "Preserve dates, reference numbers, names, amounts and paragraph order. "
-                    "Do not summarize, infer, translate, or add commentary.",
-                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-                ],
-                config=types.GenerateContentConfig(max_output_tokens=8192),
+            from .llm_client import generate_multimodal_text
+            response = generate_multimodal_text(
+                "Transcribe this construction/legal document page exactly. "
+                "Preserve dates, reference numbers, names, amounts and paragraph order. "
+                "Do not summarize, infer, translate, or add commentary.",
+                image_bytes,
+                mime_type="image/png",
+                max_tokens=8192,
+                task_type="ocr",
             )
             return self._normalize_text(response.text or "")
         except Exception as exc:
@@ -616,10 +612,12 @@ class OCRPipeline:
         ocr_pages = [pn for (pn, _nt, do) in plan if do]
         wall_ocr_ms = 0
         if ocr_pages:
+            import contextvars
             workers = max(1, min(OCR_MAX_WORKERS, os.cpu_count() or 2, len(ocr_pages)))
             t0 = time.time()
             with ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(self.extract_text_with_ocr, pdf_path, pn, file_hash): pn
+                futs = {ex.submit(contextvars.copy_context().run,
+                                  self.extract_text_with_ocr, pdf_path, pn, file_hash): pn
                         for pn in ocr_pages}
                 for fut in as_completed(futs):
                     pn = futs[fut]

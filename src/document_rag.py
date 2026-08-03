@@ -931,6 +931,12 @@ class DocumentRAG:
                     )
                     import uuid
                     node.id_ = str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
+                    # Store only canonical keys in metadata.  The raw node text
+                    # remains untouched for citations; glossary meanings are
+                    # appended only to the text sent to the embedding model.
+                    from .jargon_manager import prepare_query
+                    prepared_node = prepare_query(node.get_content())
+                    node.metadata["jargon_terms"] = [key for key, _ in prepared_node.matches]
                 nodes.extend(parsed)
 
             if not nodes:
@@ -959,7 +965,12 @@ class DocumentRAG:
 
             # 2. Batch embed all nodes at once
             embed_model = Settings.embed_model
-            texts = [node.get_content() for node in nodes]
+            texts = []
+            from .jargon_manager import prepare_query
+            for node in nodes:
+                raw_text = node.get_content()
+                glossary = prepare_query(raw_text).context
+                texts.append(f"{raw_text}\n\n{glossary}" if glossary else raw_text)
 
             EMBED_BATCH = 50
             all_embeddings = []
@@ -1128,9 +1139,11 @@ class DocumentRAG:
 
         original_question = question
         try:
-            from .jargon_manager import get_jargon_manager
+            from .jargon_manager import get_jargon_manager, set_current_prepared_query
             jm = get_jargon_manager()
-            semantic_query = jm.replace_query_terms_with_meanings(question)
+            prepared = jm.prepare_query(question)
+            set_current_prepared_query(prepared)
+            semantic_query = prepared.retrieval_queries[1] if len(prepared.retrieval_queries) > 1 else question
             if semantic_query and semantic_query != question:
                 logger.info(f"   Jargon semantic query: {semantic_query[:100]}")
                 question = semantic_query
@@ -1206,9 +1219,6 @@ class DocumentRAG:
             return {"answer": "", "sources": sources}
 
         if filters is not None:
-            query_engine = self.index.as_query_engine(
-                similarity_top_k=top_k, filters=filters,
-            )
             scope_desc = []
             if doc_ids:
                 scope_desc.append(f"{len(doc_ids)} doc_ids")
@@ -1217,35 +1227,26 @@ class DocumentRAG:
             if payload_filters:
                 scope_desc.append(f"scope={list(payload_filters.keys())}")
             logger.info(f"   Scoped to {' + '.join(scope_desc)}")
-        else:
-            query_engine = self.index.as_query_engine(similarity_top_k=top_k)
-        if Settings.llm is None:
-            # No LlamaIndex LLM configured (e.g. Gemini SDK unavailable locally).
-            # Provider-specific synthesis goes through query_with_provider/llm_client;
-            # this default engine needs an LLM, so fail clearly instead of crashing deep.
-            raise RuntimeError(
-                "Default query engine needs Settings.llm but it is unset "
-                "(Gemini LLM unavailable). Use query_with_provider() / the provider "
-                "synthesis path, or run where the Gemini SDK works (prod Python 3.11)."
-            )
-        response = query_engine.query(question)
-        # Empty-scope safety net (dense fallback path): retry if a scoped query
-        # produced no source nodes — but KEEP the per-user corpus filter (drop only
-        # the doc_type/project scope), so the retry never leaks another corpus.
-        if payload_filters and not getattr(response, "source_nodes", None):
+        retriever = (self.index.as_retriever(similarity_top_k=top_k, filters=filters)
+                     if filters is not None
+                     else self.index.as_retriever(similarity_top_k=top_k))
+        nodes = list(retriever.retrieve(question))
+        # Empty-scope safety net: retry without the optional payload scope but
+        # preserve the project boundary.
+        if payload_filters and not nodes:
             logger.info("   Scoped dense query empty → retrying (corpus-only)")
             retry_filters = self._build_metadata_filters(
                 doc_ids, file_names, None, project_id=project_id,
             )
-            engine = (self.index.as_query_engine(similarity_top_k=top_k, filters=retry_filters)
-                      if retry_filters is not None
-                      else self.index.as_query_engine(similarity_top_k=top_k))
-            response = engine.query(question)
+            retriever = (self.index.as_retriever(similarity_top_k=top_k, filters=retry_filters)
+                         if retry_filters is not None
+                         else self.index.as_retriever(similarity_top_k=top_k))
+            nodes = list(retriever.retrieve(question))
 
-        sources = self._sources_from_scored_nodes(response.source_nodes)
+        sources = self._sources_from_scored_nodes(nodes)
         self._report_reading(sources)
         logger.info(f"✅ Found {len(sources)} unique sources")
-        return {"answer": str(response), "sources": sources}
+        return {"answer": self._synthesize_from_nodes(question, sources), "sources": sources}
 
     @staticmethod
     def _report_reading(sources: List[dict]) -> None:
@@ -1555,6 +1556,7 @@ class DocumentRAG:
                 system="You are a precise passage reranker. Output JSON only.",
                 cache_key=key,
                 model=GEMINI_MODEL_LITE if ENABLE_LITE_TIER else "",
+                task_type="rerank",
             )
             order = resp.raw.get("order", []) if isinstance(resp.raw, dict) else []
             picked, used = [], set()
@@ -1584,7 +1586,7 @@ class DocumentRAG:
         for i, nd in enumerate(nodes, 1):
             parts.append(
                 f"[Source {i}: {nd.get('file_name')}, p.{nd.get('page_number')}]\n"
-                f"{nd.get('text', '')}"
+                f"{nd.get('text') or nd.get('text_snippet') or ''}"
             )
         context = "\n\n---\n\n".join(parts)
         prompt = (
@@ -1692,14 +1694,15 @@ class DocumentRAG:
                             file_names: Optional[List[str]] = None,
                             project_id: str = "") -> dict:
         """Query documents using a specific LLM provider for answer synthesis."""
-        from .llm_client import create_llm
         project_id = _require_project_id(project_id)
 
         logger.info(f"[DocumentRAG] Query with provider={provider}: {question[:80]}...")
 
         try:
-            from .jargon_manager import get_jargon_manager
-            semantic_query = get_jargon_manager().replace_query_terms_with_meanings(question)
+            from .jargon_manager import get_jargon_manager, set_current_prepared_query
+            prepared = get_jargon_manager().prepare_query(question)
+            set_current_prepared_query(prepared)
+            semantic_query = prepared.retrieval_queries[1] if len(prepared.retrieval_queries) > 1 else question
             if semantic_query and semantic_query != question:
                 logger.info(f"   Jargon semantic query: {semantic_query[:100]}")
                 question = semantic_query
@@ -1713,29 +1716,15 @@ class DocumentRAG:
                     "sources": [],
                 }
 
-        llm, model_name = create_llm(provider)
-        logger.info(f"   Using {provider}/{model_name} for synthesis...")
-
-        # For Claude: LlamaIndex query_engine doesn't support custom wrappers,
-        # so we retrieve chunks via default engine and synthesize with Claude directly.
-        if provider == "claude":
-            return self._query_with_direct_synthesis(
-                question, llm, top_k, doc_ids, file_names,
-                project_id=project_id,
-            )
-
-        kwargs = {"similarity_top_k": top_k, "llm": llm}
-        kwargs["filters"] = self._build_metadata_filters(
-            doc_ids, file_names, None, project_id=project_id,
+        # Keep retrieval local and route synthesis through the metered client.
+        # LlamaIndex's query engine used to call the provider behind our back,
+        # which made those tokens impossible to bill to a user/project.
+        return self._query_with_direct_synthesis(
+            question, provider, top_k, doc_ids, file_names,
+            project_id=project_id,
         )
-        query_engine = self.index.as_query_engine(**kwargs)
-        response = query_engine.query(question)
-        sources = self._extract_sources(response)
 
-        logger.info(f"   [{provider}] Found {len(sources)} sources")
-        return {"answer": str(response), "sources": sources}
-
-    def _query_with_direct_synthesis(self, question: str, llm, top_k: int = 10,
+    def _query_with_direct_synthesis(self, question: str, provider: str, top_k: int = 10,
                                      doc_ids: Optional[List[str]] = None,
                                      file_names: Optional[List[str]] = None,
                                      *, project_id: str) -> dict:
@@ -1775,7 +1764,8 @@ class DocumentRAG:
             f"QUESTION: {question}\n\n"
             "ANSWER:"
         )
-        response = llm.complete(prompt)
+        from .llm_client import generate_text
+        response = generate_text(prompt, provider=provider, task_type="document_synthesis")
         answer = response.text
 
         # Step 4: Extract sources metadata
@@ -2098,8 +2088,10 @@ class DocumentRAG:
 
         # Jargon normalization (mirror query_with_provider behaviour)
         try:
-            from .jargon_manager import get_jargon_manager
-            semantic_query = get_jargon_manager().replace_query_terms_with_meanings(question)
+            from .jargon_manager import get_jargon_manager, set_current_prepared_query
+            prepared = get_jargon_manager().prepare_query(question)
+            set_current_prepared_query(prepared)
+            semantic_query = prepared.retrieval_queries[1] if len(prepared.retrieval_queries) > 1 else question
             if semantic_query and semantic_query != question:
                 logger.info(f"[NamedDoc] jargon semantic query: {semantic_query[:100]}")
                 question = semantic_query
@@ -2159,9 +2151,9 @@ class DocumentRAG:
         )
 
         try:
-            llm, _ = create_llm(provider)
-            response = llm.complete(prompt)
-            answer = getattr(response, "text", str(response))
+            from .llm_client import generate_text
+            response = generate_text(prompt, provider=provider, task_type="document_synthesis")
+            answer = response.text
         except Exception as e:
             logger.error(f"[NamedDoc] {provider} synthesis failed: {e}")
             answer = ""
@@ -2201,6 +2193,9 @@ class DocumentRAG:
         """Multi-provider variant of query_named_docs_with_provider."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
+        from .llm_client import effective_providers
+        import contextvars
+        providers = effective_providers(LLM_PROVIDERS)
         project_id = _require_project_id(project_id)
 
         results: Dict[str, Any] = {}
@@ -2212,8 +2207,8 @@ class DocumentRAG:
                 project_id=project_id,
             )
 
-        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as ex:
-            futs = {ex.submit(_q, p): p for p in LLM_PROVIDERS}
+        with ThreadPoolExecutor(max_workers=len(providers)) as ex:
+            futs = {ex.submit(contextvars.copy_context().run, _q, p): p for p in providers}
             for fut in as_completed(futs):
                 try:
                     prov, res = fut.result()
@@ -2234,6 +2229,9 @@ class DocumentRAG:
         """Query with both OpenAI and Claude in parallel."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
+        from .llm_client import effective_providers
+        import contextvars
+        providers = effective_providers(LLM_PROVIDERS)
         project_id = _require_project_id(project_id)
 
         results = {}
@@ -2244,8 +2242,9 @@ class DocumentRAG:
                 , project_id=project_id
             )
 
-        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
-            futures = {executor.submit(_query_provider, p): p for p in LLM_PROVIDERS}
+        with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+            futures = {executor.submit(contextvars.copy_context().run,
+                                       _query_provider, p): p for p in providers}
             for future in as_completed(futures):
                 try:
                     prov, result = future.result()
@@ -2254,7 +2253,7 @@ class DocumentRAG:
                     prov = futures[future]
                     logger.error(f"   [{prov}] Query failed: {e}")
                     # Attempt fallback to gemini for failed providers
-                    if prov != "gemini" and "gemini" in LLM_PROVIDERS:
+                    if prov != "gemini" and "gemini" in providers:
                         try:
                             _, fallback_result = _query_provider("gemini")
                             fallback_result["_fallback_from"] = prov

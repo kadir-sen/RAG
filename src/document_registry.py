@@ -50,6 +50,7 @@ class DocumentRecord:
     # the per-document inventory to reduce hallucination/misrouting.
     llm_summary: Optional[str] = None
     llm_topics: List[str] = field(default_factory=list)
+    jargon_terms: List[str] = field(default_factory=list)
     # Security boundary. Empty only for pre-project legacy records; new writes
     # must always receive the request/job project context.
     project_id: str = ""
@@ -224,6 +225,7 @@ class DocumentRegistry:
         doc_id: str,
         summary: Optional[str] = None,
         topics: Optional[List[str]] = None,
+        jargon_terms: Optional[List[str]] = None,
     ) -> None:
         """Store the upload-time LLM summary/topics for a document (Phase 2)."""
         with self._file_lock:
@@ -233,6 +235,8 @@ class DocumentRegistry:
                     rec.llm_summary = summary
                 if topics is not None:
                     rec.llm_topics = topics
+                if jargon_terms is not None:
+                    rec.jargon_terms = sorted(set(jargon_terms))
                 self._save()
                 logger.info(
                     f"[Registry] LLM enrichment set for {rec.file_name}: "

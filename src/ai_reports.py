@@ -37,11 +37,15 @@ established. Produce professional English suitable for solicitor review."""
 
 def build_research_plan(topic: str, date_from: str = "", date_to: str = "",
                         parties: Sequence[str] = ()) -> List[str]:
+    from .jargon_manager import prepare_query, set_current_prepared_query
+    prepared = prepare_query(topic)
+    set_current_prepared_query(prepared)
     prompt = (
         "Create a compact research plan for this chronology/report topic. "
-        "Return JSON as {\"questions\":[...]} with 7-10 non-overlapping questions.\n"
+        "Return JSON as {\"questions\":[...]} with 7-10 non-overlapping questions. "
+        "Write every research question in English, regardless of the input language.\n"
         f"Topic: {topic}\nDate range: {date_from or 'open'} to {date_to or 'open'}\n"
-        f"Parties: {', '.join(parties) or 'not specified'}"
+        f"Parties: {', '.join(parties) or 'not specified'}\n{prepared.context}"
     )
     try:
         from .config import GEMINI_MODEL_LITE
@@ -50,6 +54,7 @@ def build_research_plan(topic: str, date_from: str = "", date_to: str = "",
             prompt, system="You are a fast legal-document research planner. JSON only.",
             provider="gemini", model=GEMINI_MODEL_LITE,
             cache_key="chron-plan:" + hashlib.sha256(prompt.encode()).hexdigest()[:24],
+            task_type="research_plan",
         )
         questions = response.raw.get("questions", []) if isinstance(response.raw, dict) else []
         questions = [str(q).strip() for q in questions if str(q).strip()]
@@ -105,6 +110,8 @@ def retrieve_evidence(project_id: str, questions: Sequence[str], top_k: int = 12
 
     def dense(question: str) -> List[Dict]:
         try:
+            from .jargon_manager import set_current_prepared_query
+            set_current_prepared_query(question)
             return (rag.query(
                 question, top_k=top_k, synthesize=False, rerank=True,
                 project_id=project_id,
@@ -115,11 +122,14 @@ def retrieve_evidence(project_id: str, questions: Sequence[str], top_k: int = 12
     def bm25(question: str) -> List[Dict]:
         return lexical.search_chunks(question, top_k=top_k, project_id=project_id)
 
+    from .jargon_manager import prepare_query
     collected: List[Dict] = []
     with ThreadPoolExecutor(max_workers=min(6, max(2, len(questions) * 2))) as pool:
         futures = []
         for question in questions:
-            futures.extend((pool.submit(dense, question), pool.submit(bm25, question)))
+            prepared = prepare_query(question)
+            for variant in prepared.retrieval_queries[:2]:
+                futures.extend((pool.submit(dense, variant), pool.submit(bm25, variant)))
         for future in futures:
             try:
                 collected.extend(future.result())
@@ -191,8 +201,11 @@ def _chronology_schema() -> Dict:
     }
     return {
         "type": "object", "additionalProperties": False,
-        "properties": {"entries": {"type": "array", "items": entry}},
-        "required": ["entries"],
+        "properties": {
+            "overview_claims": {"type": "array", "items": claim},
+            "entries": {"type": "array", "items": entry},
+        },
+        "required": ["overview_claims", "entries"],
     }
 
 
@@ -224,6 +237,9 @@ def generate_chronology(
     from .config import OPENAI_MODEL
     from .llm_client import generate_response_json
 
+    from .jargon_manager import prepare_query, set_current_prepared_query
+    prepared = prepare_query(topic)
+    set_current_prepared_query(prepared)
     questions = build_research_plan(topic, date_from, date_to, parties)
     evidence = retrieve_evidence(project_id, questions)
     if not evidence:
@@ -232,10 +248,13 @@ def generate_chronology(
         f"Prepare a factual chronology about: {topic}\n"
         f"Date range: {date_from or 'open'} to {date_to or 'open'}\n"
         f"Named parties: {', '.join(parties) or 'not specified'}\n"
+        "The finished report must be professional English even when the topic is supplied "
+        "in another language. Put a source-supported general framing of the issue in "
+        "overview_claims; put only dated events in entries. "
         "Order entries by event date and use ISO YYYY-MM-DD where the record permits. "
         "Write one factual sentence per claim and give that claim source_ids. Do not combine "
         "a party allegation with an established fact. Mark inferred dates explicitly.\n\n"
-        f"EVIDENCE JSON:\n{_evidence_payload(evidence)}"
+        f"{prepared.context}\n\nEVIDENCE JSON:\n{_evidence_payload(evidence)}"
     )
     response = generate_response_json(
         prompt, system=_SYSTEM, schema=_chronology_schema(),
@@ -245,7 +264,28 @@ def generate_chronology(
     by_id = {e.source_id: e for e in evidence}
     entries: List[ChronologyEntry] = []
     removed = 0
-    for index, raw in enumerate(response.raw.get("entries", []), 1):
+    overview_claims = []
+    for item in response.raw.get("overview_claims", []):
+        claim = VerifiedClaim(
+            text=str(item.get("text") or "").strip(),
+            source_ids=[str(x) for x in item.get("source_ids", [])],
+            is_inference=bool(item.get("is_inference")),
+            inference_basis=str(item.get("inference_basis") or ""),
+            confidence=str(item.get("confidence") or "low"),
+        )
+        claim.supported = _claim_supported(claim, by_id)
+        if claim.supported:
+            overview_claims.append(claim)
+        else:
+            removed += 1
+    entries.append(ChronologyEntry(
+        entry_ref=f"6.{issue_number}.1", event_date="", date_precision="unknown",
+        claims=overview_claims, parties=[], event_type="overview",
+        conflicting_positions=[],
+    ))
+    if not overview_claims:
+        raise ValueError("Chronology overview failed mandatory source verification")
+    for index, raw in enumerate(response.raw.get("entries", []), 2):
         claims = []
         for item in raw.get("claims", []):
             claim = VerifiedClaim(
@@ -315,6 +355,9 @@ def generate_forensic(
 ) -> Dict:
     from .config import OPENAI_MODEL
     from .llm_client import generate_response_json
+    from .jargon_manager import prepare_query, set_current_prepared_query
+    prepared = prepare_query(topic)
+    set_current_prepared_query(prepared)
     questions = build_research_plan(topic, date_from, date_to, parties)
     artifact_evidence: List[EvidenceItem] = []
     if toolkit_artifact_ids:
@@ -351,7 +394,7 @@ def generate_forensic(
         f"Prepare a {status} forensic report about: {topic}\n"
         "Use all nine required section names exactly. Do not calculate delay duration, "
         "critical path, concurrency or entitlement unless a toolkit evidence object supplies it.\n\n"
-        f"EVIDENCE JSON:\n{_evidence_payload(evidence)}"
+        f"{prepared.context}\n\nEVIDENCE JSON:\n{_evidence_payload(evidence)}"
     )
     response = generate_response_json(
         prompt, system=_SYSTEM, schema=_forensic_schema(), schema_name="forensic_report",

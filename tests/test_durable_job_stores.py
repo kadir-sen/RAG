@@ -1,4 +1,5 @@
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -36,6 +37,26 @@ def test_report_queue_recovers_and_never_reads_another_project(tmp_path):
     assert store.recover() == 1
     assert store.get(job["job_id"], "project-b") is None
     assert store.get(job["job_id"], "project-a")["status"] == "queued"
+    assert job["sequence_number"] == 1
+    assert job["report_url"].endswith(job["job_id"])
+
+
+def test_chronology_sequence_is_atomic_per_project(tmp_path):
+    store = ReportJobStore(tmp_path / "sequence.db")
+    def create(index: int):
+        return store.enqueue(
+            project_id="project-a", username="alice", module="chronology",
+            title=f"Topic {index}", request={"topic": f"Topic {index}"},
+        )
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        jobs = list(pool.map(create, range(12)))
+    assert sorted(job["sequence_number"] for job in jobs) == list(range(1, 13))
+
+    other = store.enqueue(
+        project_id="project-b", username="alice", module="chronology",
+        title="Other", request={"topic": "Other"},
+    )
+    assert other["sequence_number"] == 1
 
 
 def test_large_ingestion_waits_for_twenty_document_calibration(tmp_path):

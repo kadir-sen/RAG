@@ -12,7 +12,6 @@ export default function AIReportPanel({ module }: { module: 'chronology' | 'fore
   const [parties, setParties] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [issueNumber, setIssueNumber] = useState(1);
   const [issueStatus, setIssueStatus] = useState<'Draft' | 'Issue'>('Draft');
   const [jobs, setJobs] = useState<ReportJob[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -53,7 +52,7 @@ export default function AIReportPanel({ module }: { module: 'chronology' | 'fore
         parties: parties.split(',').map((v) => v.trim()).filter(Boolean),
       };
       const job = await generateReport(module, module === 'chronology'
-        ? { ...common, issue_number: issueNumber }
+        ? common
         : { ...common, status: issueStatus, toolkit_artifact_ids: selectedToolkit });
       setJobs((current) => [job, ...current]);
       setTopic('');
@@ -98,7 +97,7 @@ export default function AIReportPanel({ module }: { module: 'chronology' | 'fore
           <button disabled={!canEdit || submitting || !topic.trim()} className="px-4 py-2 bg-[var(--accent)] text-[var(--accent-ink)] font-mono text-[10px] uppercase tracking-[.12em] disabled:opacity-40">Generate</button>
           <input value={parties} onChange={(e) => setParties(e.target.value)} placeholder="Parties, comma separated" className="md:col-span-2 px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] text-[11px] text-[var(--text-primary)]" />
           {module === 'chronology' ? (
-            <label className="flex items-center gap-2 px-2 text-[10px] text-[var(--text-muted)]">Issue <input type="number" min={1} max={999} value={issueNumber} onChange={(e) => setIssueNumber(Number(e.target.value))} className="w-14 bg-[var(--bg-primary)] border border-[var(--border)] px-1 py-1" /></label>
+            <span className="flex items-center px-2 text-[10px] text-[var(--text-muted)]">Number assigned automatically</span>
           ) : (
             <select value={issueStatus} onChange={(e) => setIssueStatus(e.target.value as 'Draft' | 'Issue')} className="bg-[var(--bg-primary)] border border-[var(--border)] px-2 text-[11px] text-[var(--text-primary)]"><option>Draft</option><option>Issue</option></select>
           )}
@@ -117,7 +116,7 @@ export default function AIReportPanel({ module }: { module: 'chronology' | 'fore
         )}
         {jobs.length > 0 && (
           <div className="mt-4 grid gap-2">
-            {jobs.slice(0, 5).map((job) => {
+            {jobs.map((job) => {
               const evidence = Array.isArray(job.result?.evidence) ? job.result.evidence as Array<Record<string, unknown>> : [];
               const entries = Array.isArray(job.result?.entries) ? job.result.entries as Array<Record<string, unknown>> : [];
               return (
@@ -128,12 +127,17 @@ export default function AIReportPanel({ module }: { module: 'chronology' | 'fore
                     {job.status === 'ready' && <button type="button" onClick={() => openReview(job)} className="text-[var(--text-secondary)]">Review</button>}
                     {job.status === 'ready' && <button type="button" onClick={() => void downloadReport(job)} className="text-[var(--accent)]">Word ↓</button>}
                     {job.status === 'failed' && <span title={job.error ?? ''} className="text-[var(--danger)]">failed</span>}
+                    {job.status === 'credit_balance_exhausted' && (
+                      <span title="Kredi bakiyesi tükendi" className="text-[var(--danger)]">
+                        kredi tükendi
+                      </span>
+                    )}
                   </div>
                   {reviewing === job.job_id && job.status === 'ready' && (
                     <div className="mt-3 border border-[var(--border)] bg-[var(--bg-primary)] p-3 max-h-[440px] overflow-auto">
                       {module === 'chronology' ? entries.map((entry, index) => (
                         <div key={index} className="mb-3">
-                          <p className="font-mono text-[10px] text-[var(--text-muted)]">6.{issueNumber}.{index + 1} · {String(entry.event_date ?? 'Date not established')}</p>
+                          <p className="font-mono text-[10px] text-[var(--text-muted)]">6.{job.sequence_number}.{index + 1} · {String(entry.event_date ?? 'Date not established')}</p>
                           {(Array.isArray(entry.claims) ? entry.claims as Array<Record<string, unknown>> : []).map((claim, claimIndex) => (
                             <p key={claimIndex} className="mt-1 text-[var(--text-primary)]">{String(claim.text ?? '')} <span className="text-[var(--accent)]">[{(claim.source_ids as string[] ?? []).join(', ')}]</span></p>
                           ))}

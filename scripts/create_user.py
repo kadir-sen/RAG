@@ -45,7 +45,7 @@ def _parse_features(raw: str) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Create or update a COAir user.")
     ap.add_argument("--username", required=True)
-    ap.add_argument("--password", required=True)
+    ap.add_argument("--password", default="")
     ap.add_argument("--display", default=None, help="Display name (defaults to username).")
     ap.add_argument("--role", default="user", choices=["user", "admin"])
     ap.add_argument(
@@ -54,6 +54,14 @@ def main() -> int:
         default=1_000_000,
         help="Total hard cap (prompt+completion tokens combined).",
     )
+    ap.add_argument("--plan", default="demo", choices=["demo", "legacy"])
+    ap.add_argument("--initial-credits", type=float, default=1000.0)
+    ap.add_argument("--markup-percent", type=float, default=30.0)
+    ap.add_argument("--storage-limit-bytes", type=int, default=30_000_000_000)
+    ap.add_argument("--model-policy", default="demo-gemini-3.6-v1")
+    ap.add_argument("--add-credits", type=float, default=0.0,
+                    help="Append a signed credit adjustment to an existing account.")
+    ap.add_argument("--reason", default="", help="Required with --add-credits.")
     ap.add_argument(
         "--features",
         default="",
@@ -70,6 +78,18 @@ def main() -> int:
     store = UserStore()
     features = _parse_features(args.features)
     existing = store.get_user(args.username)
+    if args.add_credits:
+        if not existing:
+            print(f"error: user {args.username!r} does not exist", file=sys.stderr)
+            return 2
+        if not args.reason.strip():
+            print("error: --reason is required with --add-credits", file=sys.stderr)
+            return 2
+        print(store.billing.adjust_credits(args.username, args.add_credits, args.reason))
+        return 0
+    if not args.password:
+        print("error: --password is required when creating/updating a user", file=sys.stderr)
+        return 2
     if existing and not args.update:
         print(
             f"error: user {args.username!r} already exists. "
@@ -96,6 +116,11 @@ def main() -> int:
             role=args.role,
             token_limit=args.token_limit,
             features=features,
+            plan_type="legacy" if args.role == "admin" else args.plan,
+            initial_credits=0 if args.role == "admin" else args.initial_credits,
+            markup_percent=args.markup_percent,
+            storage_limit_bytes=0 if args.role == "admin" else args.storage_limit_bytes,
+            model_policy="" if args.role == "admin" else args.model_policy,
         )
         print(f"created {args.username}: {record}")
     return 0

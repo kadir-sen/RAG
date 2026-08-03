@@ -64,6 +64,14 @@ export interface QuotaInfo {
   used_tokens: number;
   token_limit: number;
   percent_remaining: number;
+  plan_type: 'legacy' | 'demo';
+  credits_total: number;
+  credits_remaining: number;
+  credits_used: number;
+  credit_percent_remaining: number;
+  storage_used_bytes: number;
+  storage_limit_bytes: number;
+  storage_percent_used: number;
 }
 
 export interface AuthUser {
@@ -74,6 +82,14 @@ export interface AuthUser {
   token_limit: number;
   used_tokens: number;
   percent_remaining: number;
+  plan_type: 'legacy' | 'demo';
+  credits_total: number;
+  credits_remaining: number;
+  credits_used: number;
+  credit_percent_remaining: number;
+  storage_used_bytes: number;
+  storage_limit_bytes: number;
+  storage_percent_used: number;
 }
 
 export interface LoginResponse {
@@ -248,7 +264,7 @@ export interface UploadResult {
 export interface IndexingStatus {
   file_id: string;
   filename: string;
-  status: 'queued' | 'extracting' | 'ocr' | 'metadata' | 'chunking' | 'embedding' | 'indexing' | 'ready' | 'failed' | 'unknown';
+  status: 'queued' | 'extracting' | 'ocr' | 'metadata' | 'chunking' | 'embedding' | 'indexing' | 'ready' | 'failed' | 'credit_balance_exhausted' | 'unknown';
   progress: number;
   error: string | null;
   details: Record<string, unknown>;

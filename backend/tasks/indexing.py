@@ -22,6 +22,9 @@ def index_file_background(file_id: str, file_path: str, corpus: str = "",
     # Stamp this thread so the deep ingest code can report granular progress.
     current_file_var.set(file_id)
     current_job_var.set(job_id)
+    if job_id:
+        from src.run_store import current_run_id_var
+        current_run_id_var.set(job_id)
     if project_id:
         from src.project_context import set_current_project
         set_current_project(project_id, "editor")
@@ -117,7 +120,12 @@ def index_file_background(file_id: str, file_path: str, corpus: str = "",
         registry.mark_error(file_id, str(e))
         if job_id:
             from backend.tasks.ingestion_jobs import get_ingestion_job_store
-            get_ingestion_job_store().fail(job_id, str(e))
+            from src.billing_store import CreditBalanceExceededError
+            job_store = get_ingestion_job_store()
+            if isinstance(e, CreditBalanceExceededError):
+                job_store.credit_exhausted(job_id)
+            else:
+                job_store.fail(job_id, str(e))
         try:
             from src.project_store import get_project_store
             get_project_store().set_vector_state(

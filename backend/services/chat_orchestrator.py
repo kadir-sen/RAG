@@ -71,6 +71,16 @@ class ChatOrchestrator:
     ) -> ChatResponse:
         now = datetime.now().isoformat()
 
+        # Fail before persisting a new chat turn or entering any router fallback.
+        # Deep routing deliberately catches provider errors to preserve legacy
+        # availability; exhausted demo credit is an account state, not a model
+        # failure, and must remain an HTTP 402.
+        if username:
+            from src.user_store import get_user_store
+            account = get_user_store().billing.get_account(username)
+            if account and account.get("plan_type") == "demo":
+                get_user_store().billing.enforce_credits(username)
+
         # Live activity feed: stamp the request_id on a contextvar (propagates
         # into the query worker thread via asyncio.to_thread, same as corpus_var)
         # so deep router/agent code can publish progress steps the client polls.
@@ -119,6 +129,12 @@ class ChatOrchestrator:
         )
         if doc_context:
             augmented = f"{doc_context}\n\n{augmented}"
+
+        # Preserve ``query`` for routing/history while making its compact
+        # glossary interpretation available to every downstream retrieval and
+        # generation call through a request-local context variable.
+        from src.jargon_manager import set_current_prepared_query
+        set_current_prepared_query(query)
 
         # 4. Route and execute in thread pool (src/ code is synchronous)
         if not doc_ids:
@@ -174,6 +190,9 @@ class ChatOrchestrator:
                     router.route_and_execute, augmented, doc_ids, mode, email_ids
                 )
         except Exception as e:
+            from src.billing_store import CreditBalanceExceededError
+            if isinstance(e, CreditBalanceExceededError):
+                raise
             import logging
             logging.getLogger("app").error(f"[Orchestrator] Router execution failed: {e}")
             fallback_answer = (
@@ -280,11 +299,19 @@ class ChatOrchestrator:
             try:
                 from src.user_store import get_user_store
 
-                snap = get_user_store().get_usage(username)
+                snap = get_user_store().get_billing_summary(username)
                 response.quota = QuotaInfo(
                     used_tokens=snap["used_tokens"],
                     token_limit=snap["token_limit"],
                     percent_remaining=snap["percent_remaining"],
+                    plan_type=snap.get("plan_type", "legacy"),
+                    credits_total=snap.get("credits_total", 0),
+                    credits_remaining=snap.get("credits_remaining", 0),
+                    credits_used=snap.get("credits_used", 0),
+                    credit_percent_remaining=snap.get("credit_percent_remaining", 100),
+                    storage_used_bytes=snap.get("storage_used_bytes", 0),
+                    storage_limit_bytes=snap.get("storage_limit_bytes", 0),
+                    storage_percent_used=snap.get("storage_percent_used", 0),
                 )
             except Exception:
                 pass

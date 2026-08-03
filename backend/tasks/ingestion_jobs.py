@@ -16,7 +16,7 @@ from src.config import INGEST_MAX_CONCURRENCY, STORAGE_DIR
 
 
 DB_PATH = Path(STORAGE_DIR) / "ingestion_jobs.db"
-TERMINAL = ("ready", "failed")
+TERMINAL = ("ready", "failed", "credit_balance_exhausted")
 CALIBRATION_BATCH_SIZE = 20
 STAGES = ("queued", "extracting", "ocr", "metadata", "chunking", "embedding", "indexing", "ready")
 
@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
     file_id         TEXT NOT NULL,
     file_path       TEXT NOT NULL,
     filename        TEXT NOT NULL,
+    requested_by    TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL,
     stage           TEXT NOT NULL,
     progress        REAL NOT NULL DEFAULT 0,
@@ -60,6 +61,9 @@ class IngestionJobStore:
         self._lock = threading.RLock()
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(ingestion_jobs)")}
+            if "requested_by" not in columns:
+                conn.execute("ALTER TABLE ingestion_jobs ADD COLUMN requested_by TEXT NOT NULL DEFAULT ''")
 
     @classmethod
     def instance(cls) -> "IngestionJobStore":
@@ -96,7 +100,8 @@ class IngestionJobStore:
             )
         return cur.rowcount
 
-    def enqueue(self, project_id: str, file_id: str, file_path: str, filename: str) -> Dict:
+    def enqueue(self, project_id: str, file_id: str, file_path: str, filename: str,
+                requested_by: str = "") -> Dict:
         if not project_id:
             raise ValueError("project_id is required")
         job_id = uuid.uuid4().hex[:20]
@@ -104,14 +109,18 @@ class IngestionJobStore:
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO ingestion_jobs "
-                "(job_id,project_id,file_id,file_path,filename,status,stage,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,'queued','queued',?,?) "
+                "(job_id,project_id,file_id,file_path,filename,requested_by,status,stage,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,'queued','queued',?,?) "
                 "ON CONFLICT(project_id,file_id) DO UPDATE SET "
                 "file_path=excluded.file_path, filename=excluded.filename, "
+                "requested_by=CASE WHEN excluded.requested_by<>'' THEN excluded.requested_by "
+                "ELSE ingestion_jobs.requested_by END, "
                 "status=CASE WHEN ingestion_jobs.status='ready' THEN 'ready' ELSE 'queued' END, "
                 "stage=CASE WHEN ingestion_jobs.status='ready' THEN 'ready' ELSE 'queued' END, "
-                "error=NULL, updated_at=excluded.updated_at",
-                [job_id, project_id, file_id, file_path, filename, now, now],
+                "progress=CASE WHEN ingestion_jobs.status='ready' THEN ingestion_jobs.progress ELSE 0 END, "
+                "error=NULL, completed_at=CASE WHEN ingestion_jobs.status='ready' "
+                "THEN ingestion_jobs.completed_at ELSE NULL END, updated_at=excluded.updated_at",
+                [job_id, project_id, file_id, file_path, filename, requested_by, now, now],
             )
             row = conn.execute(
                 "SELECT * FROM ingestion_jobs WHERE project_id=? AND file_id=?",
@@ -188,6 +197,15 @@ class IngestionJobStore:
                 [(error or "unknown error")[:2000], _now(), _now(), job_id],
             )
 
+    def credit_exhausted(self, job_id: str, error: str = "credit_balance_exhausted") -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE ingestion_jobs SET status='credit_balance_exhausted', "
+                "stage='credit_balance_exhausted', error=?, completed_at=?, updated_at=? "
+                "WHERE job_id=?",
+                [(error or "credit_balance_exhausted")[:2000], _now(), _now(), job_id],
+            )
+
     def get(self, job_id: str, project_id: str = "") -> Optional[Dict]:
         sql = "SELECT * FROM ingestion_jobs WHERE job_id=?"
         params: List = [job_id]
@@ -218,7 +236,7 @@ class IngestionJobStore:
         queued = sum(j["status"] == "queued" for j in jobs)
         processing = sum(j["status"] == "processing" for j in jobs)
         ready = sum(j["status"] == "ready" for j in jobs)
-        failed = sum(j["status"] == "failed" for j in jobs)
+        failed = sum(j["status"] in ("failed", "credit_balance_exhausted") for j in jobs)
         durations = []
         for job in jobs:
             if not job.get("started_at") or not job.get("completed_at") or job["status"] != "ready":
@@ -258,13 +276,21 @@ def _worker() -> None:
             _stop.wait(0.5)
             continue
         try:
+            from backend.core.security import set_current_user_context
+            # Worker threads are reused; clear stale attribution as well as
+            # setting it for newly-created jobs.
+            set_current_user_context(job.get("requested_by") or "")
             from backend.tasks.indexing import index_file_background
             index_file_background(
                 job["file_id"], job["file_path"], project_id=job["project_id"],
                 job_id=job["job_id"],
             )
         except Exception as exc:
-            store.fail(job["job_id"], str(exc))
+            from src.billing_store import CreditBalanceExceededError
+            if isinstance(exc, CreditBalanceExceededError):
+                store.credit_exhausted(job["job_id"])
+            else:
+                store.fail(job["job_id"], str(exc))
 
 
 def start_ingestion_workers() -> None:

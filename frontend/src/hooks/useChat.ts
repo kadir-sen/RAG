@@ -21,6 +21,9 @@ interface ErrorWithResponse extends Error {
 function friendlyError(error: Error): string {
   const e = error as ErrorWithResponse;
   if (e.response?.status === 402) {
+    if (e.response.data?.error === 'credit_balance_exhausted') {
+      return 'Your credit balance is fully consumed. Contact your administrator to top it up.';
+    }
     if (e.response.data?.error === 'token_quota_exceeded') {
       return 'Your token quota is fully consumed. Contact your administrator to top it up.';
     }
@@ -118,12 +121,8 @@ export function useChat() {
       const e = error as ErrorWithResponse;
       // 402 / quota exhausted — zero out the user's bar so the UI matches the
       // backend's "no more requests" state without waiting for a /me poll.
-      if (e.response?.status === 402 && e.response.data?.error === 'token_quota_exceeded') {
-        useAuthStore.getState().updateQuota({
-          used_tokens: useAuthStore.getState().user?.token_limit ?? 0,
-          token_limit: useAuthStore.getState().user?.token_limit ?? 0,
-          percent_remaining: 0,
-        });
+      if (e.response?.status === 402 && ['token_quota_exceeded', 'credit_balance_exhausted'].includes(e.response.data?.error ?? '')) {
+        void useAuthStore.getState().refreshMe();
       }
       const errorMsg: Message = {
         id: `e_${genId()}`,

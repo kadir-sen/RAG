@@ -6,6 +6,8 @@ All LLM calls in the system should go through this module.
 import hashlib
 import json
 import time
+import uuid
+from decimal import Decimal, ROUND_HALF_UP
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -32,7 +34,16 @@ except Exception:
     _GENAI_AVAILABLE = False
 
 
-def _attribute_to_current_user(prompt_tok: int, comp_tok: int) -> None:
+class BillingRecordingError(RuntimeError):
+    """A provider call succeeded but its durable user charge could not be stored."""
+
+
+def _attribute_to_current_user(
+    prompt_tok: int, comp_tok: int, *, provider: str = "", model: str = "",
+    reasoning_tokens: int = 0, cached_tokens: int = 0, cost_nanos: int = 0,
+    usage_source: str = "provider", task_type: str = "generation",
+    count_legacy_tokens: bool = True,
+) -> None:
     """Mirror an LLM call to the active user's per-user counter.
 
     The active user (if any) is read from a contextvar populated by the FastAPI
@@ -49,9 +60,39 @@ def _attribute_to_current_user(prompt_tok: int, comp_tok: int) -> None:
     try:
         from .user_store import get_user_store
 
-        get_user_store().increment_usage(username, prompt_tok, comp_tok)
-    except Exception as exc:  # pragma: no cover — never break the request path
-        logger.warning(f"[LLMClient] per-user usage record failed: {exc}")
+        store = get_user_store()
+        if count_legacy_tokens:
+            store.increment_usage(username, prompt_tok, comp_tok)
+        if provider and model:
+            try:
+                from .project_context import get_current_project_id
+                from .run_store import current_run_id_var
+                store.billing.record_charge(
+                    username=username,
+                    project_id=get_current_project_id(),
+                    run_id=current_run_id_var.get(),
+                    job_id=current_run_id_var.get(),
+                    task_type=task_type,
+                    provider=provider,
+                    model=model,
+                    prompt_tokens=prompt_tok,
+                    # Provider metadata reports visible output and thinking
+                    # separately. ``comp_tok`` is the billable total used by
+                    # the legacy counter, while the ledger keeps the two
+                    # dimensions distinct for admin reporting.
+                    completion_tokens=max(0, comp_tok - reasoning_tokens),
+                    reasoning_tokens=reasoning_tokens,
+                    cached_tokens=cached_tokens,
+                    provider_cost_nanos=cost_nanos,
+                    usage_source=usage_source,
+                    idempotency_key=f"llm:{uuid.uuid4().hex}",
+                )
+            except Exception as billing_exc:
+                logger.error(f"[LLMClient] billing ledger write failed: {billing_exc}")
+                raise
+    except Exception as exc:
+        logger.error(f"[LLMClient] per-user usage record failed: {exc}")
+        raise BillingRecordingError(str(exc)) from exc
 
 
 def _record_run_usage(usage: LLMUsage) -> None:
@@ -74,7 +115,12 @@ def _enforce_user_quota() -> None:
     try:
         from .user_store import get_user_store
 
-        get_user_store().enforce_quota(username)
+        store = get_user_store()
+        account = store.billing.get_account(username)
+        if account and account.get("plan_type") == "demo":
+            store.billing.enforce_credits(username)
+        else:
+            store.enforce_quota(username)
     except Exception:
         # enforce_quota raises UserQuotaExceededError on real cap hits — let it bubble
         raise
@@ -254,37 +300,43 @@ class _AnthropicWrapper:
 
 # ── LLM Factory ─────────────────────────────────────────────
 
-def _gemini_generate_thinking(
-    prompt: str, system: str, temperature: float, max_tokens: int,
-    model: str, thinking_budget: int,
+def _gemini_generate_native(
+    prompt: str, system: str, max_tokens: int, model: str,
+    thinking_level: str = "medium", json_mode: bool = False,
+    response_schema: Optional[Dict[str, Any]] = None,
 ):
-    """Native google-genai call with extended thinking for Gemini 2.5.
-
-    The legacy llama-index Gemini wrapper cannot pass thinking_config, so this
-    bypasses it. Returns (text, completion_tokens, thoughts_tokens).
-    """
+    """Native Gemini 3 call with authoritative usage metadata."""
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
-    contents = f"{system}\n\n{prompt}" if system else prompt
+    config_kwargs: Dict[str, Any] = {
+        "max_output_tokens": max_tokens,
+        "thinking_config": types.ThinkingConfig(thinking_level=thinking_level),
+    }
+    if system:
+        config_kwargs["system_instruction"] = system
+    if json_mode or response_schema:
+        config_kwargs["response_mime_type"] = "application/json"
+    if response_schema:
+        config_kwargs["response_json_schema"] = response_schema
     resp = client.models.generate_content(
         model=model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-            thinking_config=types.ThinkingConfig(thinking_budget=int(thinking_budget)),
-        ),
+        contents=prompt,
+        config=types.GenerateContentConfig(**config_kwargs),
     )
     text = (resp.text or "").strip()
     comp_tok = 0
     thoughts_tok = 0
     um = getattr(resp, "usage_metadata", None)
+    prompt_tok = 0
+    cached_tok = 0
     if um is not None:
+        prompt_tok = getattr(um, "prompt_token_count", 0) or 0
         comp_tok = getattr(um, "candidates_token_count", 0) or 0
         thoughts_tok = getattr(um, "thoughts_token_count", 0) or 0
-    return text, comp_tok, thoughts_tok
+        cached_tok = getattr(um, "cached_content_token_count", 0) or 0
+    return text, prompt_tok, comp_tok, thoughts_tok, cached_tok, resp
 
 
 def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
@@ -361,20 +413,57 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
 def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int,
                   cached_tokens: int = 0) -> float:
     """Estimate cost in USD for a given call."""
-    pricing = LLM_PRICING.get(model, LLM_PRICING.get("gemini-flash-latest", {}))
+    return estimate_cost_nanos(model, prompt_tokens, completion_tokens, cached_tokens) / 1_000_000_000
+
+
+def estimate_cost_nanos(model: str, prompt_tokens: int, completion_tokens: int,
+                        cached_tokens: int = 0) -> int:
+    """Price a call using the explicit catalog; unknown models fail closed."""
+    pricing = LLM_PRICING.get(model)
+    if not pricing:
+        raise ValueError(f"No pricing configured for model: {model}")
     cached_tokens = max(0, min(int(cached_tokens or 0), int(prompt_tokens or 0)))
     uncached_tokens = max(0, int(prompt_tokens or 0) - cached_tokens)
-    input_cost = (uncached_tokens / 1_000_000) * pricing.get("input", 0.075)
-    input_cost += (cached_tokens / 1_000_000) * pricing.get(
-        "cached_input", pricing.get("input", 0.075)
+    value = (
+        Decimal(uncached_tokens) / Decimal(1_000_000) * Decimal(str(pricing["input"]))
+        + Decimal(cached_tokens) / Decimal(1_000_000)
+        * Decimal(str(pricing.get("cached_input", pricing["input"])))
+        + Decimal(max(0, int(completion_tokens))) / Decimal(1_000_000)
+        * Decimal(str(pricing["output"]))
     )
-    output_cost = (completion_tokens / 1_000_000) * pricing.get("output", 0.30)
-    return round(input_cost + output_cost, 8)
+    return int((value * Decimal(1_000_000_000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def estimate_tokens(text: str) -> int:
     """Rough token estimate (chars / 4)."""
     return max(1, len(text) // 4)
+
+
+def _current_model_policy() -> str:
+    try:
+        from backend.core.security import get_current_username
+        from .user_store import get_user_store
+        username = get_current_username()
+        account = get_user_store().billing.get_account(username) if username else None
+        return str((account or {}).get("model_policy") or "")
+    except Exception:
+        return ""
+
+
+def _demo_thinking_level(task_type: str, requested_model: str) -> str:
+    task = (task_type or "").lower()
+    if requested_model == GEMINI_MODEL_LITE or any(x in task for x in (
+        "classif", "metadata", "scope", "ocr", "verify", "extract",
+    )):
+        return "minimal"
+    if any(x in task for x in ("plan", "rerank", "research")):
+        return "low"
+    return "medium"
+
+
+def effective_providers(providers: List[str]) -> List[str]:
+    """Demo accounts are single-provider even if a legacy compare path is called."""
+    return ["gemini"] if _current_model_policy() == "demo-gemini-3.6-v1" else list(providers)
 
 
 # ── Core API ─────────────────────────────────────────────────
@@ -391,6 +480,9 @@ def generate_text(
     ttl_s: int = CACHE_TTL_SECONDS,
     provider: str = "gemini",
     thinking: int = 0,
+    thinking_level: str = "",
+    task_type: str = "generation",
+    response_schema: Optional[Dict[str, Any]] = None,
 ) -> LLMResponse:
     """
     Generate text via LLM, with caching and usage tracking.
@@ -412,6 +504,24 @@ def generate_text(
     Returns:
         LLMResponse with text, usage info, cache status
     """
+    requested_model = model
+    # Query entry points set this request-local value once.  Appending the
+    # compact terminology block here makes planner, SQL, RAG synthesis and
+    # report calls share the same glossary without changing the original text
+    # used by intent routing or conversation history.
+    try:
+        from .jargon_manager import current_prepared_query_var
+        prepared = current_prepared_query_var.get()
+        if prepared and prepared.context and prepared.context not in system:
+            system = f"{system}\n\n{prepared.context}".strip()
+    except Exception:
+        pass
+    policy = _current_model_policy()
+    if policy == "demo-gemini-3.6-v1":
+        provider = "gemini"
+        model = "gemini-3.6-flash"
+        thinking_level = thinking_level or _demo_thinking_level(task_type, requested_model)
+
     # Resolve model from provider if not explicitly set
     if not model:
         if provider == "openai":
@@ -421,8 +531,17 @@ def generate_text(
         else:
             model = GEMINI_MODEL
 
+    if model not in LLM_PRICING:
+        raise ValueError(f"No pricing configured for model: {model}")
+
     thinking = int(thinking) if thinking else 0
+    if not thinking_level:
+        thinking_level = "medium" if thinking else "minimal"
     # Gemini thinking needs the native google-genai SDK; degrade gracefully if absent.
+    use_native_gemini = (
+        provider == "gemini" and _GENAI_AVAILABLE
+        and model.startswith(("gemini-3.", "models/gemini-3."))
+    )
     use_gemini_thinking = (provider == "gemini" and thinking > 0 and _GENAI_AVAILABLE)
     if provider == "gemini" and thinking > 0 and not _GENAI_AVAILABLE:
         logger.warning(
@@ -433,11 +552,14 @@ def generate_text(
 
     # ── Build cache key (includes provider + thinking budget) ──
     if cache_key is None:
-        key_data = f"{provider}:{model}:think{thinking}:{system[:200]}:{prompt}"
+        key_data = (
+            f"{provider}:{model}:think{thinking}:level{thinking_level}:"
+            f"{system[:200]}:{prompt}"
+        )
         cache_key = "llm:" + hashlib.sha256(key_data.encode()).hexdigest()[:32]
-    elif thinking > 0:
-        # Explicit caller keys must still differ by thinking budget.
-        cache_key = f"{cache_key}:think{thinking}"
+    elif thinking > 0 or use_native_gemini:
+        # Explicit caller keys must still differ by reasoning configuration.
+        cache_key = f"{cache_key}:think{thinking}:level{thinking_level}"
 
     # ── Enforce global + per-user usage caps (cache hits still allowed below) ──
     enforce_budget()
@@ -461,6 +583,11 @@ def generate_text(
             cached_tokens=prompt_tok,
         )
         _record_run_usage(cached_usage)
+        _attribute_to_current_user(
+            prompt_tok, comp_tok, provider=provider, model=model,
+            cached_tokens=prompt_tok, cost_nanos=0, usage_source="cache",
+            task_type=task_type, count_legacy_tokens=False,
+        )
         return LLMResponse(
             text=cached,
             usage=cached_usage,
@@ -485,15 +612,22 @@ def generate_text(
                     )
                     if "budget_soft_cap" not in _tr.errors:
                         _tr.record_error("budget_soft_cap")
-                model = GEMINI_MODEL_LITE
-                thinking = 0
+                # Demo accounts keep the quality model and only lower thinking;
+                # legacy accounts retain the historical lite-tier behaviour.
+                if policy == "demo-gemini-3.6-v1":
+                    model = "gemini-3.6-flash"
+                    thinking_level = "minimal"
+                else:
+                    model = GEMINI_MODEL_LITE
+                    thinking = 0
+                    use_native_gemini = False
                 use_gemini_thinking = False
                 use_claude_thinking = False
     except Exception:
         pass
 
     # ── Create LLM (skipped for the native gemini-thinking path) ──
-    if use_gemini_thinking:
+    if use_native_gemini or use_gemini_thinking:
         llm = None
     else:
         llm, model = create_llm(
@@ -508,16 +642,16 @@ def generate_text(
             start = time.time()
             thoughts_tok = 0
             native_comp_tok = 0
+            native_prompt_tok = 0
+            native_cached_tok = 0
 
-            if use_gemini_thinking:
-                # Native google-genai path (legacy llama-index wrapper can't do thinking)
-                text, native_comp_tok, thoughts_tok = _gemini_generate_thinking(
-                    prompt=prompt, system=system,
-                    temperature=temperature, max_tokens=max_tokens,
-                    model=model, thinking_budget=thinking,
+            if use_native_gemini or use_gemini_thinking:
+                text, native_prompt_tok, native_comp_tok, thoughts_tok, native_cached_tok, response = _gemini_generate_native(
+                    prompt=prompt, system=system, max_tokens=max_tokens,
+                    model=model, thinking_level=thinking_level,
+                    json_mode=json_mode, response_schema=response_schema,
                 )
                 text = text.strip()
-                response = None
             # Use chat() for OpenAI/Claude (proper system prompt handling)
             elif provider in ("openai", "claude") and system:
                 from llama_index.core.llms import ChatMessage, MessageRole
@@ -535,7 +669,7 @@ def generate_text(
             elapsed_ms = (time.time() - start) * 1000
 
             # ── Build usage (thinking tokens are billed as output tokens) ──
-            prompt_tok = estimate_tokens((system + prompt) if system else prompt)
+            prompt_tok = native_prompt_tok or estimate_tokens((system + prompt) if system else prompt)
             cached_tok = 0
             if native_comp_tok:
                 comp_tok = native_comp_tok + thoughts_tok
@@ -565,7 +699,10 @@ def generate_text(
                     )
                     if candidates or thoughts_tok:
                         comp_tok = candidates + thoughts_tok
-            cost = estimate_cost(model, prompt_tok, comp_tok, cached_tok)
+            cached_tok = native_cached_tok or cached_tok
+            usage_source = "provider" if native_prompt_tok or getattr(response, "raw", None) else "estimated"
+            cost_nanos = estimate_cost_nanos(model, prompt_tok, comp_tok, cached_tok)
+            cost = cost_nanos / 1_000_000_000
 
             usage = LLMUsage(
                 prompt_tokens=prompt_tok,
@@ -593,7 +730,12 @@ def generate_text(
                 record_usage(prompt_tok, comp_tok, cost)
             except Exception as track_err:
                 logger.warning(f"[LLMClient] usage tracker failed: {track_err}")
-            _attribute_to_current_user(prompt_tok, comp_tok)
+            _attribute_to_current_user(
+                prompt_tok, comp_tok, provider=provider, model=model,
+                reasoning_tokens=thoughts_tok, cached_tokens=cached_tok,
+                cost_nanos=cost_nanos, usage_source=usage_source,
+                task_type=task_type,
+            )
             _record_run_usage(usage)
 
             return LLMResponse(text=text, usage=usage, raw=response)
@@ -602,6 +744,8 @@ def generate_text(
             last_error = e
             # Check for non-retryable errors (content policy, auth)
             _non_retryable = False
+            if isinstance(e, BillingRecordingError):
+                _non_retryable = True
             try:
                 import anthropic
                 if isinstance(e, (anthropic.BadRequestError, anthropic.AuthenticationError)):
@@ -644,6 +788,7 @@ def generate_json(
     cache_key: Optional[str] = None,
     ttl_s: int = CACHE_TTL_SECONDS,
     provider: str = "gemini",
+    task_type: str = "generation",
 ) -> LLMResponse:
     """Generate text and parse as JSON. Raises on invalid JSON."""
     import re as _re
@@ -652,6 +797,7 @@ def generate_json(
         prompt, system=system, model=model,
         json_mode=True, cache_key=cache_key, ttl_s=ttl_s,
         provider=provider,
+        task_type=task_type,
     )
 
     # Strip markdown fences
@@ -675,6 +821,53 @@ def generate_json(
     return resp
 
 
+def generate_multimodal_text(
+    prompt: str, image_bytes: bytes, *, mime_type: str = "image/png",
+    max_tokens: int = 8192, task_type: str = "ocr",
+) -> LLMResponse:
+    """Metered Gemini multimodal generation used by selective OCR."""
+    enforce_budget(); _enforce_user_quota()
+    from google import genai
+    from google.genai import types
+
+    model = "gemini-3.6-flash" if _current_model_policy() == "demo-gemini-3.6-v1" else GEMINI_MODEL
+    if model not in LLM_PRICING:
+        raise ValueError(f"No pricing configured for model: {model}")
+    started = time.time()
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    response = client.models.generate_content(
+        model=model,
+        contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
+        config=types.GenerateContentConfig(
+            max_output_tokens=max_tokens,
+            thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+        ),
+    )
+    meta = getattr(response, "usage_metadata", None)
+    prompt_tokens = int(getattr(meta, "prompt_token_count", 0) or estimate_tokens(prompt))
+    candidates = int(getattr(meta, "candidates_token_count", 0) or estimate_tokens(response.text or ""))
+    thoughts = int(getattr(meta, "thoughts_token_count", 0) or 0)
+    cached = int(getattr(meta, "cached_content_token_count", 0) or 0)
+    completion_tokens = candidates + thoughts
+    cost_nanos = estimate_cost_nanos(model, prompt_tokens, completion_tokens, cached)
+    usage = LLMUsage(
+        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        cost_estimate=cost_nanos / 1_000_000_000,
+        model=model, latency_ms=round((time.time() - started) * 1000, 1),
+        cache_hit=False, provider="gemini", reasoning_tokens=thoughts,
+        cached_tokens=cached,
+    )
+    record_usage(prompt_tokens, completion_tokens, usage.cost_estimate)
+    _attribute_to_current_user(
+        prompt_tokens, completion_tokens, provider="gemini", model=model,
+        reasoning_tokens=thoughts, cached_tokens=cached, cost_nanos=cost_nanos,
+        usage_source="provider" if meta else "estimated", task_type=task_type,
+    )
+    _record_run_usage(usage)
+    return LLMResponse(text=(response.text or "").strip(), usage=usage, raw=response)
+
+
 def generate_response_json(
     prompt: str,
     *,
@@ -688,6 +881,22 @@ def generate_response_json(
     ttl_s: int = CACHE_TTL_SECONDS,
 ) -> LLMResponse:
     """Structured JSON through OpenAI Responses API for quality-critical reports."""
+    if _current_model_policy() == "demo-gemini-3.6-v1":
+        response = generate_text(
+            prompt,
+            system=system,
+            model="gemini-3.6-flash",
+            provider="gemini",
+            json_mode=True,
+            response_schema=schema,
+            thinking_level="medium",
+            task_type="report_structured",
+            cache_key=cache_key,
+            ttl_s=ttl_s,
+            max_tokens=8192,
+        )
+        response.raw = json.loads(response.text)
+        return response
     model = model or OPENAI_MODEL
     if cache_key is None:
         material = f"responses:{model}:{reasoning_effort}:{schema_name}:{system}:{prompt}"
@@ -755,7 +964,13 @@ def generate_response_json(
     )
     _cache_set(cache_key, raw_text, ttl_s)
     record_usage(prompt_tokens, completion_tokens, usage.cost_estimate)
-    _attribute_to_current_user(prompt_tokens, completion_tokens)
+    _attribute_to_current_user(
+        prompt_tokens, completion_tokens, provider="openai", model=model,
+        reasoning_tokens=reasoning_tokens, cached_tokens=cached_tokens,
+        cost_nanos=int((Decimal(str(cost)) * Decimal(1_000_000_000)).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )), task_type="report_structured",
+    )
     _record_run_usage(usage)
     return LLMResponse(text=raw_text, usage=usage, raw=parsed)
 
@@ -790,7 +1005,7 @@ def generate_text_dual(
     Returns:
         DualLLMResponse with results from each provider
     """
-    providers = providers or LLM_PROVIDERS
+    providers = effective_providers(providers or LLM_PROVIDERS)
     result = DualLLMResponse()
 
     def _call_provider(prov: str):
@@ -814,10 +1029,9 @@ def generate_text_dual(
     # Propagate the caller's contextvars (active user) into worker threads
     # so per-user usage attribution and quota enforcement still apply.
     import contextvars as _ctxvars
-    _ctx = _ctxvars.copy_context()
-
     with ThreadPoolExecutor(max_workers=len(providers)) as executor:
-        futures = [executor.submit(_ctx.run, _call_provider, p) for p in providers]
+        futures = [executor.submit(_ctxvars.copy_context().run, _call_provider, p)
+                   for p in providers]
         for future in as_completed(futures):
             prov, resp, error = future.result()
             if prov == "gemini":

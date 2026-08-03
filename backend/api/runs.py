@@ -20,6 +20,9 @@ def list_runs(
         project_id=project.project_id, username=user.username,
         admin=user.role == "admin", limit=limit,
     )
+    if user.role != "admin":
+        for item in runs:
+            item.pop("cost_usd", None)
     # Legacy interactions predate run_id/project correlation. Preserve them for
     # admins as explicitly unassigned, with unknown metrics rather than false 0s.
     if user.role == "admin" and len(runs) < limit:
@@ -47,9 +50,13 @@ def list_runs(
 @router.get("/runs/{run_id}")
 def get_run(
     run_id: str,
+    user: UserContext = Depends(get_current_user),
     project: ProjectContext = Depends(get_current_project),
 ):
     value = get_run_store().details(run_id, project_id=project.project_id)
     if not value:
         raise HTTPException(404, "run_not_found")
+    if user.role != "admin":
+        for call in value.get("llm_calls", []):
+            call.pop("cost_usd", None)
     return value

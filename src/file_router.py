@@ -167,6 +167,9 @@ def _enrich_document_llm(file_path: str, full_text: str,
         # terms learned from the text. The first ~4k chars are enough to classify
         # and catch the lead events/definitions without reading the whole document.
         snippet = text[:4000]
+        from .jargon_manager import prepare_query, set_current_prepared_query
+        prepared = prepare_query(snippet)
+        set_current_prepared_query(prepared)
         prompt = (
             "You index construction-project / public-inquiry documents.\n"
             "From the excerpt, return ONE compact JSON object with these keys:\n"
@@ -183,7 +186,7 @@ def _enrich_document_llm(file_path: str, full_text: str,
             'stated in the text>"}]\n'
             '}\n'
             "Use [] when a list has nothing. Output JSON only.\n\n"
-            f"DOCUMENT EXCERPT:\n{snippet}"
+            f"{prepared.context}\n\nDOCUMENT EXCERPT:\n{snippet}"
         )
         cache_key = "docenrich2:" + hashlib.sha256(snippet.encode()).hexdigest()[:32]
         resp = llm_client.generate_json(
@@ -197,11 +200,13 @@ def _enrich_document_llm(file_path: str, full_text: str,
         topics = [str(t).strip() for t in (data.get("topics") or []) if str(t).strip()][:5]
         doc_type = str(data.get("doc_type", "")).strip()[:60]
 
-        if summary or topics:
+        jargon_terms = [key for key, _ in prepared.matches]
+        if summary or topics or jargon_terms:
             get_document_registry().set_llm_enrichment(
                 generate_doc_id(file_path),
                 summary=summary,
                 topics=topics or None,
+                jargon_terms=jargon_terms,
             )
 
         # Persist the structured outputs (doc_type, events, new_terms) to a side
@@ -220,6 +225,7 @@ def _enrich_document_llm(file_path: str, full_text: str,
                 "topics": topics,
                 "events": events,
                 "new_terms": new_terms,
+                "jargon_terms": jargon_terms,
                 "project_id": project_id,
             })
 
@@ -891,6 +897,12 @@ def delete_document(doc_id: str) -> Dict[str, Any]:
     # 7. Registry record (last — after all cleanup)
     registry.delete(doc_id)
     result["registry_cleaned"] = True
+    try:
+        from .billing_store import get_billing_store
+        get_billing_store().release_storage(project_id=project_id, file_id=doc_id)
+        result["storage_quota_released"] = True
+    except Exception as e:
+        logger.warning(f"[Delete] Storage quota release failed: {e}")
 
     logger.info(f"[Delete] Document deleted: {record.file_name} ({doc_id})")
     return result

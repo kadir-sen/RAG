@@ -44,7 +44,10 @@ def test_ai_chronology_uses_real_claim_level_footnotes_and_canonical_layout():
     # A normal OOXML consumer can still open the package.
     doc = Document(io.BytesIO(blob))
     assert not doc.tables
-    assert any(p.text.startswith("6.3.1  2025-01-08") for p in doc.paragraphs)
+    event_paragraph = next(p for p in doc.paragraphs if p.text.startswith("6.3.1\t2025-01-08"))
+    assert event_paragraph.alignment == 3  # WD_ALIGN_PARAGRAPH.JUSTIFY
+    assert abs(event_paragraph.paragraph_format.left_indent.cm - 1.905) < 0.02
+    assert abs(event_paragraph.paragraph_format.first_line_indent.cm + 1.905) < 0.02
     assert all("MODEL.MUST" not in p.text for p in doc.paragraphs)
     section = doc.sections[0]
     assert abs(section.top_margin.cm - 2.54) < 0.02

@@ -415,6 +415,8 @@ async def chronology_build(
         # lets document_rag/lexical publish their own steps under the same id.
         query_request_var.set(request_id)
         from src.project_context import set_current_project
+        from backend.core.security import set_current_user_context
+        set_current_user_context(user.username)
         set_current_project(project.project_id, project.role)
         return build_evidence(
             doc.ref, doc.title, doc.summary, entries,

@@ -133,8 +133,36 @@ def _stats(project_id: str) -> Dict:
     }
 
 
-def _out(project: Dict) -> Dict:
-    return {**project, "stats": _stats(project["project_id"])}
+def _project_usage(project_id: str, user: UserContext) -> Dict:
+    from src.billing_store import get_billing_store
+    groups = get_billing_store().usage(
+        project_id=project_id, username="" if user.role == "admin" else user.username,
+    )["groups"]
+    out = {
+        "calls": sum(int(row.get("calls") or 0) for row in groups),
+        "prompt_tokens": sum(int(row.get("prompt_tokens") or 0) for row in groups),
+        "completion_tokens": sum(int(row.get("completion_tokens") or 0) for row in groups),
+        "credits_used": round(sum(float(row.get("debited_credit") or 0) for row in groups), 6),
+    }
+    if user.role == "admin":
+        out["retail_credits"] = round(sum(
+            float(row.get("retail_credit") or 0) for row in groups
+        ), 6)
+        out["estimated_provider_cost_usd"] = round(sum(
+            float(row.get("estimated_provider_cost_usd") or 0) for row in groups
+        ), 9)
+        out["uncovered_provider_cost_usd"] = round(sum(
+            float(row.get("uncovered_provider_cost_usd") or 0) for row in groups
+        ), 9)
+        out["uncovered_credits"] = round(sum(
+            float(row.get("uncovered_credit") or 0) for row in groups
+        ), 6)
+    return out
+
+
+def _out(project: Dict, user: UserContext) -> Dict:
+    return {**project, "stats": _stats(project["project_id"]),
+            "usage": _project_usage(project["project_id"], user)}
 
 
 @router.get("/projects")
@@ -143,7 +171,11 @@ def list_projects(
     store: ProjectStore = Depends(get_project_store),
 ) -> Dict[str, List[Dict]]:
     projects = store.list_all() if user.role == "admin" else store.list_for_user(user.username)
-    return {"projects": [_out(p) for p in projects]}
+    from src.user_store import get_user_store
+    return {
+        "projects": [_out(p, user) for p in projects],
+        "account_usage": get_user_store().get_billing_summary(user.username),
+    }
 
 
 @router.post("/projects", status_code=201)
@@ -166,13 +198,14 @@ def create_project(
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     _ensure_dirs(project["project_id"])
-    return _out(project)
+    return _out(project, user)
 
 
 @router.patch("/projects/{project_id}")
 def rename_project(
     project_id: str,
     body: ProjectRename,
+    user: UserContext = Depends(get_current_user),
     project: ProjectContext = Depends(require_project_owner),
     store: ProjectStore = Depends(get_project_store),
 ) -> Dict:
@@ -182,7 +215,7 @@ def rename_project(
     if not updated:
         raise HTTPException(404, "project_not_found")
     updated["role"] = project.role
-    return _out(updated)
+    return _out(updated, user)
 
 
 @router.post("/projects/{project_id}/members")

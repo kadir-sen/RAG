@@ -2083,6 +2083,7 @@ class QueryRouter:
             resp = llm_client.generate_json(
                 prompt, system="You split queries. Output JSON only.", cache_key=key,
                 model=GEMINI_MODEL_LITE if ENABLE_LITE_TIER else "",
+                task_type="query_plan",
             )
             data = resp.raw if isinstance(resp.raw, dict) else {}
             doc_q = (data.get("doc") or "").strip() or query
@@ -3888,6 +3889,9 @@ class QueryRouter:
         """Handle hybrid query with both providers in parallel."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .config import LLM_PROVIDERS
+        from .llm_client import effective_providers
+        import contextvars
+        providers = effective_providers(LLM_PROVIDERS)
 
         def _run_hybrid(provider: str):
             doc_result = self.document_rag.query_with_provider(query, provider)
@@ -3932,8 +3936,9 @@ class QueryRouter:
             }
 
         results = {}
-        with ThreadPoolExecutor(max_workers=len(LLM_PROVIDERS)) as executor:
-            futures = {executor.submit(_run_hybrid, p): p for p in LLM_PROVIDERS}
+        with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+            futures = {executor.submit(contextvars.copy_context().run,
+                                       _run_hybrid, p): p for p in providers}
             for future in as_completed(futures):
                 prov = futures[future]
                 try:

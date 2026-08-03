@@ -14,6 +14,7 @@ const SettingsModal = lazy(() => import('./components/shared/SettingsModal'));
 /* Its own area, and a heavy one (timeline + viewer) — not worth carrying in
    the picker's bundle for the visits that never open it. */
 const ChronologyPage = lazy(() => import('./pages/ChronologyPage'));
+const ChronologyReportPage = lazy(() => import('./pages/ChronologyReportPage'));
 const ForensicPage = lazy(() => import('./pages/ForensicPage'));
 
 const queryClient = new QueryClient({
@@ -96,6 +97,7 @@ export default function App() {
                   </Suspense>
                 }
               />
+              <Route path="/chronology/reports/:jobId" element={<ProjectRequired><Suspense fallback={null}><ChronologyReportPage /></Suspense></ProjectRequired>} />
               <Route path="/chat" element={<ProjectRequired><ChatPage /></ProjectRequired>} />
               <Route path="/forensic" element={<ProjectRequired><Suspense fallback={null}><ForensicPage /></Suspense></ProjectRequired>} />
             </Route>

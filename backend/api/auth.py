@@ -32,6 +32,14 @@ def _user_payload(record: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, An
         "token_limit": record["token_limit"],
         "used_tokens": usage["used_tokens"],
         "percent_remaining": usage["percent_remaining"],
+        "plan_type": usage.get("plan_type", "legacy"),
+        "credits_total": usage.get("credits_total", 0.0),
+        "credits_remaining": usage.get("credits_remaining", 0.0),
+        "credits_used": usage.get("credits_used", 0.0),
+        "credit_percent_remaining": usage.get("credit_percent_remaining", 100.0),
+        "storage_used_bytes": usage.get("storage_used_bytes", 0),
+        "storage_limit_bytes": usage.get("storage_limit_bytes", 0),
+        "storage_percent_used": usage.get("storage_percent_used", 0.0),
     }
 
 
@@ -43,7 +51,7 @@ async def login(
     record = store.verify_password(req.username.strip(), req.password)
     if not record:
         raise HTTPException(401, "invalid_credentials")
-    usage = store.get_usage(record["username"])
+    usage = store.get_billing_summary(record["username"])
     token = create_access_token(record["username"], record["role"])
     return {
         "access_token": token,
@@ -60,7 +68,7 @@ async def me(
     record = store.get_user(user.username)
     if not record:
         raise HTTPException(401, "unknown_user")
-    usage = store.get_usage(user.username)
+    usage = store.get_billing_summary(user.username)
     return {"user": _user_payload(record, usage)}
 
 

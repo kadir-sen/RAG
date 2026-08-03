@@ -6,12 +6,14 @@ export interface ReportJob {
   project_id: string;
   module: 'chronology' | 'forensic';
   title: string;
-  status: 'queued' | 'processing' | 'ready' | 'failed';
+  status: 'queued' | 'processing' | 'ready' | 'failed' | 'credit_balance_exhausted';
   stage: string;
   progress: number;
   error: string | null;
   result: Record<string, unknown> | null;
   created_at: string;
+  sequence_number: number | null;
+  report_url?: string;
 }
 
 export interface ToolkitArtifact {
@@ -36,6 +38,16 @@ export async function listReports(module: 'chronology' | 'forensic'): Promise<Re
 
 export async function getReport(jobId: string): Promise<ReportJob> {
   const { data } = await apiClient.get<ReportJob>(`/reports/${jobId}`);
+  return data;
+}
+
+export interface ResolvedReportSource {
+  source: Record<string, unknown>;
+  record: { doc_id?: string; file_name?: string; page?: number; status: string };
+}
+
+export async function resolveReportSource(jobId: string, sourceId: string): Promise<ResolvedReportSource> {
+  const { data } = await apiClient.get<ResolvedReportSource>(`/reports/${jobId}/sources/${sourceId}`);
   return data;
 }
 
