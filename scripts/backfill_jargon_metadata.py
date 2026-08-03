@@ -34,9 +34,13 @@ def _chunk_documents(project_id: str = "") -> Iterable[Tuple[str, str, str, str]
         where += " AND project_id=?"
         params.append(project_id)
     cursor = con.execute(
-        "SELECT project_id,COALESCE(doc_id,''),file_name,"
+        # Legacy migrations assigned different doc_id values to pages/chunks of
+        # the same source.  Qdrant's durable source identity is project + file
+        # name, so aggregate on that pair and keep only one representative id
+        # for the optional registry correlation.
+        "SELECT project_id,COALESCE(MIN(NULLIF(doc_id,'')),''),file_name,"
         "string_agg(text, '\\n' ORDER BY page_number,chunk_id) "
-        f"FROM chunks {where} GROUP BY project_id,doc_id,file_name "
+        f"FROM chunks {where} GROUP BY project_id,file_name "
         "ORDER BY project_id,file_name",
         params,
     )
