@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { downloadReport, getReport, resolveReportSource } from '../api/reportApi';
+import { downloadReport, getReport, resolveReportSource, retryReport } from '../api/reportApi';
 import type { ReportJob, ResolvedReportSource } from '../api/reportApi';
 import { useUIStore } from '../stores/uiStore';
 
@@ -9,7 +9,9 @@ export default function ChronologyReportPage() {
   const [job, setJob] = useState<ReportJob | null>(null);
   const [error, setError] = useState('');
   const [source, setSource] = useState<ResolvedReportSource | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const openDocument = useUIStore((state) => state.openDocument);
+  const polling = job === null || job.status === 'queued' || job.status === 'processing';
 
   useEffect(() => {
     let live = true;
@@ -18,17 +20,21 @@ export default function ChronologyReportPage() {
       catch { if (live) setError('This report is unavailable in the active project.'); }
     };
     void load();
-    const timer = window.setInterval(() => {
-      if (!job || job.status === 'queued' || job.status === 'processing') void load();
-    }, 2200);
-    return () => { live = false; window.clearInterval(timer); };
-  }, [jobId, job?.status]);
+    const timer = polling ? window.setInterval(() => { void load(); }, 2200) : undefined;
+    return () => { live = false; if (timer) window.clearInterval(timer); };
+  }, [jobId, polling]);
 
   const entries = useMemo(() => Array.isArray(job?.result?.entries) ? job?.result?.entries as Array<Record<string, unknown>> : [], [job]);
   const evidence = useMemo(() => Array.isArray(job?.result?.evidence) ? job?.result?.evidence as Array<Record<string, unknown>> : [], [job]);
   const showSource = async (sourceId: string) => {
     try { setSource(await resolveReportSource(jobId, sourceId)); }
     catch { setError('The selected source no longer resolves inside this project.'); }
+  };
+  const retry = async () => {
+    setRetrying(true); setError('');
+    try { setJob(await retryReport(jobId)); }
+    catch { setError('This report could not be retried yet.'); }
+    finally { setRetrying(false); }
   };
 
   if (error && !job) return <div className="p-8"><p className="text-[var(--danger)]">{error}</p><Link to="/chronology" className="mt-4 inline-block text-[var(--accent)]">← Back to chronology</Link></div>;
@@ -45,7 +51,7 @@ export default function ChronologyReportPage() {
         </div>
 
         {active && <section className="mt-7 border border-[var(--border)] bg-[var(--wash)] p-5"><div className="flex justify-between text-[11px]"><span className="text-[var(--text-primary)]">{job.stage.replaceAll('_', ' ')}</span><span className="font-mono text-[var(--text-muted)]">{Math.round(job.progress * 100)}%</span></div><div className="mt-3 h-1 bg-[var(--wash-firm)]"><div className="h-full bg-[var(--accent)] transition-all" style={{ width: `${job.progress * 100}%` }} /></div><p className="mt-3 text-[10px] text-[var(--text-muted)]">This URL is permanent. You may leave and return while the report is being prepared.</p></section>}
-        {(job.status === 'failed' || job.status === 'credit_balance_exhausted') && <section role="alert" className="mt-7 border border-[var(--danger)] p-5 text-[12px] text-[var(--danger)]">{job.status === 'credit_balance_exhausted' ? 'Credit balance exhausted. Add credits, then create or retry the report.' : (job.error || 'Report generation failed.')}</section>}
+        {(job.status === 'failed' || job.status === 'credit_balance_exhausted') && <section role="alert" className="mt-7 border border-[var(--danger)] p-5 text-[12px] text-[var(--danger)]"><p>{job.status === 'credit_balance_exhausted' ? 'Credit balance exhausted. Add credits, then retry the report.' : (job.error || 'Report generation failed.')}</p>{job.retryable && <button type="button" disabled={retrying} onClick={() => void retry()} className="mt-4 border border-[var(--danger)] px-4 py-2 font-mono text-[10px] uppercase disabled:opacity-40">{retrying ? 'Queuing…' : 'Retry same report'}</button>}</section>}
 
         {job.status === 'ready' && <div className="mt-8 grid lg:grid-cols-[1fr_280px] gap-6">
           <main className="space-y-4">{entries.map((entry, index) => <article key={index} className="border border-[var(--border)] bg-[var(--bg-primary)] p-5"><p className="font-mono text-[10px] text-[var(--accent)]">6.{job.sequence_number}.{index + 1} · {String(entry.event_date || (index === 0 ? 'Overview' : 'Date not established'))}</p>{(Array.isArray(entry.claims) ? entry.claims as Array<Record<string, unknown>> : []).map((claim, claimIndex) => <p key={claimIndex} className="mt-3 text-[13px] leading-6 text-[var(--text-primary)]">{String(claim.text || '')} <span className="inline-flex flex-wrap gap-1">{(Array.isArray(claim.source_ids) ? claim.source_ids as string[] : []).map((id) => <button type="button" key={id} onClick={() => void showSource(id)} className="font-mono text-[9px] text-[var(--accent)] hover:underline">[{id}]</button>)}</span></p>)}</article>)}</main>

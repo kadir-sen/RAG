@@ -7,11 +7,11 @@ from dataclasses import asdict
 from typing import Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from backend.api._docx import docx_response
 from backend.core.projects import ProjectContext, get_current_project, require_project_editor
-from backend.core.security import UserContext, get_current_user
+from backend.core.security import UserContext, get_current_user, require_admin
 from backend.tasks.ingestion_jobs import get_ingestion_job_store
 from backend.tasks.report_jobs import get_report_job_store
 from src.docx_kit import safe_filename
@@ -25,6 +25,16 @@ class ChronologyGenerateRequest(BaseModel):
     date_from: str = ""
     date_to: str = ""
     parties: List[str] = Field(default_factory=list, max_length=30)
+    preparation_id: str = Field(default="", max_length=64)
+    source_doc_ids: List[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("topic")
+    @classmethod
+    def topic_is_not_whitespace(cls, value: str) -> str:
+        clean = value.strip()
+        if len(clean) < 3:
+            raise ValueError("chronology_topic_required")
+        return clean
 
 
 class ForensicGenerateRequest(BaseModel):
@@ -72,8 +82,68 @@ def _assert_ready(project_id: str) -> None:
     raise HTTPException(409, "project_has_no_ready_documents")
 
 
+def _assert_chronology_v2_enabled() -> None:
+    from src.config import CHRONOLOGY_PIPELINE_VERSION
+    if CHRONOLOGY_PIPELINE_VERSION != "v2":
+        raise HTTPException(503, "chronology_v2_disabled")
+
+
+_PUBLIC_ERRORS = {
+    "model_output_incomplete": "The model response was incomplete. Retry will resume this report.",
+    "source_verification_failed": "The draft did not pass source verification.",
+    "no_evidence": "No project evidence was found for this topic.",
+    "insufficient_evidence": "The selected records do not establish a chronology.",
+    "research_budget_exhausted": "The research budget was exhausted before verification.",
+    "chronology_preparation_expired": "The source preparation expired. Review the sources again.",
+    "source_document_not_in_project": "A selected source is no longer available in this project.",
+    "source_document_selection_invalid": "The selected source set is no longer valid.",
+    "provider_rate_limited": "The model provider is temporarily busy. Please retry.",
+    "provider_timeout": "The model provider did not complete this stage in time.",
+    "provider_authentication_failed": "The model service is not configured correctly.",
+    "provider_safety_blocked": "The model service declined this request.",
+    "provider_billing_failed": "The model service account is unavailable.",
+    "provider_schema_rejected": "The report schema was rejected by the model service.",
+    "credit_balance_exhausted": "Credit balance exhausted.",
+    "report_generation_failed": "The chronology could not be completed.",
+}
+
+
 def _public(job: dict) -> dict:
-    return {k: v for k, v in job.items() if k not in ("request", "docx_path")}
+    value = {k: v for k, v in job.items() if k not in ("request", "docx_path")}
+    if value.get("status") in ("failed", "credit_balance_exhausted"):
+        code = str(value.get("error_code") or "report_generation_failed")
+        value["error"] = _PUBLIC_ERRORS.get(code, _PUBLIC_ERRORS["report_generation_failed"])
+    return value
+
+
+@router.post("/chronology/source-preview")
+def preview_chronology_sources(
+    body: ChronologyGenerateRequest,
+    user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(require_project_editor),
+):
+    _assert_chronology_v2_enabled()
+    _assert_ready(project.project_id)
+    from src.ai_reports import retrieve_evidence
+    from src.chronology_v2 import prepare_chronology_query, source_preview
+    from src.llm_client import begin_chronology_call_budget, end_chronology_call_budget
+    begin_chronology_call_budget(40)
+    try:
+        prepared = prepare_chronology_query(
+            body.topic, date_from=body.date_from, date_to=body.date_to,
+            parties=body.parties, project_id=project.project_id,
+        )
+        result = source_preview(project.project_id, prepared, retrieve_evidence)
+    finally:
+        end_chronology_call_budget()
+    return get_report_job_store().create_preparation(
+        project_id=project.project_id, username=user.username,
+        request={
+            "topic": body.topic, "date_from": body.date_from,
+            "date_to": body.date_to, "parties": body.parties,
+        },
+        result=result,
+    )
 
 
 @router.post("/chronology/generate", status_code=202)
@@ -82,7 +152,18 @@ def generate_chronology_report(
     user: UserContext = Depends(get_current_user),
     project: ProjectContext = Depends(require_project_editor),
 ):
+    _assert_chronology_v2_enabled()
     _assert_ready(project.project_id)
+    preparation = None
+    if body.preparation_id:
+        preparation = get_report_job_store().get_preparation(
+            body.preparation_id, project.project_id, user.username,
+        )
+        if not preparation:
+            raise HTTPException(409, "chronology_preparation_expired")
+        allowed = {str(row.get("doc_id") or "") for row in preparation.get("documents", [])}
+        if any(doc_id not in allowed for doc_id in body.source_doc_ids):
+            raise HTTPException(422, "source_document_not_in_preparation")
     job = get_report_job_store().enqueue(
         project_id=project.project_id, username=user.username, module="chronology",
         title=body.topic,
@@ -90,6 +171,8 @@ def generate_chronology_report(
             "project_name": project.name, "topic": body.topic,
             "date_from": body.date_from, "date_to": body.date_to,
             "parties": body.parties,
+            "preparation_id": body.preparation_id,
+            "source_doc_ids": body.source_doc_ids,
         },
     )
     return _public(job)
@@ -163,6 +246,58 @@ def get_report(job_id: str, project: ProjectContext = Depends(get_current_projec
     if not job:
         raise HTTPException(404, "report_not_found")
     return _public(job)
+
+
+@router.post("/reports/{job_id}/retry", status_code=202)
+def retry_report(
+    job_id: str,
+    user: UserContext = Depends(get_current_user),
+    project: ProjectContext = Depends(require_project_editor),
+):
+    store = get_report_job_store()
+    current = store.get(job_id, project.project_id)
+    if not current:
+        raise HTTPException(404, "report_not_found")
+    if current["status"] == "credit_balance_exhausted":
+        from src.user_store import get_user_store
+        try:
+            get_user_store().billing.enforce_credits(user.username)
+        except Exception as exc:
+            raise HTTPException(402, "credit_balance_exhausted") from exc
+    retried = store.retry(job_id, project.project_id)
+    if not retried:
+        raise HTTPException(409, "report_not_retryable")
+    return _public(retried)
+
+
+@router.get("/admin/reports/{job_id}/diagnostics")
+def report_diagnostics(
+    job_id: str,
+    _admin: UserContext = Depends(require_admin),
+):
+    store = get_report_job_store()
+    # Admin diagnostics intentionally searches across projects without exposing
+    # this capability on the normal project-scoped report endpoint.
+    with store._connect() as conn:
+        row = conn.execute("SELECT * FROM report_jobs WHERE job_id=?", [job_id]).fetchone()
+    if not row:
+        raise HTTPException(404, "report_not_found")
+    job = store._row(row)
+    from src.model_profiles import TASK_PROFILES
+    from src.run_store import get_run_store
+    return {
+        "job_id": job_id, "project_id": job["project_id"],
+        "pipeline_version": job.get("pipeline_version"),
+        "stage": job.get("stage"), "error_code": job.get("error_code"),
+        "technical_error": job.get("error"), "request": job.get("request"),
+        "coverage_status": job.get("coverage_status"),
+        "steps": store.list_steps(job_id),
+        "llm_audit": get_run_store().details(job_id),
+        "model_profiles": {
+            name: asdict(profile) for name, profile in TASK_PROFILES.items()
+            if name.startswith("chronology_") or name in ("research_plan", "rerank")
+        },
+    }
 
 
 @router.get("/reports/{job_id}/sources/{source_id}")
