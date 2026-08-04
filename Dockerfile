@@ -32,6 +32,7 @@ RUN cd frontend && npm run build
 # Copy application code
 COPY src/ ./src/
 COPY backend/ ./backend/
+COPY vendor/delay-analysis-toolkit.upstream.json ./vendor/delay-analysis-toolkit.upstream.json
 # The jargon manager loads this version-controlled glossary during module
 # import, before the API can answer its health check. Keep the copy explicit so
 # future files under config/ (which may be deployment-specific) are not baked

@@ -605,7 +605,7 @@ def generate_text(
         if _tr is not None:
             _real_calls = max(0, _tr.llm_calls - _tr.cache_hits)
             if (_real_calls >= MAX_LLM_CALLS_PER_QUERY and provider == "gemini"
-                    and task_type != "report_structured"):
+                    and task_type not in ("report_structured", "toolkit_report")):
                 if model != GEMINI_MODEL_LITE or thinking:
                     logger.warning(
                         f"[LLMClient] soft budget hit ({_real_calls} calls) — "

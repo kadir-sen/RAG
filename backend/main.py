@@ -38,6 +38,7 @@ from backend.api import (
     projects,
     reports,
     runs,
+    toolkit,
     usage,
 )
 from backend.core.security import get_current_user, require_admin
@@ -130,6 +131,8 @@ def create_app() -> FastAPI:
     )
     app.include_router(reports.router, prefix="/api", tags=["reports"], dependencies=auth_dep + project_dep)
     app.include_router(runs.router, prefix="/api", tags=["runs"], dependencies=auth_dep + project_dep)
+    app.include_router(toolkit.router, prefix="/api", tags=["toolkit"], dependencies=auth_dep)
+    app.include_router(toolkit.internal_router, prefix="/api", tags=["toolkit-internal"])
     # Global usage (cost across the whole tenant) is operational data — admin-only.
     app.include_router(usage.router, prefix="/api", tags=["usage"], dependencies=admin_dep)
 

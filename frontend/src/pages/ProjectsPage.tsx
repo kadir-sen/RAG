@@ -86,6 +86,7 @@ export default function ProjectsPage() {
     [jobs],
   );
   const canOpen = Boolean(current?.stats.report_ready) && active.length === 0;
+  const canOpenForensic = Boolean(current && (canOpen || current.stats.files.programme > 0));
   const canEditFiles = Boolean(current && current.role !== 'viewer');
   const canRename = Boolean(current && ['owner', 'admin'].includes(current.role));
 
@@ -233,8 +234,8 @@ export default function ProjectsPage() {
                       <span className="truncate text-[13px] font-semibold text-[var(--text-primary)]">{project.name}</span>
                       <span className="font-mono text-[8px] uppercase text-[var(--text-muted)]">{project.role}</span>
                     </div>
-                    <p className="mt-2 font-mono text-[9px] text-[var(--text-secondary)]">{project.stats.files.document} docs · {project.stats.files.email} mail · {project.stats.files.data} sheets</p>
-                    <p className="mt-1 text-[10px] text-[var(--text-muted)]">{project.stats.report_ready ? 'Ready for reports' : `${project.stats.queued + project.stats.processing} remaining · ETA ${duration(project.stats.eta_seconds)}`}</p>
+                    <p className="mt-2 font-mono text-[9px] text-[var(--text-secondary)]">{project.stats.files.document} docs · {project.stats.files.email} mail · {project.stats.files.data} sheets · {project.stats.files.programme} XER</p>
+                    <p className="mt-1 text-[10px] text-[var(--text-muted)]">{project.stats.report_ready || project.stats.files.programme > 0 ? 'Ready for modules' : `${project.stats.queued + project.stats.processing} remaining · ETA ${duration(project.stats.eta_seconds)}`}</p>
                     <p className="mt-1 font-mono text-[8px] uppercase text-[var(--text-muted)]">Vectors · {project.stats.vector.status} · {project.stats.vector.point_count.toLocaleString()}</p>
                   </button>
                 ))}
@@ -280,7 +281,7 @@ export default function ProjectsPage() {
                       <p className="font-mono text-[9px] uppercase tracking-[.15em] text-[var(--text-muted)]">Selected project</p>
                       <div className="mt-1 flex items-center gap-2">
                         <h2 className="text-[17px] font-semibold text-[var(--text-primary)]">{current.name}</h2>
-                        <span className="border border-[var(--border)] px-1.5 py-0.5 font-mono text-[8px] uppercase text-[var(--text-muted)]">{current.stats.report_ready ? 'ready' : 'processing'}</span>
+                        <span className="border border-[var(--border)] px-1.5 py-0.5 font-mono text-[8px] uppercase text-[var(--text-muted)]">{current.stats.report_ready || current.stats.files.programme > 0 ? 'ready' : 'processing'}</span>
                         <span className="border border-[var(--border)] px-1.5 py-0.5 font-mono text-[8px] uppercase text-[var(--text-muted)]">vector {current.stats.vector.status}</span>
                       </div>
                       <p className="mt-1 text-[11px] text-[var(--text-muted)]">Only this record is available in Chatbot, Chronology and Forensic Reports.</p>
@@ -294,11 +295,12 @@ export default function ProjectsPage() {
                     )}
                   </div>
 
-                  <div className="grid sm:grid-cols-2 lg:grid-cols-7 border-b border-[var(--border)]">
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-8 border-b border-[var(--border)]">
                     {[
                       ['Documents', current.stats.files.document],
                       ['Mail', current.stats.files.email],
                       ['Spreadsheets', current.stats.files.data],
+                      ['P6 programmes', current.stats.files.programme],
                       ['Vector points', current.stats.vector.point_count],
                       ['Remaining', current.stats.queued + current.stats.processing],
                       ['Model tokens', current.usage.prompt_tokens + current.usage.completion_tokens],
@@ -319,7 +321,7 @@ export default function ProjectsPage() {
                     <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-5 md:gap-7">
                       <ModuleTile index="01" name="Chatbot" role="Ask and investigate" blurb={`${current.name} · Search documents, correspondence and project data.`} mark={<ChatbotMark className="h-full w-full" />} to={canOpen ? '/chat' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
                       <ModuleTile index="02" name="Chronology" role="Build an evidence timeline" blurb={`${current.name} · Generate a sourced English chronology and Word report.`} mark={<ChronologyMark className="h-full w-full" />} to={canOpen ? '/chronology' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
-                      <ModuleTile index="03" name="Forensic Reports" role="Prepare expert analysis" blurb={`${current.name} · Develop evidence-led forensic report drafts.`} mark={<ReportsMark className="h-full w-full" />} to={canOpen ? '/forensic' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
+                      <ModuleTile index="03" name="Forensic Reports" role="Prepare expert analysis" blurb={`${current.name} · Develop evidence-led forensic report drafts and analyse P6 programmes.`} mark={<ReportsMark className="h-full w-full" />} to={canOpenForensic ? '/forensic' : undefined} status={canOpenForensic ? 'live' : 'soon'} statusLabel={canOpenForensic ? 'Ready' : 'Processing'} />
                     </div>
                   </div>
 

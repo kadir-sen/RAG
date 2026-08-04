@@ -10,6 +10,7 @@ services:
     environment:
       - APP_MODE=api
       - PORT=8000
+      - COAIR_COMMIT_SHA=development
     volumes:
       - ./storage:/app/storage
       - ./data:/app/data
@@ -20,7 +21,7 @@ services:
     build: .
     container_name: agentic-rag-chatbot
     ports:
-      - "8501:8501"
+      - "8503:8501"
     env_file:
       - .env
     environment:
@@ -30,6 +31,28 @@ services:
       - ./uploads:/app/uploads
       - ./storage:/app/storage
       - ./data:/app/data
+    restart: unless-stopped
+
+  toolkit:
+    build:
+      context: .
+      dockerfile: Dockerfile.toolkit
+      args:
+        COAIR_COMMIT_SHA: development
+    container_name: delay-analysis-toolkit
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      - TOOLKIT_INTERNAL_API_URL=http://api:8000/api/internal/toolkit
+      - TOOLKIT_UPSTREAM_ROOT=/app/vendor/delay-analysis-toolkit
+      - COAIR_COMMIT_SHA=development
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      - api
+    mem_limit: 2g
     restart: unless-stopped
 
   rag-debug:

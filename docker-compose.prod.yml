@@ -25,6 +25,7 @@ services:
     environment:
       - APP_MODE=api
       - PORT=8000
+      - COAIR_COMMIT_SHA=${COAIR_COMMIT_SHA:-development}
     volumes:
       - ./storage:/app/storage
       - ./data:/app/data
@@ -37,6 +38,41 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  toolkit:
+    image: ${TOOLKIT_IMAGE:-mvp-toolkit:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.toolkit
+      args:
+        COAIR_COMMIT_SHA: ${COAIR_COMMIT_SHA:-development}
+    container_name: mvp-toolkit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8501:8501"
+    env_file:
+      - .env.production
+    environment:
+      - TOOLKIT_INTERNAL_API_URL=http://api:8000/api/internal/toolkit
+      - TOOLKIT_UPSTREAM_ROOT=/app/vendor/delay-analysis-toolkit
+      - COAIR_COMMIT_SHA=${COAIR_COMMIT_SHA:-development}
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8501/toolkit/_stcore/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     logging:
       driver: json-file
       options:

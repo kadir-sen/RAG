@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY vendor/delay-analysis-toolkit/requirements.txt /tmp/toolkit-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/toolkit-requirements.txt
+
+COPY vendor/delay-analysis-toolkit/ ./vendor/delay-analysis-toolkit/
+COPY vendor/delay-analysis-toolkit.upstream.json ./vendor/delay-analysis-toolkit.upstream.json
+COPY integrations/delay_toolkit/ ./integrations/delay_toolkit/
+COPY integrations/delay_toolkit/.streamlit/config.toml ./.streamlit/config.toml
+
+ARG COAIR_COMMIT_SHA=development
+ENV COAIR_COMMIT_SHA=${COAIR_COMMIT_SHA}
+ENV TOOLKIT_UPSTREAM_ROOT=/app/vendor/delay-analysis-toolkit
+ENV TOOLKIT_INTERNAL_API_URL=http://api:8000/api/internal/toolkit
+
+EXPOSE 8501
+CMD ["streamlit", "run", "integrations/delay_toolkit/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.baseUrlPath=toolkit"]
