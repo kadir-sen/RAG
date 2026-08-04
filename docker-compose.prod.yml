@@ -25,6 +25,12 @@ services:
     environment:
       - APP_MODE=api
       - PORT=8000
+      # Versioned runtime policy. Keep these outside the persistent server env
+      # so an older MAX_LLM_CALLS value cannot silently disable the rollout.
+      - GEMINI_MODEL=gemini-3.6-flash
+      - MAX_LLM_CALLS=12
+      - LLM_MAX_RETRIES=3
+      - CHRONOLOGY_PIPELINE_VERSION=v2
     volumes:
       - ./storage:/app/storage
       - ./data:/app/data

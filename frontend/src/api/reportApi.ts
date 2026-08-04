@@ -10,10 +10,31 @@ export interface ReportJob {
   stage: string;
   progress: number;
   error: string | null;
+  error_code?: string | null;
+  retryable?: boolean;
+  pipeline_version?: string;
+  coverage_status?: string | null;
   result: Record<string, unknown> | null;
   created_at: string;
   sequence_number: number | null;
   report_url?: string;
+}
+
+export interface ChronologySourceDocument {
+  doc_id: string;
+  file_name: string;
+  score: number;
+  pages: number[];
+  source_count: number;
+  selected: boolean;
+}
+
+export interface ChronologySourcePreview {
+  preparation_id: string;
+  expires_at: string;
+  documents: ChronologySourceDocument[];
+  coverage: Record<string, number>;
+  coverage_status: 'complete' | 'partial';
 }
 
 export interface ToolkitArtifact {
@@ -34,6 +55,18 @@ export async function generateReport(
 export async function listReports(module: 'chronology' | 'forensic'): Promise<ReportJob[]> {
   const { data } = await apiClient.get<{ reports: ReportJob[] }>('/reports', { params: { module } });
   return data.reports;
+}
+
+export async function previewChronologySources(
+  payload: Record<string, unknown>,
+): Promise<ChronologySourcePreview> {
+  const { data } = await apiClient.post<ChronologySourcePreview>('/chronology/source-preview', payload);
+  return data;
+}
+
+export async function retryReport(jobId: string): Promise<ReportJob> {
+  const { data } = await apiClient.post<ReportJob>(`/reports/${jobId}/retry`);
+  return data;
 }
 
 export async function getReport(jobId: string): Promise<ReportJob> {
