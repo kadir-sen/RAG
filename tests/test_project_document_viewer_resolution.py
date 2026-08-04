@@ -6,6 +6,7 @@ The viewer must recover those sources on the current host without turning a
 filename into a cross-project access primitive.
 """
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import backend.services.document_service as document_module
-from backend.services.document_service import DocumentService
+from backend.models.responses import DocContent
+from backend.services.document_service import DocumentService, _clean_table_rows
 from src.document_rag import generate_doc_id
 
 
@@ -151,3 +153,24 @@ def test_catalog_entry_from_another_project_is_not_opened(viewer, monkeypatch):
     )
 
     assert result.error == "Document not found"
+
+
+def test_spreadsheet_rows_are_json_safe_for_fastapi_response():
+    """DuckDB/pandas scalars must not fail during response serialization."""
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+    rows = _clean_table_rows([{
+        "date": pd.Timestamp("2026-08-05T12:30:00"),
+        "count": np.int64(7),
+        "ratio": np.float64(1.25),
+        "missing": pd.NaT,
+    }])
+
+    payload = json.loads(DocContent(type="table", rows=rows).model_dump_json())
+
+    assert payload["rows"] == [{
+        "date": "2026-08-05T12:30:00",
+        "count": 7,
+        "ratio": 1.25,
+        "missing": None,
+    }]

@@ -6,7 +6,7 @@ import re
 from pathlib import Path, PureWindowsPath
 
 from backend.models.responses import DocContent, SchemaColumn
-from backend.services.response_builder import clean_corrupted_date_string
+from backend.services.response_builder import _json_safe, clean_corrupted_date_string
 
 _DATA_EXTENSIONS = {".xlsx", ".xls", ".csv"}
 
@@ -46,7 +46,9 @@ def _clean_table_rows(rows: list) -> list:
     cleaned = []
     for row in rows:
         cleaned.append({
-            k: clean_corrupted_date_string(v) if isinstance(v, str) else v
+            str(k): _json_safe(
+                clean_corrupted_date_string(v) if isinstance(v, str) else v
+            )
             for k, v in row.items()
         })
     return cleaned
