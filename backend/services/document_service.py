@@ -69,6 +69,18 @@ _DATA_FALLBACK_ROOTS = (
     _PROJECT_ROOT / "data",
 )
 
+# Shared, read-only corpora which may be referenced by more than one project.
+# A file in one of these roots is NEVER resolved by name alone for a project-
+# aware request: the caller must first prove membership through a project-
+# scoped registry, catalog, RAG registry or chunk row.
+_SHARED_CORPUS_ROOTS = (
+    _PROJECT_ROOT / "data" / "documents",
+    _PROJECT_ROOT / "data" / "emails",
+    _PROJECT_ROOT / "data" / "tables",
+    _PROJECT_ROOT / "data" / "edinburgh_pdfs",
+    _PROJECT_ROOT / "data" / "edinburgh_tram",
+)
+
 
 class DocumentService:
 
@@ -138,6 +150,100 @@ class DocumentService:
                 except OSError:
                     continue
         return file_path  # return original — caller will handle the error
+
+    @staticmethod
+    def _path_name(file_path: str) -> str:
+        """Extract a basename from POSIX or Windows paths."""
+        value = (file_path or "").strip()
+        if not value:
+            return ""
+        if "\\" in value:
+            return PureWindowsPath(value).name
+        return Path(value).name
+
+    @staticmethod
+    def _project_file_roots(project_id: str) -> tuple[Path, ...]:
+        """Return roots private to one project without accepting path traversal."""
+        roots = []
+        for base in (
+            _PROJECT_ROOT / "data" / "projects",
+            _PROJECT_ROOT / "storage" / "projects",
+        ):
+            try:
+                resolved_base = base.resolve()
+                candidate = (base / project_id).resolve()
+                if candidate.is_relative_to(resolved_base):
+                    roots.append(candidate)
+            except (OSError, ValueError):
+                continue
+        return tuple(roots)
+
+    @classmethod
+    def _resolve_scoped_path(
+        cls,
+        file_path: str,
+        file_name: str,
+        project_id: str,
+        *,
+        allow_shared: bool,
+    ) -> str:
+        """Resolve a membership-proven source only inside approved roots.
+
+        Production catalog/vector metadata can contain paths from the machine
+        that performed ingestion.  We therefore recover by basename, but keep
+        the search constrained to the active project's private roots and, only
+        after project membership has been established, the shared corpus roots.
+        """
+        roots = list(cls._project_file_roots(project_id))
+        if allow_shared:
+            roots.extend(Path(root).resolve() for root in _SHARED_CORPUS_ROOTS)
+
+        approved = []
+        for root in roots:
+            try:
+                approved.append(Path(root).resolve())
+            except (OSError, ValueError):
+                continue
+
+        raw = (file_path or "").strip()
+        if raw:
+            try:
+                exact = Path(raw).resolve()
+                if exact.is_file() and any(exact.is_relative_to(root) for root in approved):
+                    return str(exact)
+            except (OSError, ValueError):
+                pass
+
+        names = []
+        for value in (file_name, file_path):
+            name = cls._path_name(value)
+            if name and name not in names:
+                names.append(name)
+            alt = _DEDUP_SUFFIX_RE.sub(r"\1", name) if name else ""
+            if alt and alt not in names:
+                names.append(alt)
+
+        for name in names:
+            for root in approved:
+                try:
+                    direct = (root / name).resolve()
+                    if direct.is_file() and direct.is_relative_to(root):
+                        return str(direct)
+                except (OSError, ValueError):
+                    continue
+
+        for name in names:
+            for root in approved:
+                if not root.exists():
+                    continue
+                try:
+                    for found in root.rglob(name):
+                        resolved = found.resolve()
+                        if resolved.is_file() and resolved.is_relative_to(root):
+                            return str(resolved)
+                except OSError:
+                    continue
+        return ""
 
     def _get_content_sync(self, doc_id: str, anchor: str,
                           file_name: str = "", project_id: str = "") -> DocContent:
@@ -308,42 +414,111 @@ class DocumentService:
 
     def _get_project_content(self, doc_id: str, anchor: str, file_name: str,
                              project_id: str) -> DocContent:
+        import hashlib
+
+        from src.document_rag import generate_doc_id
         from src.document_registry import get_document_registry
 
         registry = get_document_registry()
         records = registry.get_all(project_id=project_id)
-        rec = next((r for r in records if doc_id in (r.doc_id, r.file_name)), None)
+        rec = next((r for r in records if doc_id in (
+            r.doc_id,
+            r.file_name,
+            hashlib.md5(r.file_name.encode()).hexdigest()[:16],
+        )), None)
         if not rec and file_name:
             rec = next((r for r in records if r.file_name == file_name), None)
         if rec and rec.file_path:
-            path = Path(rec.file_path)
-            # Uploaded project files must remain inside that project's roots.
-            allowed = [
-                (_PROJECT_ROOT / "data" / "projects" / project_id).resolve(),
-                (_PROJECT_ROOT / "storage" / "projects" / project_id).resolve(),
-            ]
-            try:
-                resolved = path.resolve()
-                if any(resolved.is_relative_to(root) for root in allowed) and resolved.is_file():
-                    return self._serve_by_extension(str(resolved), anchor)
-            except (OSError, ValueError):
-                pass
+            resolved = self._resolve_scoped_path(
+                rec.file_path, rec.file_name, project_id, allow_shared=True,
+            )
+            if resolved:
+                return self._serve_by_extension(resolved, anchor)
+
+        # Extracted spreadsheets live in the catalog rather than the document
+        # registry.  Their source paths frequently point to the ingest machine,
+        # so match within the active project first and then resolve the basename
+        # against the managed corpus on this host.
+        try:
+            from src.catalog import get_catalog
+            from src.data_analyzer_sql import get_data_analyzer
+
+            requested_name = self._path_name(file_name or doc_id)
+            for entry in get_catalog().entries.values():
+                if entry.project_id != project_id or entry.source_type not in ("excel", "csv"):
+                    continue
+                source_name = self._path_name(entry.source_file)
+                entry_id = generate_doc_id(entry.source_file)
+                if doc_id not in (entry_id, source_name) and requested_name != source_name:
+                    continue
+
+                if entry.tables:
+                    try:
+                        analyzer = get_data_analyzer()
+                        table_name = entry.tables[0].table_name
+                        if table_name in analyzer.tables:
+                            preview = self._serve_table_preview(table_name, analyzer)
+                            if not preview.error:
+                                return preview
+                    except Exception:
+                        # The raw source remains a valid viewer fallback when a
+                        # parquet/view is temporarily unavailable after deploy.
+                        pass
+
+                resolved = self._resolve_scoped_path(
+                    entry.source_file, source_name, project_id, allow_shared=True,
+                )
+                if resolved:
+                    return self._serve_by_extension(resolved, anchor)
+                break
+        except Exception:
+            pass
+
+        # The in-memory RAG registry is another project-scoped membership
+        # source, especially for documents uploaded since the latest restart.
+        try:
+            from src.document_rag import get_document_rag
+
+            requested_name = self._path_name(file_name or doc_id)
+            for fname, info in get_document_rag().file_registry.items():
+                if (info.get("project_id") or "") != project_id:
+                    continue
+                stored_name = self._path_name(fname)
+                stored_id = info.get("doc_id", "")
+                fname_hash = hashlib.md5(stored_name.encode()).hexdigest()[:16]
+                if doc_id not in (fname, stored_name, stored_id, fname_hash) and requested_name != stored_name:
+                    continue
+                resolved = self._resolve_scoped_path(
+                    info.get("file_path", ""), stored_name, project_id,
+                    allow_shared=True,
+                )
+                if resolved:
+                    return self._serve_by_extension(resolved, anchor)
+                break
+        except Exception:
+            pass
 
         try:
             from src.chunk_store import get_chunk_store
             con = get_chunk_store().connection()
-            key = file_name or doc_id
             rows = con.execute(
                 "SELECT file_name,page_number,text FROM chunks "
-                "WHERE project_id=? AND (doc_id=? OR file_name=?) ORDER BY page_number",
-                [project_id, doc_id, key],
+                "WHERE project_id=? AND (doc_id=? OR file_name=? OR file_name=?) "
+                "ORDER BY page_number",
+                [project_id, doc_id, file_name or doc_id, doc_id],
             ).fetchall()
             if rows:
                 page = self._parse_anchor_page(anchor)
                 total = max(int(r[1] or 1) for r in rows)
+                source_name = self._path_name(rows[0][0])
+                resolved = self._resolve_scoped_path(
+                    "", source_name, project_id, allow_shared=True,
+                )
+                if resolved:
+                    return self._serve_by_extension(resolved, anchor)
                 page_rows = [r for r in rows if int(r[1] or 1) == page] or rows
                 return DocContent(
-                    type="text", file_name=rows[0][0], page=page, total_pages=total,
+                    type="text", file_name=source_name, page=page, total_pages=total,
                     text="\n\n".join((r[2] or "") for r in page_rows)[:8000],
                 )
         except Exception:
