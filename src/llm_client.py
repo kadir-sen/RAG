@@ -6,7 +6,9 @@ All LLM calls in the system should go through this module.
 import hashlib
 import json
 import time
+import random
 import uuid
+from contextvars import ContextVar
 from decimal import Decimal, ROUND_HALF_UP
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
@@ -22,6 +24,7 @@ from .config import (
 from .types import LLMUsage, LLMResponse, DualLLMResponse
 from .logger import logger
 from .usage_tracker import enforce_budget, record_usage
+from .model_profiles import clamp_output_tokens, get_task_profile
 
 
 # Native google-genai SDK is required for Gemini extended thinking (the legacy
@@ -36,6 +39,48 @@ except Exception:
 
 class BillingRecordingError(RuntimeError):
     """A provider call succeeded but its durable user charge could not be stored."""
+
+
+class LLMIncompleteResponseError(RuntimeError):
+    """The provider stopped before producing a complete response."""
+
+
+class LLMInvalidStructuredOutputError(RuntimeError):
+    """A structured response failed syntactic or schema validation."""
+
+
+class LLMInputBudgetExceededError(RuntimeError):
+    """The task input exceeds its deliberate profile budget."""
+
+
+class LLMResearchBudgetExceededError(RuntimeError):
+    """A chronology exhausted its bounded number of provider calls."""
+
+
+chronology_call_limit_var: ContextVar[int] = ContextVar(
+    "chronology_call_limit", default=40,
+)
+chronology_call_count_var: ContextVar[int] = ContextVar(
+    "chronology_call_count", default=0,
+)
+chronology_budget_active_var: ContextVar[bool] = ContextVar(
+    "chronology_budget_active", default=False,
+)
+
+
+def begin_chronology_call_budget(limit: int = 40) -> None:
+    chronology_call_count_var.set(0)
+    chronology_call_limit_var.set(max(1, min(40, int(limit))))
+    chronology_budget_active_var.set(True)
+
+
+def set_chronology_call_budget(limit: int) -> None:
+    chronology_call_limit_var.set(max(1, min(40, int(limit))))
+
+
+def end_chronology_call_budget() -> None:
+    chronology_budget_active_var.set(False)
+    chronology_call_count_var.set(0)
 
 
 def _attribute_to_current_user(
@@ -182,6 +227,40 @@ def _cache_set(key: str, value: str, ttl: int):
         pass
 
 
+def _cache_delete(key: str) -> bool:
+    cache = _get_cache()
+    if cache is None:
+        return False
+    try:
+        if hasattr(cache, "delete"):
+            return bool(cache.delete(key))
+        if isinstance(cache, dict):
+            return cache.pop(key, None) is not None
+    except Exception:
+        pass
+    return False
+
+
+def cache_keys() -> List[str]:
+    """Best-effort key listing used only by the targeted cleanup CLI."""
+    cache = _get_cache()
+    try:
+        if hasattr(cache, "iterkeys"):
+            return [str(key) for key in cache.iterkeys()]
+        if hasattr(cache, "scan_iter"):
+            return [key.decode() if isinstance(key, bytes) else str(key)
+                    for key in cache.scan_iter(match="*")]
+        if isinstance(cache, dict):
+            return [str(key) for key in cache]
+    except Exception:
+        pass
+    return []
+
+
+def delete_cache_key(key: str) -> bool:
+    return _cache_delete(key)
+
+
 # ── Anthropic SDK Wrapper (no llama_index dependency) ────────
 
 class _AnthropicCompletionResponse:
@@ -304,12 +383,19 @@ def _gemini_generate_native(
     prompt: str, system: str, max_tokens: int, model: str,
     thinking_level: str = "medium", json_mode: bool = False,
     response_schema: Optional[Dict[str, Any]] = None,
+    timeout_seconds: int = 120,
 ):
     """Native Gemini 3 call with authoritative usage metadata."""
     from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=GOOGLE_API_KEY)
+    try:
+        client = genai.Client(
+            api_key=GOOGLE_API_KEY,
+            http_options=types.HttpOptions(timeout=max(1, timeout_seconds) * 1000),
+        )
+    except (AttributeError, TypeError):
+        client = genai.Client(api_key=GOOGLE_API_KEY)
     config_kwargs: Dict[str, Any] = {
         "max_output_tokens": max_tokens,
         "thinking_config": types.ThinkingConfig(thinking_level=thinking_level),
@@ -439,6 +525,21 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def count_input_tokens(model: str, text: str) -> int:
+    """Use Gemini count_tokens when available, with a deterministic fallback."""
+    estimate = estimate_tokens(text)
+    if not GOOGLE_API_KEY or not model.startswith(("gemini-3.", "models/gemini-3.")):
+        return estimate
+    try:
+        from google import genai
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        result = client.models.count_tokens(model=model, contents=text)
+        return int(getattr(result, "total_tokens", 0) or estimate)
+    except Exception as exc:
+        logger.debug(f"[LLMClient] count_tokens fallback: {exc}")
+        return estimate
+
+
 def _current_model_policy() -> str:
     try:
         from backend.core.security import get_current_username
@@ -474,7 +575,7 @@ def generate_text(
     system: str = "",
     model: str = "",
     temperature: float = 0.1,
-    max_tokens: int = 2048,
+    max_tokens: Optional[int] = None,
     json_mode: bool = False,
     cache_key: Optional[str] = None,
     ttl_s: int = CACHE_TTL_SECONDS,
@@ -483,6 +584,10 @@ def generate_text(
     thinking_level: str = "",
     task_type: str = "generation",
     response_schema: Optional[Dict[str, Any]] = None,
+    timeout_seconds: Optional[int] = None,
+    prompt_version: str = "",
+    cache_context: str = "",
+    cache_validator=None,
 ) -> LLMResponse:
     """
     Generate text via LLM, with caching and usage tracking.
@@ -505,6 +610,7 @@ def generate_text(
         LLMResponse with text, usage info, cache status
     """
     requested_model = model
+    profile = get_task_profile(task_type)
     # Query entry points set this request-local value once.  Appending the
     # compact terminology block here makes planner, SQL, RAG synthesis and
     # report calls share the same glossary without changing the original text
@@ -534,9 +640,14 @@ def generate_text(
     if model not in LLM_PRICING:
         raise ValueError(f"No pricing configured for model: {model}")
 
+    max_tokens = clamp_output_tokens(model, max_tokens or profile.max_output_tokens, profile)
+    timeout_seconds = int(timeout_seconds or profile.timeout_seconds)
+
     thinking = int(thinking) if thinking else 0
     if not thinking_level:
-        thinking_level = "medium" if thinking else "minimal"
+        thinking_level = profile.thinking_level if provider == "gemini" else (
+            "medium" if thinking else "minimal"
+        )
     # Gemini thinking needs the native google-genai SDK; degrade gracefully if absent.
     use_native_gemini = (
         provider == "gemini" and _GENAI_AVAILABLE
@@ -551,22 +662,29 @@ def generate_text(
     use_claude_thinking = (provider == "claude" and thinking > 0)
 
     # ── Build cache key (includes provider + thinking budget) ──
-    if cache_key is None:
-        key_data = (
-            f"{provider}:{model}:think{thinking}:level{thinking_level}:"
-            f"{system[:200]}:{prompt}"
-        )
-        cache_key = "llm:" + hashlib.sha256(key_data.encode()).hexdigest()[:32]
-    elif thinking > 0 or use_native_gemini:
-        # Explicit caller keys must still differ by reasoning configuration.
-        cache_key = f"{cache_key}:think{thinking}:level{thinking_level}"
+    namespace = (cache_key or f"llm:{task_type}").split(":", 1)[0]
+    key_data = json.dumps({
+        "cache_version": 2,
+        "provider": provider, "model": model, "thinking": thinking,
+        "thinking_level": thinking_level, "task_type": task_type,
+        "max_tokens": max_tokens, "prompt_version": prompt_version,
+        "system": system, "prompt": prompt, "schema": response_schema,
+        "context": cache_context,
+    }, ensure_ascii=False, sort_keys=True, default=str)
+    cache_key = f"{namespace}:v2:" + hashlib.sha256(key_data.encode()).hexdigest()
 
     # ── Enforce global + per-user usage caps (cache hits still allowed below) ──
     enforce_budget()
     _enforce_user_quota()
 
     # ── Check cache ──
-    cached = _cache_get(cache_key)
+    cache_enabled = int(ttl_s) > 0
+    cached = _cache_get(cache_key) if cache_enabled else None
+    if cached is not None:
+        if cache_validator is not None and not cache_validator(cached):
+            logger.warning(f"[LLMClient] deleting invalid cache entry {cache_key[:24]}...")
+            _cache_delete(cache_key)
+            cached = None
     if cached is not None:
         logger.info(f"[LLMClient] Cache HIT ({provider}/{cache_key[:16]}...)")
         prompt_tok = estimate_tokens(prompt + system)
@@ -581,6 +699,8 @@ def generate_text(
             cache_hit=True,
             provider=provider,
             cached_tokens=prompt_tok,
+            task_type=task_type,
+            finish_reason="CACHE",
         )
         _record_run_usage(cached_usage)
         _attribute_to_current_user(
@@ -591,6 +711,19 @@ def generate_text(
         return LLMResponse(
             text=cached,
             usage=cached_usage,
+            finish_reason="CACHE",
+        )
+
+    combined_input = f"{system}\n\n{prompt}" if system else prompt
+    estimated_input = estimate_tokens(combined_input)
+    exact_input = (
+        count_input_tokens(model, combined_input)
+        if task_type.startswith("chronology_") or estimated_input >= profile.max_input_tokens * .8
+        else estimated_input
+    )
+    if exact_input > profile.max_input_tokens:
+        raise LLMInputBudgetExceededError(
+            f"input_budget_exceeded:{task_type}:{exact_input}>{profile.max_input_tokens}"
         )
 
     # ── Soft per-query budget (degrade, never block) ──
@@ -604,7 +737,8 @@ def generate_text(
         _tr = get_current_trace()
         if _tr is not None:
             _real_calls = max(0, _tr.llm_calls - _tr.cache_hits)
-            if (_real_calls >= MAX_LLM_CALLS_PER_QUERY and provider == "gemini"
+            if (not chronology_budget_active_var.get()
+                    and _real_calls >= MAX_LLM_CALLS_PER_QUERY and provider == "gemini"
                     and task_type != "report_structured"):
                 if model != GEMINI_MODEL_LITE or thinking:
                     logger.warning(
@@ -638,8 +772,14 @@ def generate_text(
         )
 
     last_error = None
-    for attempt in range(1 + LLM_MAX_RETRIES):
+    retry_count = max(int(LLM_MAX_RETRIES), int(profile.provider_retries))
+    for attempt in range(1 + retry_count):
         try:
+            if chronology_budget_active_var.get():
+                call_count = chronology_call_count_var.get()
+                if call_count >= chronology_call_limit_var.get():
+                    raise LLMResearchBudgetExceededError("research_budget_exhausted")
+                chronology_call_count_var.set(call_count + 1)
             start = time.time()
             thoughts_tok = 0
             native_comp_tok = 0
@@ -651,6 +791,7 @@ def generate_text(
                     prompt=prompt, system=system, max_tokens=max_tokens,
                     model=model, thinking_level=thinking_level,
                     json_mode=json_mode, response_schema=response_schema,
+                    timeout_seconds=timeout_seconds,
                 )
                 text = text.strip()
             # Use chat() for OpenAI/Claude (proper system prompt handling)
@@ -701,14 +842,15 @@ def generate_text(
                     if candidates or thoughts_tok:
                         comp_tok = candidates + thoughts_tok
             cached_tok = native_cached_tok or cached_tok
+            visible_comp_tok = max(0, comp_tok - thoughts_tok)
             usage_source = "provider" if native_prompt_tok or getattr(response, "raw", None) else "estimated"
             cost_nanos = estimate_cost_nanos(model, prompt_tok, comp_tok, cached_tok)
             cost = cost_nanos / 1_000_000_000
 
             usage = LLMUsage(
                 prompt_tokens=prompt_tok,
-                completion_tokens=comp_tok,
-                total_tokens=prompt_tok + comp_tok,
+                completion_tokens=visible_comp_tok,
+                total_tokens=prompt_tok + visible_comp_tok + thoughts_tok,
                 cost_estimate=cost,
                 model=model,
                 latency_ms=round(elapsed_ms, 1),
@@ -716,6 +858,7 @@ def generate_text(
                 provider=provider,
                 reasoning_tokens=thoughts_tok,
                 cached_tokens=cached_tok,
+                task_type=task_type,
             )
 
             logger.info(
@@ -723,8 +866,25 @@ def generate_text(
                 f"${cost:.6f} | {elapsed_ms:.0f}ms"
             )
 
+            finish_reason = ""
+            try:
+                value = response.candidates[0].finish_reason
+                finish_reason = str(getattr(value, "name", value) or "").upper()
+                if "." in finish_reason:
+                    finish_reason = finish_reason.rsplit(".", 1)[-1]
+            except Exception:
+                pass
+            usage.finish_reason = finish_reason or "STOP"
+
+            cacheable = bool(text)
+            if finish_reason and finish_reason not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
+                cacheable = False
+            if cache_validator is not None and not cache_validator(text):
+                cacheable = False
+
             # ── Cache result ──
-            _cache_set(cache_key, text, ttl_s)
+            if cacheable and cache_enabled:
+                _cache_set(cache_key, text, ttl_s)
 
             # ── Record into global + per-user usage trackers ──
             try:
@@ -739,13 +899,33 @@ def generate_text(
             )
             _record_run_usage(usage)
 
-            return LLMResponse(text=text, usage=usage, raw=response)
+            if finish_reason == "MAX_TOKENS":
+                raise LLMIncompleteResponseError("model_output_incomplete")
+            if finish_reason and finish_reason not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
+                raise LLMIncompleteResponseError(f"model_finish_{finish_reason.lower()}")
+            if not cacheable:
+                raise LLMInvalidStructuredOutputError("model_output_invalid")
+
+            return LLMResponse(
+                text=text, usage=usage, raw=response, finish_reason=finish_reason or "STOP",
+            )
 
         except Exception as e:
             last_error = e
             # Check for non-retryable errors (content policy, auth)
             _non_retryable = False
             if isinstance(e, BillingRecordingError):
+                _non_retryable = True
+            if isinstance(e, LLMIncompleteResponseError):
+                _non_retryable = True
+            if isinstance(e, LLMResearchBudgetExceededError):
+                _non_retryable = True
+            error_text = str(e).casefold()
+            if any(marker in error_text for marker in (
+                "authentication", "unauthorized", "permission denied", "billing",
+                "safety", "schema rejection", "invalid response schema",
+                "invalid_argument", "invalid argument",
+            )) and "429" not in error_text:
                 _non_retryable = True
             try:
                 import anthropic
@@ -764,7 +944,7 @@ def generate_text(
                 logger.error(f"[LLMClient] {provider} non-retryable error: {e}")
                 break
 
-            if attempt < LLM_MAX_RETRIES:
+            if attempt < retry_count:
                 # Longer backoff for rate limit errors
                 _is_rate_limit = False
                 try:
@@ -772,13 +952,66 @@ def generate_text(
                     _is_rate_limit = isinstance(e, anthropic.RateLimitError)
                 except ImportError:
                     pass
-                wait = (2 ** attempt * 5) if _is_rate_limit else (2 ** attempt)
+                wait = ((2 ** attempt * 5) if _is_rate_limit else (2 ** attempt))
+                wait += random.uniform(0, min(1.0, wait * .2))
                 logger.warning(f"[LLMClient] {provider} retry {attempt+1} after {wait}s: {e}")
                 time.sleep(wait)
             else:
-                logger.error(f"[LLMClient] {provider} failed after {1 + LLM_MAX_RETRIES} attempts: {e}")
+                logger.error(f"[LLMClient] {provider} failed after {1 + retry_count} attempts: {e}")
 
+    if isinstance(last_error, (
+        LLMIncompleteResponseError, LLMInvalidStructuredOutputError,
+        LLMResearchBudgetExceededError,
+    )):
+        raise last_error
     raise RuntimeError(f"LLM call failed ({provider}): {last_error}")
+
+
+def _schema_accepts(value: Any, schema: Optional[Dict[str, Any]]) -> bool:
+    """Validate the JSON-schema subset supported by Gemini structured output."""
+    if not schema:
+        return True
+    expected = schema.get("type")
+    if expected == "object":
+        if not isinstance(value, dict):
+            return False
+        if any(key not in value for key in schema.get("required", [])):
+            return False
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is False and any(
+            key not in properties for key in value
+        ):
+            return False
+        return all(
+            key not in value or _schema_accepts(value[key], sub)
+            for key, sub in properties.items()
+        )
+    if expected == "array":
+        if not isinstance(value, list):
+            return False
+        if len(value) < int(schema.get("minItems", 0)):
+            return False
+        if "maxItems" in schema and len(value) > int(schema["maxItems"]):
+            return False
+        return all(_schema_accepts(item, schema.get("items")) for item in value)
+    if expected == "string" and not isinstance(value, str):
+        return False
+    if expected == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
+        return False
+    if expected == "number" and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+        return False
+    if expected == "boolean" and not isinstance(value, bool):
+        return False
+    return "enum" not in schema or value in schema["enum"]
+
+
+def _json_text_validator(schema: Optional[Dict[str, Any]] = None):
+    def validate(text: str) -> bool:
+        try:
+            return _schema_accepts(json.loads(text), schema)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+    return validate
 
 
 def generate_json(
@@ -790,6 +1023,9 @@ def generate_json(
     ttl_s: int = CACHE_TTL_SECONDS,
     provider: str = "gemini",
     task_type: str = "generation",
+    prompt_version: str = "",
+    cache_context: str = "",
+    max_tokens: Optional[int] = None,
 ) -> LLMResponse:
     """Generate text and parse as JSON. Raises on invalid JSON."""
     import re as _re
@@ -799,6 +1035,10 @@ def generate_json(
         json_mode=True, cache_key=cache_key, ttl_s=ttl_s,
         provider=provider,
         task_type=task_type,
+        prompt_version=prompt_version,
+        cache_context=cache_context,
+        max_tokens=max_tokens,
+        cache_validator=_json_text_validator(),
     )
 
     # Strip markdown fences
@@ -852,12 +1092,16 @@ def generate_multimodal_text(
     completion_tokens = candidates + thoughts
     cost_nanos = estimate_cost_nanos(model, prompt_tokens, completion_tokens, cached)
     usage = LLMUsage(
-        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-        total_tokens=prompt_tokens + completion_tokens,
+        prompt_tokens=prompt_tokens, completion_tokens=candidates,
+        total_tokens=prompt_tokens + candidates + thoughts,
         cost_estimate=cost_nanos / 1_000_000_000,
         model=model, latency_ms=round((time.time() - started) * 1000, 1),
         cache_hit=False, provider="gemini", reasoning_tokens=thoughts,
         cached_tokens=cached,
+        task_type=task_type,
+        finish_reason=str(getattr(
+            (getattr(response, "candidates", None) or [None])[0], "finish_reason", "STOP"
+        )),
     )
     record_usage(prompt_tokens, completion_tokens, usage.cost_estimate)
     _attribute_to_current_user(
@@ -880,6 +1124,13 @@ def generate_response_json(
     pro_mode: bool = False,
     cache_key: Optional[str] = None,
     ttl_s: int = CACHE_TTL_SECONDS,
+    task_type: str = "report_structured",
+    thinking_level: str = "",
+    max_tokens: Optional[int] = None,
+    prompt_version: str = "",
+    cache_context: str = "",
+    validation_model=None,
+    semantic_validator=None,
 ) -> LLMResponse:
     """Generate quality-critical structured reports with Gemini JSON schema.
 
@@ -895,14 +1146,45 @@ def generate_response_json(
         provider="gemini",
         json_mode=True,
         response_schema=schema,
-        thinking_level="medium",
-        task_type="report_structured",
+        thinking_level=thinking_level or get_task_profile(task_type).thinking_level,
+        task_type=task_type,
         cache_key=cache_key,
         ttl_s=ttl_s,
-        max_tokens=8192,
+        max_tokens=max_tokens or get_task_profile(task_type).max_output_tokens,
+        prompt_version=prompt_version,
+        cache_context=cache_context,
+        cache_validator=lambda text: _structured_text_validator(
+            text, schema, validation_model, semantic_validator,
+        ),
     )
     response.raw = json.loads(response.text)
+    if validation_model is not None:
+        response.raw = validation_model.model_validate(response.raw).model_dump()
+    if semantic_validator is not None and not semantic_validator(response.raw):
+        raise LLMInvalidStructuredOutputError("model_output_invalid")
     return response
+
+
+def _validate_with_model(text: str, validation_model) -> bool:
+    try:
+        validation_model.model_validate(json.loads(text))
+        return True
+    except Exception:
+        return False
+
+
+def _structured_text_validator(
+    text: str, schema: Dict[str, Any], validation_model=None, semantic_validator=None,
+) -> bool:
+    try:
+        value = json.loads(text)
+        if validation_model is not None:
+            validation_model.model_validate(value)
+        elif not _schema_accepts(value, schema):
+            return False
+        return semantic_validator(value) if semantic_validator is not None else True
+    except Exception:
+        return False
 
 
 # ── Dual-Provider API ────────────────────────────────────────

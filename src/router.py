@@ -1181,6 +1181,7 @@ class QueryRouter:
                     prompt, system=system, max_tokens=16,
                     cache_key=_cls_key,
                     model=GEMINI_MODEL_LITE,  # classification is low-value → cheap tier
+                    task_type="classification",
                 )
                 result = resp.text.strip().upper()
 
@@ -2206,7 +2207,10 @@ class QueryRouter:
             # Extended thinking on hybrid synthesis (Phase 3): reconciling document
             # prose with table numbers benefits from reasoning. Off via config flag.
             _syn_think = THINKING_BUDGET_SYNTHESIS if ENABLE_THINKING else 0
-            resp = llm_client.generate_text(prompt, system=system, thinking=_syn_think)
+            resp = llm_client.generate_text(
+                prompt, system=system, thinking=_syn_think,
+                task_type="answer_synthesis",
+            )
             combined_answer = resp.text
 
             # Record telemetry
@@ -3137,6 +3141,7 @@ class QueryRouter:
                 system=build_system_prompt("You extract precise query scope. JSON only."),
                 cache_key=cache_key,
                 model=GEMINI_MODEL_LITE,  # scope detection is low-value → cheap tier
+                task_type="scope",
             )
             data = resp.raw if isinstance(resp.raw, dict) else {}
         except Exception as e:
@@ -3252,6 +3257,7 @@ class QueryRouter:
                 system=build_system_prompt(
                     "You judge whether an answer answers the question. One token."),
                 max_tokens=8, model=GEMINI_MODEL_LITE,
+                task_type="answer_check",
             )
             try:
                 from .telemetry import get_current_trace
@@ -3917,7 +3923,8 @@ class QueryRouter:
                 system = build_system_prompt("You synthesize information from multiple sources.")
                 _syn_think = THINKING_BUDGET_SYNTHESIS if ENABLE_THINKING else 0
                 resp = llm_client.generate_text(prompt, system=system, provider=provider,
-                                                thinking=_syn_think)
+                                                thinking=_syn_think,
+                                                task_type="answer_synthesis")
                 combined_answer = resp.text
             except Exception as e:
                 logger.error(f"   [{provider}] Hybrid synthesis error: {e}")

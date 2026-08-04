@@ -7,13 +7,14 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .evidence_model import ChronologyEntry, EvidenceItem, VerifiedClaim
 from .report_docx import FORENSIC_SECTIONS, build_ai_chronology_docx, build_forensic_report_docx
 
 
-PROMPT_VERSION = "evidence-report-v1"
+PROMPT_VERSION = "chronology-v2"
+FORENSIC_PROMPT_VERSION = "evidence-report-v1"
 MODEL_POLICY = "quality-demo-v1"
 
 DEFAULT_RESEARCH_QUESTIONS = [
@@ -230,42 +231,125 @@ def _claim_supported(claim: VerifiedClaim, evidence_by_id: Dict[str, EvidenceIte
     return not words or len(words & source_words) / max(1, len(words)) >= 0.12
 
 
-def generate_chronology(
+def _generate_chronology_v2(
     *, project_id: str, project_name: str, topic: str, issue_number: int = 1,
+    job_id: str = "",
     date_from: str = "", date_to: str = "", parties: Sequence[str] = (),
+    source_doc_ids: Sequence[str] = (), preparation: Optional[Dict] = None,
+    stage_callback: Optional[Callable[[str, float], None]] = None,
+    load_step: Optional[Callable[[str, str], Dict | None]] = None,
+    save_step: Optional[Callable[[str, str, str, Dict | None, str], None]] = None,
 ) -> Dict:
-    from .config import OPENAI_MODEL
-    from .llm_client import generate_response_json
+    """Generate a checkpointable chronology from a Markdown evidence pack."""
+    from .chronology_prompts import chronology_prompt_hash
+    from .chronology_v2 import (
+        PIPELINE_VERSION, PreparedChronologyQuery, coverage_matrix,
+        aggregate_candidates, evidence_batches, evidence_from_documents, extract_batches,
+        prepare_chronology_query, source_preview, synthesize, verify_claims,
+    )
+    from .jargon_manager import jargon_dictionary_version
+    from .llm_client import set_chronology_call_budget
 
-    from .jargon_manager import prepare_query, set_current_prepared_query
-    prepared = prepare_query(topic)
-    set_current_prepared_query(prepared)
-    questions = build_research_plan(topic, date_from, date_to, parties)
-    evidence = retrieve_evidence(project_id, questions)
+    def stage(name: str, progress: float) -> None:
+        if stage_callback:
+            stage_callback(name, progress)
+
+    stage("research_plan", .08)
+    if preparation and preparation.get("prepared"):
+        raw = preparation["prepared"]
+        prepared = PreparedChronologyQuery(
+            original_query=str(raw.get("original_query") or topic),
+            english_query=str(raw.get("english_query") or topic),
+            jargon_matches=tuple(tuple(value) for value in raw.get("jargon_matches", [])),
+            parties=tuple(raw.get("parties", parties)), contracts=tuple(raw.get("contracts", [])),
+            work_packages=tuple(raw.get("work_packages", [])),
+            exclusions=tuple(raw.get("exclusions", [])),
+            research_queries=tuple(raw.get("research_queries", [])),
+        )
+    else:
+        prepared = prepare_chronology_query(
+            topic, date_from=date_from, date_to=date_to, parties=parties,
+            project_id=project_id,
+        )
+
+    chosen = [str(value) for value in source_doc_ids if str(value).strip()]
+    preview = preparation or {}
+    if not chosen:
+        stage("source_selection", .14)
+        preview = source_preview(project_id, prepared, retrieve_evidence)
+        chosen = [str(row.get("doc_id") or "") for row in preview.get("documents", [])
+                  if row.get("selected") and row.get("doc_id")]
+    stage("evidence_pack", .2)
+    if chosen:
+        try:
+            evidence = evidence_from_documents(project_id, chosen)
+        except ValueError:
+            if source_doc_ids:
+                raise
+            evidence = retrieve_evidence(project_id, prepared.research_queries)
+    else:
+        evidence = retrieve_evidence(project_id, prepared.research_queries)
     if not evidence:
-        raise ValueError("No project evidence was found for this report topic")
-    prompt = (
-        f"Prepare a factual chronology about: {topic}\n"
-        f"Date range: {date_from or 'open'} to {date_to or 'open'}\n"
-        f"Named parties: {', '.join(parties) or 'not specified'}\n"
-        "The finished report must be professional English even when the topic is supplied "
-        "in another language. Put a source-supported general framing of the issue in "
-        "overview_claims; put only dated events in entries. "
-        "Order entries by event date and use ISO YYYY-MM-DD where the record permits. "
-        "Write one factual sentence per claim and give that claim source_ids. Do not combine "
-        "a party allegation with an established fact. Mark inferred dates explicitly.\n\n"
-        f"{prepared.context}\n\nEVIDENCE JSON:\n{_evidence_payload(evidence)}"
+        raise ValueError("no_evidence")
+
+    # Research/planning has a fixed allowance; each evidence batch receives
+    # room for extraction, a split/retry and aggregation, with an absolute cap.
+    batch_count = max(1, len(evidence_batches(evidence)))
+    set_chronology_call_budget(min(40, 8 + batch_count * 3))
+
+    stage("evidence_extraction", .3)
+    candidates = extract_batches(
+        evidence, prepared, load_step=load_step, save_step=save_step,
+        job_scope=job_id or f"project:{project_id}",
     )
-    response = generate_response_json(
-        prompt, system=_SYSTEM, schema=_chronology_schema(),
-        schema_name="chronology_report", model=OPENAI_MODEL, reasoning_effort="high",
-        cache_key="chronology-report:" + hashlib.sha256(prompt.encode()).hexdigest()[:28],
+    if not candidates:
+        raise ValueError("insufficient_evidence")
+    stage("aggregation", .58)
+    candidates = aggregate_candidates(
+        prepared=prepared, candidates=candidates, evidence=evidence,
+        load_step=load_step, save_step=save_step,
     )
+    stage("synthesis", .68)
+    response = synthesize(
+        prepared=prepared, candidates=candidates, evidence=evidence,
+        cache_context=(
+            f"{job_id or project_id}:{chronology_prompt_hash()}:"
+            f"{jargon_dictionary_version()}:"
+            f"{hashlib.sha256(_evidence_payload(evidence).encode()).hexdigest()}"
+        ),
+    )
+    verification_hash = hashlib.sha256(json.dumps(
+        response, sort_keys=True, ensure_ascii=False,
+    ).encode()).hexdigest()
+    verification_step = load_step("verification", verification_hash) if load_step else None
+    if verification_step and verification_step.get("status") == "ready":
+        verification = dict((verification_step.get("output") or {}).get("decisions", {}))
+    else:
+        if save_step:
+            save_step("verification", verification_hash, "processing", None, "")
+        try:
+            verification = verify_claims(
+                prepared=prepared, chronology=response, evidence=evidence,
+                cache_context=f"{job_id or project_id}:{verification_hash}",
+            )
+        except Exception:
+            if save_step:
+                save_step(
+                    "verification", verification_hash, "failed", None,
+                    "source_verification_failed",
+                )
+            raise
+        if save_step:
+            save_step(
+                "verification", verification_hash, "ready",
+                {"decisions": verification}, "",
+            )
     by_id = {e.source_id: e for e in evidence}
     entries: List[ChronologyEntry] = []
     removed = 0
     overview_claims = []
-    for item in response.raw.get("overview_claims", []):
+    stage("verification", .82)
+    for claim_index, item in enumerate(response.get("overview_claims", [])):
         claim = VerifiedClaim(
             text=str(item.get("text") or "").strip(),
             source_ids=[str(x) for x in item.get("source_ids", [])],
@@ -273,7 +357,10 @@ def generate_chronology(
             inference_basis=str(item.get("inference_basis") or ""),
             confidence=str(item.get("confidence") or "low"),
         )
-        claim.supported = _claim_supported(claim, by_id)
+        claim.supported = (
+            verification.get(f"overview:{claim_index}", False)
+            and _claim_supported(claim, by_id)
+        )
         if claim.supported:
             overview_claims.append(claim)
         else:
@@ -284,10 +371,16 @@ def generate_chronology(
         conflicting_positions=[],
     ))
     if not overview_claims:
-        raise ValueError("Chronology overview failed mandatory source verification")
-    for index, raw in enumerate(response.raw.get("entries", []), 2):
+        raise ValueError("source_verification_failed")
+    ordered_raw = sorted(response.get("entries", []), key=lambda raw: (
+        str(raw.get("event_date") or "9999-99-99"),
+        " ".join(str(c.get("text") or "") for c in raw.get("claims", [])),
+    ))
+    original_event_indexes = {id(raw): index for index, raw in enumerate(response.get("entries", []))}
+    for index, raw in enumerate(ordered_raw, 2):
         claims = []
-        for item in raw.get("claims", []):
+        event_index = original_event_indexes[id(raw)]
+        for claim_index, item in enumerate(raw.get("claims", [])):
             claim = VerifiedClaim(
                 text=str(item.get("text") or "").strip(),
                 source_ids=[str(x) for x in item.get("source_ids", [])],
@@ -295,7 +388,10 @@ def generate_chronology(
                 inference_basis=str(item.get("inference_basis") or ""),
                 confidence=str(item.get("confidence") or "low"),
             )
-            claim.supported = _claim_supported(claim, by_id)
+            claim.supported = (
+                verification.get(f"event:{event_index}:{claim_index}", False)
+                and _claim_supported(claim, by_id)
+            )
             if claim.supported:
                 claims.append(claim)
             else:
@@ -304,6 +400,8 @@ def generate_chronology(
             claims[0].is_inference = True
             if not claims[0].inference_basis:
                 claims[0].inference_basis = "The event date is inferred from the cited record"
+        if not claims:
+            continue
         entries.append(ChronologyEntry(
             entry_ref=f"6.{issue_number}.{index}", event_date=str(raw.get("event_date") or ""),
             date_precision=str(raw.get("date_precision") or "unknown"), claims=claims,
@@ -311,17 +409,35 @@ def generate_chronology(
             event_type=str(raw.get("event_type") or "event"),
             conflicting_positions=[str(x) for x in raw.get("conflicting_positions", [])],
         ))
+    if len(entries) < 2:
+        raise ValueError("insufficient_evidence")
     blob, audit = build_ai_chronology_docx(
         project_name=project_name, issue_number=issue_number, title=topic,
-        entries=entries, evidence=evidence,
-        audit_metadata={"prompt": PROMPT_VERSION, "model": response.usage.model,
-                        "policy": MODEL_POLICY},
+        entries=entries, evidence=evidence, audit_metadata=None,
     )
     if audit.unresolved_source_ids:
         raise ValueError("Report contains unresolved source references")
-    return {"entries": [asdict(e) for e in entries], "evidence": [asdict(e) for e in evidence],
-            "research_questions": questions, "removed_claims": removed,
-            "audit": asdict(audit), "docx": blob, "model": response.usage.model}
+    return {
+        "entries": [asdict(e) for e in entries],
+        "evidence": [asdict(e) for e in evidence],
+        "research_questions": list(prepared.research_queries),
+        "removed_claims": removed, "audit": asdict(audit), "docx": blob,
+        "model": "gemini-3.6-flash", "pipeline_version": PIPELINE_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "coverage": coverage_matrix(evidence),
+        "coverage_status": preview.get("coverage_status", "complete"),
+        "selected_doc_ids": chosen,
+    }
+
+
+def generate_chronology(**kwargs) -> Dict:
+    """Run Chronology V2 inside an isolated dynamic provider-call budget."""
+    from .llm_client import begin_chronology_call_budget, end_chronology_call_budget
+    begin_chronology_call_budget(40)
+    try:
+        return _generate_chronology_v2(**kwargs)
+    finally:
+        end_chronology_call_budget()
 
 
 def _forensic_schema() -> Dict:
@@ -425,7 +541,8 @@ def generate_forensic(
         sections["Factual chronology"] = canonical_claims
     blob, audit = build_forensic_report_docx(
         project_name=project_name, title=topic, sections=sections, evidence=evidence,
-        status=status, audit_metadata={"prompt": PROMPT_VERSION, "model": response.usage.model,
+        status=status, audit_metadata={"prompt": FORENSIC_PROMPT_VERSION,
+                                       "model": response.usage.model,
                                        "policy": MODEL_POLICY},
     )
     missing_sections = [name for name in FORENSIC_SECTIONS if not sections.get(name)]

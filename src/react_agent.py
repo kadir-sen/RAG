@@ -301,6 +301,7 @@ class ReActAgent:
                 prompt,
                 system=build_system_prompt("You synthesize a final answer from multi-step findings."),
                 max_tokens=2048,
+                task_type="answer_synthesis",
             )
             _record(resp)
             return resp.text.strip()

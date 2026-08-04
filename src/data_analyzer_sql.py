@@ -2785,6 +2785,7 @@ class DataAnalyzerSQL:
                 temperature=0.0,
                 max_tokens=100,
                 model=GEMINI_MODEL_LITE,  # table selection is low-value → cheap tier
+                task_type="classification",
             )
             # Instrument: this was the one SQL-path LLM call missing from telemetry,
             # so per-query cost under-reported. Record it like the other SQL sites.
