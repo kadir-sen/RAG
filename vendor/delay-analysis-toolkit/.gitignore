@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Project-specific
+# Ignore all sample XERs (may be client data) EXCEPT the bundled Harbour
+# Point demo set, which ships so the deployed app has a working sample
+# toggle. Any file added here MUST be synthetic — never client data.
+sample/*.xer
+!sample/Harbour Point DCP-03 - Baseline Programme Rev 0.xer
+!sample/Harbour Point DCP-03 - As-Built Programme Rev 12.xer
+*.xlsx
+*.tmp
+deckforge/.deckforge_autosave.pkl
+deckforge/sample_output.pptx
+deckforge/example_deck.pptx
+deckforge/report_deck.pptx

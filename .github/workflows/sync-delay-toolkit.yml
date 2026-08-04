@@ -1,0 +1,87 @@
+name: Sync Delay Analysis Toolkit
+
+on:
+  repository_dispatch:
+    types: [delay-toolkit-upstream-main]
+  schedule:
+    # Fallback when the upstream repository has not installed the dispatch
+    # sender yet, or when GitHub drops/delays a repository_dispatch event.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: delay-toolkit-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Configure sync identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Pull upstream subtree
+        id: sync
+        run: bash scripts/sync_delay_toolkit.sh
+
+      - name: Install and test upstream
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          pip install -r vendor/delay-analysis-toolkit/requirements.txt pytest python-dotenv fastapi
+          python -m compileall -q vendor/delay-analysis-toolkit/app.py vendor/delay-analysis-toolkit/state.py vendor/delay-analysis-toolkit/dcma vendor/delay-analysis-toolkit/programme vendor/delay-analysis-toolkit/views integrations/delay_toolkit
+          (cd vendor/delay-analysis-toolkit && python test_qa.py)
+          PYTHONPATH=. pytest -q tests/test_toolkit_store.py tests/test_toolkit_service.py tests/test_toolkit_contract.py
+          bash scripts/check_delay_toolkit_vendor.sh
+
+      - name: Build toolkit image
+        if: steps.sync.outputs.changed == 'true'
+        run: docker build -f Dockerfile.toolkit --build-arg COAIR_COMMIT_SHA="$GITHUB_SHA" .
+
+      - name: Commit tested upstream revision to main
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          git add vendor/delay-analysis-toolkit.upstream.json
+          git commit -m "chore(toolkit): lock upstream ${{ steps.sync.outputs.new_sha }}" || true
+          git push origin HEAD:main
+
+      - name: Record sync summary
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          OLD_SHA: ${{ steps.sync.outputs.old_sha }}
+          NEW_SHA: ${{ steps.sync.outputs.new_sha }}
+        run: |
+          {
+            echo "## Delay Analysis Toolkit deployed revision"
+            echo
+            echo "- Previous upstream: \`$OLD_SHA\`"
+            echo "- New upstream: \`$NEW_SHA\`"
+            echo
+            echo "### Upstream changes"
+            git log --format='- %h %s' "$OLD_SHA..$NEW_SHA" || true
+            echo
+            echo "The upstream QA suite, COAir contract tests, vendor integrity check and toolkit image build passed before main was updated."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # GitHub deliberately does not emit a second workflow run for pushes made
+      # with GITHUB_TOKEN. Dispatch the existing main deployment explicitly.
+      - name: Deploy tested revision to the chatbot server
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy.yml --ref main

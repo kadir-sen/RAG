@@ -40,7 +40,7 @@ jobs:
         # Add more files here as coverage grows; keep them network/key-free so the
         # gate stays fast and deterministic.
         run: |
-          pytest -q \
+          PYTHONPATH=. pytest -q \
             tests/test_sql_security.py \
             tests/test_document_registry_load.py \
             tests/test_json_repair.py \
@@ -66,12 +66,36 @@ jobs:
             tests/test_durable_job_stores.py \
             tests/test_project_store.py \
             tests/test_project_file_deletion.py \
-            tests/test_run_store.py
+            tests/test_run_store.py \
+            tests/test_toolkit_store.py \
+            tests/test_toolkit_service.py \
+            tests/test_toolkit_contract.py
+
+  toolkit-test:
+    name: Toolkit QA (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install toolkit dependencies
+        run: pip install -r vendor/delay-analysis-toolkit/requirements.txt
+      - name: Verify vendor and integration contracts
+        run: |
+          python -m compileall -q vendor/delay-analysis-toolkit/app.py vendor/delay-analysis-toolkit/state.py vendor/delay-analysis-toolkit/dcma vendor/delay-analysis-toolkit/programme vendor/delay-analysis-toolkit/views integrations/delay_toolkit
+          (cd vendor/delay-analysis-toolkit && python test_qa.py)
+          bash scripts/check_delay_toolkit_vendor.sh
 
   # ── 2. Build the Docker image and push it to GHCR ────────────────────────
   build-and-push:
-    name: Build & push image
-    needs: test
+    name: Build & push images
+    needs: [test, toolkit-test]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -79,6 +103,7 @@ jobs:
       packages: write
     outputs:
       image: ${{ steps.imgref.outputs.image }}
+      toolkit-image: ${{ steps.imgref.outputs.toolkit-image }}
     steps:
       - uses: actions/checkout@v4
 
@@ -103,12 +128,28 @@ jobs:
           tags: |
             ghcr.io/${{ env.IMAGE_LOWER }}:latest
             ghcr.io/${{ env.IMAGE_LOWER }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push toolkit
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.toolkit
+          push: true
+          build-args: |
+            COAIR_COMMIT_SHA=${{ github.sha }}
+          tags: |
+            ghcr.io/${{ env.IMAGE_LOWER }}-toolkit:latest
+            ghcr.io/${{ env.IMAGE_LOWER }}-toolkit:${{ github.sha }}
+          cache-from: type=gha,scope=toolkit
+          cache-to: type=gha,mode=max,scope=toolkit
 
       - name: Export image ref for deploy job
         id: imgref
-        run: echo "image=ghcr.io/${IMAGE_LOWER}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "image=ghcr.io/${IMAGE_LOWER}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "toolkit-image=ghcr.io/${IMAGE_LOWER}-toolkit:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   # ── 3. Deploy to the AWS Lightsail host over SSH ─────────────────────────
   deploy:
@@ -122,20 +163,22 @@ jobs:
 
       # Ship the (parametrized) compose file to the server's home, then move it
       # into APP_DIR inside the SSH script (handles root-owned dirs via sudo).
-      - name: Copy compose file to server
+      - name: Copy deployment files to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          source: docker-compose.prod.yml
+          source: docker-compose.prod.yml,deploy/nginx/coair-toolkit.conf,deploy/install_toolkit_nginx.sh
           target: coair-deploy
 
       - name: Pull new image and restart
         uses: appleboy/ssh-action@v1.0.3
         env:
-          IMAGE: ${{ needs.build-and-push.outputs.image }}
+          API_IMAGE: ${{ needs.build-and-push.outputs.image }}
+          TOOLKIT_IMAGE: ${{ needs.build-and-push.outputs.toolkit-image }}
+          COAIR_COMMIT_SHA: ${{ github.sha }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           APP_DIR: ${{ secrets.LIGHTSAIL_APP_DIR || '/opt/mvp-api' }}
@@ -144,7 +187,7 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          envs: IMAGE,GHCR_TOKEN,GHCR_USER,APP_DIR
+          envs: API_IMAGE,TOOLKIT_IMAGE,COAIR_COMMIT_SHA,GHCR_TOKEN,GHCR_USER,APP_DIR
           script: |
             set -euo pipefail
 
@@ -154,13 +197,35 @@ jobs:
 
             cd "$APP_DIR"
 
+            HAD_COMPOSE=0
+            HAD_ENV=0
+            if [ -f docker-compose.prod.yml ]; then
+              HAD_COMPOSE=1
+              $SUDO cp docker-compose.prod.yml docker-compose.prod.yml.rollback
+            fi
+            if [ -f .env ]; then
+              HAD_ENV=1
+              $SUDO cp .env .env.rollback
+            fi
+
+            rollback() {
+              echo "Rolling back containers to the previously deployed compose configuration..."
+              if [ "$HAD_COMPOSE" = 1 ]; then $SUDO cp docker-compose.prod.yml.rollback docker-compose.prod.yml; fi
+              if [ "$HAD_ENV" = 1 ]; then $SUDO cp .env.rollback .env; else $SUDO rm -f .env; fi
+              $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d || true
+            }
+
             # Refresh the compose file with the version shipped this run.
             $SUDO cp "$HOME/coair-deploy/docker-compose.prod.yml" "$APP_DIR/docker-compose.prod.yml"
 
             # Compose reads API_IMAGE from a .env file in the project dir for the
             # ${API_IMAGE} substitution. This does NOT affect container env, which
             # still comes from env_file: .env.production.
-            printf 'API_IMAGE=%s\n' "$IMAGE" | $SUDO tee "$APP_DIR/.env" >/dev/null
+            {
+              printf 'API_IMAGE=%s\n' "$API_IMAGE"
+              printf 'TOOLKIT_IMAGE=%s\n' "$TOOLKIT_IMAGE"
+              printf 'COAIR_COMMIT_SHA=%s\n' "$COAIR_COMMIT_SHA"
+            } | $SUDO tee "$APP_DIR/.env" >/dev/null
 
             # Compose interpolation cannot read another service's env_file.
             # Export only the Qdrant key for the qdrant container definition;
@@ -172,25 +237,48 @@ jobs:
             fi
             export QDRANT_SERVER_API_KEY
 
+            # First deployment provisions a private service-to-service secret.
+            if ! $SUDO grep -q '^TOOLKIT_SERVICE_SECRET=.' "$APP_DIR/.env.production"; then
+              TOOLKIT_SECRET="$(openssl rand -hex 32)"
+              printf '\nTOOLKIT_SERVICE_SECRET=%s\n' "$TOOLKIT_SECRET" | $SUDO tee -a "$APP_DIR/.env.production" >/dev/null
+            fi
+
             # Authenticate to GHCR to pull the private image (token is ephemeral).
             printf '%s' "$GHCR_TOKEN" | $SUDO docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
-            $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml pull api
-            $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d
+            $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml pull api toolkit
+            if ! $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d; then
+              rollback
+              exit 1
+            fi
             $SUDO docker image prune -f
 
-            # Health gate: fail the deploy (and surface logs) if the API is unhealthy.
-            echo "Waiting for API health..."
+            # Health gate: both services must be ready before nginx is changed.
+            echo "Waiting for API and toolkit health..."
             # 240s: cold startup on the swap-bound 2 GB box regularly exceeds
             # 100s (registry + catalog + graph load) — the app was healthy but
             # the old 100s gate marked the deploy failed.
+            HEALTHY=0
             for i in $(seq 1 48); do
-              if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
-                echo "Health OK"
-                exit 0
+              if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1 \
+                && curl -fsS http://127.0.0.1:8501/toolkit/_stcore/health >/dev/null 2>&1; then
+                HEALTHY=1
+                break
               fi
               sleep 5
             done
-            echo "Health check FAILED after ~240s — last logs:"
-            $SUDO docker compose -f docker-compose.prod.yml logs --tail=100 api
-            exit 1
+            if [ "$HEALTHY" != 1 ]; then
+              echo "Health check FAILED after ~240s — last logs:"
+              $SUDO docker compose -f docker-compose.prod.yml logs --tail=100 api toolkit
+              rollback
+              exit 1
+            fi
+
+            if ! $SUDO bash "$HOME/coair-deploy/deploy/install_toolkit_nginx.sh" \
+              "$HOME/coair-deploy/deploy/nginx"; then
+              rollback
+              exit 1
+            fi
+
+            $SUDO rm -f docker-compose.prod.yml.rollback .env.rollback
+            echo "API, toolkit and nginx health OK"

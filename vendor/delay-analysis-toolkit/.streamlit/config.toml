@@ -1,0 +1,26 @@
+# Drawing Sheet identity — light drafting paper. Deliberate: analysis
+# screenshots drop straight into a Word/PDF deliverable, where dark
+# captures look wrong. Revert kit: ui_variants/01_dark_original/
+[theme]
+base = "light"
+primaryColor = "#14324A"              # drafting ink blue
+backgroundColor = "#FCFCFA"           # paper
+secondaryBackgroundColor = "#F1F5F9"  # panel / sidebar
+textColor = "#14324A"
+font = "sans serif"
+
+[client]
+showErrorDetails = true
+toolbarMode = "minimal"
+
+[logger]
+level = "info"
+
+[server]
+headless = true
+port = 8501
+enableXsrfProtection = true
+# Big field programmes: the default 200 MB is fine, but be explicit —
+# upload size is never the parse bottleneck; host MEMORY is (Cloud has
+# ~1 GB; run locally for very large XER sets).
+maxUploadSize = 400

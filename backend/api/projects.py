@@ -34,7 +34,7 @@ class ProjectMemberRequest(BaseModel):
 
 def _ensure_dirs(project_id: str) -> None:
     for root in (Path(BASE_DIR) / "data" / "projects", Path(STORAGE_DIR) / "projects"):
-        for child in ("documents", "emails", "tables", "reports", "jobs"):
+        for child in ("documents", "emails", "tables", "programmes", "reports", "jobs"):
             (root / project_id / child).mkdir(parents=True, exist_ok=True)
 
 
@@ -45,7 +45,7 @@ def _stats(project_id: str) -> Dict:
         files = get_document_registry().get_all(project_id=project_id)
     except Exception:
         pass
-    counts = {"document": 0, "email": 0, "data": 0}
+    counts = {"document": 0, "email": 0, "data": 0, "programme": 0}
     status = {"queued": 0, "processing": 0, "ready": 0, "failed": 0}
     seen_names = set()
     for rec in files:
@@ -77,6 +77,11 @@ def _stats(project_id: str) -> Dict:
                     "data" if ext in (".xlsx", ".xls", ".csv") else "document")
             counts[kind] += 1
             status["ready"] += 1
+    except Exception:
+        pass
+    try:
+        from src.toolkit_store import get_toolkit_store
+        counts["programme"] = len(get_toolkit_store().list_programmes(project_id))
     except Exception:
         pass
 
