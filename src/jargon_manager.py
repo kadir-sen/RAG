@@ -12,6 +12,7 @@ Loads jargon dictionaries from Excel and provides:
 - Column name normalization with domain awareness
 """
 import json
+import hashlib
 import re
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -29,6 +30,14 @@ JARGON_DIR = BASE_DIR / "data" / "jargon"
 JARGON_DIR.mkdir(parents=True, exist_ok=True)
 JARGON_CACHE_FILE = JARGON_DIR / "jargon_cache.json"
 JARGON_TERMS_FILE = BASE_DIR / "config" / "jargon_terms.json"
+
+
+def jargon_dictionary_version() -> str:
+    """Stable content version used by query/report cache keys."""
+    try:
+        return hashlib.sha256(JARGON_TERMS_FILE.read_bytes()).hexdigest()
+    except OSError:
+        return "jargon-unavailable"
 
 
 @dataclass(frozen=True)

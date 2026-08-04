@@ -92,7 +92,7 @@ def build_ai_chronology_docx(
 ) -> Tuple[bytes, ReportAudit]:
     """Render the sample chronology contract with real claim-level footnotes."""
     doc = _base_document()
-    _heading(doc, project_name, size=12, centered=True)
+    _heading(doc, project_name.upper(), size=12, centered=True)
     _heading(doc, "Delay and Prolongation – Chronology of Events", size=12, centered=True)
     _heading(doc, f"{issue_number:02d}.  {title}", size=11, centered=False)
 

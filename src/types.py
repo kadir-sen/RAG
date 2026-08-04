@@ -109,6 +109,8 @@ class LLMUsage:
     provider: str = ""  # "openai" | "claude" | "gemini"
     reasoning_tokens: int = 0
     cached_tokens: int = 0
+    task_type: str = ""
+    finish_reason: str = ""
 
 
 @dataclass
@@ -117,6 +119,7 @@ class LLMResponse:
     text: str
     usage: LLMUsage
     raw: Optional[Any] = None
+    finish_reason: str = ""
 
 
 @dataclass

@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     call_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, provider TEXT, model TEXT,
     prompt_tokens INTEGER, completion_tokens INTEGER, reasoning_tokens INTEGER,
     cached_tokens INTEGER, cost_usd REAL, latency_ms REAL, cache_hit INTEGER,
-    created_at TEXT
+    created_at TEXT, task_type TEXT, finish_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_query_runs_project ON query_runs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_query_runs_user ON query_runs(username, created_at);
@@ -59,6 +59,11 @@ class RunStore:
         self._started = {}
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            llm_columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)")}
+            if "task_type" not in llm_columns:
+                conn.execute("ALTER TABLE llm_calls ADD COLUMN task_type TEXT")
+            if "finish_reason" not in llm_columns:
+                conn.execute("ALTER TABLE llm_calls ADD COLUMN finish_reason TEXT")
 
     @classmethod
     def instance(cls) -> "RunStore":
@@ -113,13 +118,17 @@ class RunStore:
             return
         with self._lock, self._connect() as conn:
             conn.execute(
-                "INSERT INTO llm_calls VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO llm_calls "
+                "(call_id,run_id,provider,model,prompt_tokens,completion_tokens,"
+                "reasoning_tokens,cached_tokens,cost_usd,latency_ms,cache_hit,created_at,"
+                "task_type,finish_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [uuid.uuid4().hex[:24], rid, usage.provider, usage.model,
                  int(usage.prompt_tokens), int(usage.completion_tokens),
                  int(getattr(usage, "reasoning_tokens", 0) or 0),
                  int(getattr(usage, "cached_tokens", 0) or 0),
                  float(usage.cost_estimate), float(usage.latency_ms),
-                 1 if usage.cache_hit else 0, _now()],
+                 1 if usage.cache_hit else 0, _now(),
+                 getattr(usage, "task_type", ""), getattr(usage, "finish_reason", "")],
             )
 
     def finish(self, run_id: str, *, status: str = "completed", route: str = "",

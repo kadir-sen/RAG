@@ -59,8 +59,8 @@ ENABLE_DUAL_PROVIDER = False
 # ── Extended thinking / reasoning (Phase 3) ─────────────────
 # Reasoning is enabled ONLY on hallucination-prone steps: SQL generation and
 # hybrid synthesis. Routing thinking is OFF by default to protect demo latency.
-# Budgets are in tokens (provider-specific): Gemini 2.5 thinking_budget, Claude
-# extended-thinking budget_tokens (Claude requires >= 1024 and temperature == 1).
+# Legacy token budgets remain for Claude-compatible paths. Gemini 3.x calls use
+# task-profile ``thinking_level`` and never receive ``thinking_budget``.
 # Extended thinking adds reasoning tokens (and seconds) to every synthesis call.
 # Off by default: on a small/contended server the latency cost outweighs the
 # marginal quality gain. Re-enable per-deploy via ENABLE_THINKING=true.
@@ -159,14 +159,12 @@ OCR_IMAGE_COVERAGE_THRESHOLD = float(os.getenv("OCR_IMAGE_COVERAGE", "0.7"))  # 
 Path(OCR_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 # ── LLM Call Budget & Safety ────────────────────────────────
-# SOFT budget (not a hard cap): once a single query has made this many real
-# (non-cache) LLM calls, further calls are degraded to the cheap tier + no
-# thinking rather than blocked — answers are never dropped, runaway cost is bled
-# out. 4 was unrealistic (a complex HYBRID query legitimately makes 10-15 calls);
-# 8 lets normal multi-step queries through and only bites pathological ones.
-MAX_LLM_CALLS_PER_QUERY = int(os.getenv("MAX_LLM_CALLS", "8"))
+# Chat/RAG soft budget. Chronology uses its own dynamic hard budget and never
+# changes model tier after reaching this threshold.
+MAX_LLM_CALLS_PER_QUERY = int(os.getenv("MAX_LLM_CALLS", "12"))
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT", "30"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "1"))
+CHRONOLOGY_PIPELINE_VERSION = os.getenv("CHRONOLOGY_PIPELINE_VERSION", "v2").strip().lower()
 
 # ── Cache settings ──────────────────────────────────────────
 CACHE_DIR = str(BASE_DIR / "cache")
