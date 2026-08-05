@@ -128,7 +128,7 @@ class ReportJobStore:
         return item
 
     def enqueue(self, *, project_id: str, username: str, module: str,
-                title: str, request: Dict) -> Dict:
+                title: str, request: Dict, pipeline_version: str = "") -> Dict:
         if module not in ("chronology", "forensic"):
             raise ValueError("unsupported report module")
         job_id = uuid.uuid4().hex[:20]; now = _now()
@@ -140,6 +140,9 @@ class ReportJobStore:
                     "SELECT COALESCE(MAX(sequence_number),0)+1 FROM report_jobs "
                     "WHERE project_id=? AND module='chronology'", [project_id],
                 ).fetchone()[0]
+            version = pipeline_version or (
+                "chronology-v2" if module == "chronology" else "v1"
+            )
             conn.execute(
                 "INSERT INTO report_jobs "
                 "(job_id,project_id,username,module,title,request_json,sequence_number,"
@@ -149,7 +152,7 @@ class ReportJobStore:
                 "? ,NULL,NULL,0)",
                 [job_id, project_id, username, module, title[:300],
                  json.dumps(request, ensure_ascii=False), sequence_number, now, now,
-                 "chronology-v2" if module == "chronology" else "v1"],
+                 version],
             )
             row = conn.execute("SELECT * FROM report_jobs WHERE job_id=?", [job_id]).fetchone()
         return self._row(row)
@@ -299,8 +302,10 @@ class ReportJobStore:
                 "(job_id,step_key,input_hash,status,attempt,output_json,error_code,updated_at) "
                 "VALUES (?,?,?,?,1,?,?,?) ON CONFLICT(job_id,step_key) DO UPDATE SET "
                 "input_hash=excluded.input_hash,status=excluded.status,"
-                "attempt=CASE WHEN excluded.status='processing' THEN report_job_steps.attempt+1 "
-                "ELSE report_job_steps.attempt END,output_json=excluded.output_json,"
+                "attempt=CASE WHEN excluded.status='processing' OR "
+                "(report_job_steps.status='failed' AND excluded.status='ready') "
+                "THEN report_job_steps.attempt+1 ELSE report_job_steps.attempt END,"
+                "output_json=excluded.output_json,"
                 "error_code=excluded.error_code,updated_at=excluded.updated_at",
                 [job_id, step_key, input_hash, status,
                  json.dumps(output, ensure_ascii=False) if output is not None else None,
@@ -322,12 +327,21 @@ class ReportJobStore:
             item["output"] = None
         return item
 
-    def list_steps(self, job_id: str) -> List[Dict]:
+    def list_steps(self, job_id: str, *, include_output: bool = False) -> List[Dict]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM report_job_steps WHERE job_id=? ORDER BY step_key", [job_id]
             ).fetchall()
-        return [{**dict(row), "output_json": None} for row in rows]
+        output: List[Dict] = []
+        for row in rows:
+            item = dict(row); raw = item.pop("output_json", None)
+            if include_output:
+                try:
+                    item["output"] = json.loads(raw) if raw else None
+                except Exception:
+                    item["output"] = None
+            output.append(item)
+        return output
 
     def create_preparation(self, *, project_id: str, username: str,
                            request: Dict, result: Dict, ttl_seconds: int = 1800) -> Dict:
@@ -378,12 +392,16 @@ def _worker() -> None:
         run = get_run_store(); run.start(
             run_id=job["job_id"], project_id=job["project_id"], username=job["username"],
             module=job["module"], query=job["title"],
-            prompt_version=("chronology-v2" if job["module"] == "chronology"
+            prompt_version=(str(job.get("pipeline_version") or "chronology-v2")
+                            if job["module"] == "chronology"
                             else "evidence-report-v1"),
         )
         try:
             request = dict(job["request"] or {})
             if job["module"] == "chronology":
+                request["pipeline_version"] = str(
+                    job.get("pipeline_version") or "chronology-v2"
+                )
                 request["issue_number"] = int(job["sequence_number"])
                 request["job_id"] = job["job_id"]
                 preparation_id = str(request.pop("preparation_id", "") or "")

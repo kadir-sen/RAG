@@ -174,3 +174,21 @@ def test_spreadsheet_rows_are_json_safe_for_fastapi_response():
         "ratio": 1.25,
         "missing": None,
     }]
+
+
+def test_excel_source_anchor_opens_exact_sheet_and_row_range(tmp_path):
+    pd = pytest.importorskip("pandas")
+    path = tmp_path / "progress.xlsx"
+    with pd.ExcelWriter(path) as writer:
+        pd.DataFrame({"Period": list(range(1, 81)), "Progress": list(range(101, 181))}).to_excel(
+            writer, sheet_name="Period 01", index=False,
+        )
+
+    result = DocumentService()._serve_excel_file(
+        str(path), "sheet_Period 01_rows_42_45",
+    )
+
+    assert result.error is None
+    assert result.sheet_name == "Period 01"
+    assert (result.row_from, result.row_to) == (42, 45)
+    assert [row["Period"] for row in result.rows] == [41, 42, 43, 44]

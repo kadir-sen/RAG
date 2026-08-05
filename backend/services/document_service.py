@@ -457,9 +457,16 @@ class DocumentService:
                 if entry.tables:
                     try:
                         analyzer = get_data_analyzer()
-                        table_name = entry.tables[0].table_name
+                        requested_sheet, row_from, row_to = self._parse_table_anchor(anchor)
+                        selected_table = next((
+                            table for table in entry.tables
+                            if requested_sheet and str(table.sheet_name or table.table_name) == requested_sheet
+                        ), entry.tables[0])
+                        table_name = selected_table.table_name
                         if table_name in analyzer.tables:
-                            preview = self._serve_table_preview(table_name, analyzer)
+                            preview = self._serve_table_preview(
+                                table_name, analyzer, row_from=row_from, row_to=row_to,
+                            )
                             if not preview.error:
                                 return preview
                     except Exception:
@@ -534,7 +541,7 @@ class DocumentService:
         if lower.endswith(".pdf"):
             return self._serve_pdf_page(file_path, page)
         elif self._is_data_file(file_path):
-            return self._serve_excel_file(file_path)
+            return self._serve_excel_file(file_path, anchor)
         else:
             return self._serve_text_content(file_path)
 
@@ -545,6 +552,15 @@ class DocumentService:
             except ValueError:
                 pass
         return 1
+
+    @staticmethod
+    def _parse_table_anchor(anchor: str) -> tuple[str, int | None, int | None]:
+        match = re.fullmatch(r"sheet_(.+)_rows_(\d+)_(\d+)", anchor or "")
+        if not match:
+            return "", None, None
+        row_from = max(2, int(match.group(2)))
+        row_to = max(row_from, int(match.group(3)))
+        return match.group(1), row_from, row_to
 
     def _serve_pdf_page(self, file_path: str, page: int) -> DocContent:
         try:
@@ -636,22 +652,33 @@ class DocumentService:
         except Exception as e:
             return DocContent(type="text", error=f"Cannot parse email: {e}")
 
-    def _serve_excel_file(self, file_path: str) -> DocContent:
+    def _serve_excel_file(self, file_path: str, anchor: str = "") -> DocContent:
         """Read an Excel/CSV file directly with pandas and return as table."""
         try:
             import pandas as pd
             fp = Path(file_path)
             ext = fp.suffix.lower()
+            requested_sheet, row_from, row_to = self._parse_table_anchor(anchor)
+            row_offset = max(0, (row_from or 2) - 2)
+            row_count = min(50, max(1, (row_to or (row_offset + 51)) - row_offset - 1))
             if ext == ".csv":
-                df = pd.read_csv(file_path, nrows=50)
+                df = pd.read_csv(
+                    file_path, skiprows=range(1, row_offset + 1), nrows=row_count,
+                )
             else:
-                df = pd.read_excel(file_path, nrows=50)
+                sheet = requested_sheet or 0
+                df = pd.read_excel(
+                    file_path, sheet_name=sheet,
+                    skiprows=range(1, row_offset + 1), nrows=row_count,
+                )
             # Get total row count without loading entire file
             if ext == ".csv":
                 with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     total_rows = sum(1 for _ in f) - 1  # minus header
             else:
-                df_full_len = len(pd.read_excel(file_path, usecols=[0]))
+                df_full_len = len(pd.read_excel(
+                    file_path, usecols=[0], sheet_name=requested_sheet or 0,
+                ))
                 total_rows = df_full_len
             col_jargon, description = self._catalog_schema_hints(fp.name)
             return DocContent(
@@ -662,14 +689,22 @@ class DocumentService:
                 total_rows=max(total_rows, len(df)),
                 schema_columns=_build_schema(df, col_jargon),
                 description=description,
+                sheet_name=requested_sheet,
+                row_from=(row_offset + 2),
+                row_to=(row_offset + len(df) + 1),
             )
         except Exception as e:
             return DocContent(type="table", error=str(e))
 
-    def _serve_table_preview(self, table_name: str, analyzer) -> DocContent:
+    def _serve_table_preview(
+        self, table_name: str, analyzer, *, row_from: int | None = None,
+        row_to: int | None = None,
+    ) -> DocContent:
         try:
+            offset = max(0, (row_from or 2) - 2)
+            limit = min(50, max(1, (row_to or (offset + 51)) - offset - 1))
             df = analyzer.conn.execute(
-                f'SELECT * FROM "{table_name}" LIMIT 50'
+                f'SELECT * FROM "{table_name}" LIMIT ? OFFSET ?', [limit, offset]
             ).fetchdf()
             info = analyzer.tables.get(table_name, {})
             display_name = info.get("file_name", table_name)
@@ -683,6 +718,8 @@ class DocumentService:
                 schema_columns=_build_schema(df, col_jargon),
                 description=info.get("description", "") or cat_desc,
                 sheet_name=str(info.get("sheet_name", "") or ""),
+                row_from=offset + 2,
+                row_to=offset + len(df) + 1,
             )
         except Exception as e:
             return DocContent(type="table", error=str(e))

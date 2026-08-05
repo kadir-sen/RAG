@@ -50,6 +50,7 @@ class ProcessingResult:
     # Per-sheet schema match diagnostics for Excel/CSV (one entry per sheet attempted)
     # Each: {sheet, schema_id, ratio, matched_columns, missing_columns, registered}
     schema_match_details: List[Dict[str, Any]] = field(default_factory=list)
+    table_names: List[str] = field(default_factory=list)
 
 
 def route_file(
@@ -96,7 +97,7 @@ def route_file(
     elif file_type == "email":
         result = _process_email(file_path, project_id=project_id, file_id=file_id)
     elif file_type == "data":
-        result = _process_data_file(file_path)
+        result = _process_data_file(file_path, project_id=project_id, file_id=file_id)
     else:
         result = ProcessingResult(
             success=False,
@@ -107,14 +108,15 @@ def route_file(
 
     # Update registry with result
     if result.success:
-        table_names = []
-        if hasattr(result, 'converter_used') and result.converter_used:
-            table_names.append(result.converter_used)
         registry.mark_completed(
             doc_id,
-            table_names=table_names,
+            table_names=list(result.table_names),
             notice_extracted=result.notice_extracted,
         )
+        if file_type == "data":
+            _index_data_document(
+                file_path, project_id=project_id, doc_id=doc_id, result=result,
+            )
         # Topic clustering assignment — fire-and-forget; needs the freshly
         # upserted chunks in Pinecone, which is why we run it after
         # mark_completed and off the request thread. Data-only files don't
@@ -138,7 +140,7 @@ def route_file(
 def _enrich_document_llm(file_path: str, full_text: str,
                          *, project_id: str, file_id: str,
                          notice_summary: Optional[dict] = None,
-                         set_scope_payload: bool = True) -> None:
+                         set_scope_payload: bool = True) -> Dict[str, Any]:
     """Generate a one-line summary + 3-5 topic tags for a document at ingest time.
 
     Phase 2 enrichment: a single cheap, cached LLM call over the first ~2k chars.
@@ -153,7 +155,7 @@ def _enrich_document_llm(file_path: str, full_text: str,
     """
     text = (full_text or "").strip()
     if len(text) < 80:
-        return  # too little signal to summarize meaningfully
+        return {}  # too little signal to summarize meaningfully
 
     try:
         import hashlib
@@ -175,6 +177,9 @@ def _enrich_document_llm(file_path: str, full_text: str,
             "From the excerpt, return ONE compact JSON object with these keys:\n"
             '{\n'
             '  "summary": "<one sentence, max 160 chars>",\n'
+            '  "title": "<document title as written, or empty>",\n'
+            '  "reference": "<document/notice/letter reference, or empty>",\n'
+            '  "parties": ["<organisations or people who authored/received the record>"],\n'
             '  "topics": ["<3-5 short tags, e.g. \'delay notice\', \'BOQ\'>"],\n'
             '  "doc_type": "<one of: correspondence, contract, variation, claim, '
             'delay notice, payment certificate, BOQ, drawing, report, meeting minutes, '
@@ -253,8 +258,87 @@ def _enrich_document_llm(file_path: str, full_text: str,
                 )
             except Exception as e:
                 logger.debug(f"[FileRouter] scope payload skipped: {e}")
+        return data
     except Exception as e:
         logger.warning(f"[FileRouter] LLM document enrichment skipped: {e}")
+        return {}
+
+
+def _index_document_metadata(
+    file_path: str, *, project_id: str, page_texts: Dict[int, str],
+    notice_summary: Optional[dict], enriched: Optional[Dict[str, Any]],
+    ocr_pages: int = 0,
+) -> None:
+    """Persist the generic document-level research record after extraction."""
+    try:
+        from .document_index import get_document_index, infer_document_record
+        from .document_rag import generate_doc_id
+        enriched = enriched or {}; notice = notice_summary or {}
+        parties = list(enriched.get("parties") or [])
+        for value in (notice.get("sender"), notice.get("recipient")):
+            if value:
+                parties.append(str(value))
+        record = infer_document_record(
+            project_id=project_id, doc_id=generate_doc_id(file_path),
+            file_name=Path(file_path).name, page_texts=page_texts,
+            summary=str(enriched.get("summary") or notice.get("summary") or ""),
+            topics=list(enriched.get("topics") or []),
+            family=str(enriched.get("doc_type") or ""), parties=parties,
+            reference=str(enriched.get("reference") or notice.get("reference") or ""),
+            title=str(enriched.get("title") or notice.get("subject") or ""),
+            metadata_date=str(notice.get("date") or ""),
+            metadata_date_source="content_header" if notice.get("date") else "unknown",
+            ocr_pages=ocr_pages, total_pages=len(page_texts),
+        )
+        get_document_index().upsert(record)
+    except Exception as exc:
+        logger.warning(f"[FileRouter] document metadata index skipped: {exc}")
+
+
+def _index_data_document(
+    file_path: str, *, project_id: str, doc_id: str, result: ProcessingResult,
+) -> None:
+    """Index table containers without pretending they contain readable PDF text."""
+    try:
+        import hashlib
+        from .document_index import DocumentIndexRecord, get_document_index
+        sheets = [str(item.get("sheet") or "").strip()
+                  for item in result.schema_match_details if item.get("sheet")]
+        topics = [value for value in (result.target_schema, result.converter_used) if value]
+        table_descriptions: List[str] = []
+        try:
+            from .catalog import get_catalog
+            source_name = Path(file_path).name.casefold()
+            for entry in get_catalog().entries.values():
+                if entry.project_id != project_id or Path(entry.source_file).name.casefold() != source_name:
+                    continue
+                for table in entry.tables:
+                    if table.sheet_name:
+                        sheets.append(str(table.sheet_name))
+                    topics.extend(str(value) for value in (
+                        list(table.columns or []) + list(table.semantic_tags or [])
+                    ) if value)
+                    description = str(table.description or table.summary or "").strip()
+                    if description:
+                        table_descriptions.append(description)
+        except Exception:
+            pass
+        sheets = list(dict.fromkeys(value for value in sheets if value))
+        topics = list(dict.fromkeys(str(value) for value in topics if value))[:80]
+        description = (
+            f"{result.tables_extracted} table(s), {result.total_rows} row(s); "
+            f"sheets: {', '.join(sheets) or 'not named'}. "
+            f"{' '.join(table_descriptions[:4])}"
+        )
+        get_document_index().upsert(DocumentIndexRecord(
+            project_id=project_id, doc_id=doc_id, file_name=Path(file_path).name,
+            title=Path(file_path).stem, description=description,
+            document_family="data", topics=[str(value) for value in topics],
+            sheet_names=sheets, ocr_quality="table",
+            content_hash=hashlib.sha256(Path(file_path).read_bytes()).hexdigest(),
+        ))
+    except Exception as exc:
+        logger.warning(f"[FileRouter] data document index skipped: {exc}")
 
 
 def _save_doc_enrichment(file_path: str, payload: dict) -> None:
@@ -402,9 +486,14 @@ def _process_document(
             # Metadata is a durable queue stage. A job is not marked ready until
             # enrichment has either completed or failed non-fatally.
             report("metadata", 0.90)
-            _enrich_document_llm(
+            enriched = _enrich_document_llm(
                 file_path, doc_full_text, project_id=project_id, file_id=file_id,
                 notice_summary=result.notice_summary,
+            )
+            _index_document_metadata(
+                file_path, project_id=project_id, page_texts=doc_text_by_page,
+                notice_summary=result.notice_summary, enriched=enriched,
+                ocr_pages=result.ocr_pages,
             )
 
             # Table extraction for PDFs (direct — skips duplicate OCR analysis).
@@ -504,8 +593,13 @@ def _process_email(
             )
 
         # 2d. LLM enrichment (Phase 2): one-line summary + topic tags for routing
-        _enrich_document_llm(
+        enriched = _enrich_document_llm(
             file_path, email_full_text, project_id=project_id, file_id=file_id,
+            notice_summary=result.notice_summary,
+        )
+        _index_document_metadata(
+            file_path, project_id=project_id, page_texts=page_texts or {},
+            notice_summary=result.notice_summary, enriched=enriched, ocr_pages=0,
         )
 
         # 3. Process attachments recursively
@@ -643,7 +737,9 @@ def _enrich_table_metadata(
     )
 
 
-def _process_data_file(file_path: str) -> ProcessingResult:
+def _process_data_file(
+    file_path: str, *, project_id: str, file_id: str,
+) -> ProcessingResult:
     """
     Process a data file (Excel, CSV).
     Format converter validates against known schemas (no LLM).
@@ -666,10 +762,13 @@ def _process_data_file(file_path: str) -> ProcessingResult:
             from .catalog import get_catalog, TableMetadata
 
             catalog = get_catalog()
-            entry = catalog.add_entry(file_path, "excel", ocr_decision="direct")
+            entry = catalog.add_entry(
+                file_path, "excel", ocr_decision="direct", project_id=project_id,
+            )
             tables_saved = 0
             total_rows = 0
             ipc_table_names = []  # Track IPC tables for unified view
+            all_table_names = []
 
             for conv_result in conv_results:
                 if not conv_result.success or conv_result.df is None:
@@ -685,6 +784,7 @@ def _process_data_file(file_path: str) -> ProcessingResult:
                 conv_result.df.to_parquet(str(parquet_path), index=False)
 
                 table_name = f"t_{table_id}"
+                all_table_names.append(table_name)
                 table_meta = TableMetadata(
                     table_id=table_id,
                     source_file=file_path,
@@ -757,6 +857,7 @@ def _process_data_file(file_path: str) -> ProcessingResult:
                 result.total_rows = total_rows
                 result.converter_used = conv_results[0].converter_id
                 result.target_schema = conv_results[0].target_schema
+                result.table_names = list(all_table_names)
 
                 logger.info(f"[FileRouter] Data file processed: {filename} "
                             f"-> {tables_saved} tables, {total_rows} rows")
@@ -781,6 +882,7 @@ def _process_data_file(file_path: str) -> ProcessingResult:
             result.success = True
             result.tables_extracted = tables_saved
             result.total_rows = total_rows
+            result.table_names = [m.table_name for m in metadata_list]
             logger.info(f"[FileRouter] Data file extracted directly: {filename} "
                         f"-> {tables_saved} tables, {total_rows} rows")
         else:

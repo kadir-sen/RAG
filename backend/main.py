@@ -185,7 +185,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", tags=["health"])
     async def health():
-        return {"status": "ok"}
+        try:
+            from src.chronology_prompts import validate_chronology_runtime
+            validate_chronology_runtime()
+        except Exception as exc:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "component": "chronology", "error": str(exc)},
+            )
+        return {"status": "ok", "chronology": "ready"}
 
     # Serve React frontend in production
     if _frontend_dist.exists():

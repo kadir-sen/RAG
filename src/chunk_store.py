@@ -65,6 +65,7 @@ class ChunkStore:
                 "chunk_id VARCHAR PRIMARY KEY, doc_id VARCHAR, "
                 "file_name VARCHAR, page_number INTEGER, text VARCHAR, project_id VARCHAR DEFAULT '')"
             )
+            self._ensure_document_index_schema()
             cols = {r[1] for r in self._con.execute("PRAGMA table_info('chunks')").fetchall()}
             if "project_id" not in cols:
                 self._con.execute("ALTER TABLE chunks ADD COLUMN project_id VARCHAR DEFAULT ''")
@@ -78,6 +79,28 @@ class ChunkStore:
                 "chunk_id VARCHAR PRIMARY KEY, doc_id VARCHAR, "
                 "file_name VARCHAR, page_number INTEGER, text VARCHAR, project_id VARCHAR DEFAULT '')"
             )
+            self._ensure_document_index_schema()
+
+    def _ensure_document_index_schema(self) -> None:
+        """Create the durable document-level retrieval tier.
+
+        It deliberately lives in the same DuckDB file as the page chunks so its
+        GCS checkpoint and tenant boundary cannot drift away from the evidence it
+        describes.
+        """
+        self._con.execute(
+            "CREATE TABLE IF NOT EXISTS document_index ("
+            "search_id VARCHAR PRIMARY KEY, project_id VARCHAR NOT NULL, "
+            "doc_id VARCHAR NOT NULL, file_name VARCHAR NOT NULL, reference VARCHAR, "
+            "title VARCHAR, description VARCHAR, document_family VARCHAR, "
+            "parties_json VARCHAR, topics_json VARCHAR, sheet_names_json VARCHAR, "
+            "metadata_date VARCHAR, metadata_date_source VARCHAR, ocr_quality VARCHAR, "
+            "content_hash VARCHAR, search_text VARCHAR, updated_at VARCHAR)"
+        )
+        self._con.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_document_index_project_doc "
+            "ON document_index(project_id, doc_id)"
+        )
 
     def connection(self):
         return self._con
@@ -132,12 +155,20 @@ class ChunkStore:
         with self._db_lock:
             try:
                 before = self.count()
+                indexed_before = int(self._con.execute(
+                    "SELECT COUNT(*) FROM document_index WHERE file_name=? AND project_id=?",
+                    [file_name, project_id],
+                ).fetchone()[0])
                 self._con.execute(
                     "DELETE FROM chunks WHERE file_name = ? AND project_id = ?",
                     [file_name, project_id],
                 )
+                self._con.execute(
+                    "DELETE FROM document_index WHERE file_name = ? AND project_id = ?",
+                    [file_name, project_id],
+                )
                 removed = before - self.count()
-                if removed:
+                if removed or indexed_before:
                     self._dirty = True
                     self._persist()
                 return removed

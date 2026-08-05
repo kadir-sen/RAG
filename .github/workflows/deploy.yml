@@ -65,7 +65,11 @@ jobs:
             tests/test_response_builder_dedupe.py \
             tests/test_api_embedding.py \
             tests/test_ai_report_footnotes.py \
+            tests/test_chronology_v2.py \
+            tests/test_chronology_v3.py \
             tests/test_durable_job_stores.py \
+            tests/test_billing_store.py \
+            tests/test_deploy_data_safety.py \
             tests/test_project_store.py \
             tests/test_project_file_deletion.py \
             tests/test_forensic_store.py \
@@ -130,14 +134,14 @@ jobs:
 
       # Ship the (parametrized) compose file to the server's home, then move it
       # into APP_DIR inside the SSH script (handles root-owned dirs via sudo).
-      - name: Copy compose file to server
+      - name: Copy deploy files to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          source: docker-compose.prod.yml
+          source: docker-compose.prod.yml,scripts/create_deploy_backup.sh
           target: coair-deploy
 
       - name: Pull new image and restart
@@ -153,6 +157,7 @@ jobs:
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
           envs: IMAGE,GHCR_TOKEN,GHCR_USER,APP_DIR
+          command_timeout: 60m
           script: |
             set -euo pipefail
 
@@ -184,10 +189,53 @@ jobs:
             fi
             export QDRANT_SERVER_API_KEY
 
+            # Deploy invariant: user data must remain on the host, outside the
+            # replaceable API image. Refuse to continue if the live containers
+            # are not backed by the expected persistent mounts.
+            API_MOUNTS="$($SUDO docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' mvp-api)"
+            printf '%s\n' "$API_MOUNTS" | grep -qx '/app/storage'
+            printf '%s\n' "$API_MOUNTS" | grep -qx '/app/data'
+            QDRANT_MOUNTS="$($SUDO docker inspect --format '{{range .Mounts}}{{println .Destination}}{{end}}' mvp-qdrant)"
+            printf '%s\n' "$QDRANT_MOUNTS" | grep -qx '/qdrant/storage'
+            printf '%s\n' "$QDRANT_MOUNTS" | grep -qx '/qdrant/snapshots'
+
             # Authenticate to GHCR to pull the private image (token is ephemeral).
             printf '%s' "$GHCR_TOKEN" | $SUDO docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
             $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml pull api
+
+            # Quiesce writes, create a checksummed application-data archive and
+            # a native Qdrant snapshot. The backup script restarts the unchanged
+            # API automatically if any safety check fails. It never deletes old
+            # data, snapshots, backups, containers or volumes.
+            QDRANT_COLLECTION="$(sed -n 's/^QDRANT_COLLECTION=//p' "$APP_DIR/.env.production" | tail -1)"
+            QDRANT_COLLECTION="${QDRANT_COLLECTION:-coair}"
+            $SUDO env \
+              APP_DIR="$APP_DIR" \
+              BACKUP_ROOT="$(dirname "$APP_DIR")/coair-backups" \
+              QDRANT_API_KEY="$QDRANT_SERVER_API_KEY" \
+              QDRANT_COLLECTION="$QDRANT_COLLECTION" \
+              bash "$HOME/coair-deploy/scripts/create_deploy_backup.sh"
+
+            # From this point onwards the old API is stopped. Any unexpected
+            # shell/build/compose failure must restore the exact previous image,
+            # not merely rely on the explicit health-timeout branch below.
+            DEPLOY_SWITCH_ACTIVE=true
+            restore_previous_release() {
+              status=$?
+              if [ "$status" -ne 0 ] && [ "$DEPLOY_SWITCH_ACTIVE" = true ]; then
+                echo "Deploy interrupted; restoring $PREVIOUS_IMAGE"
+                if [ -n "$PREVIOUS_IMAGE" ]; then
+                  printf 'API_IMAGE=%s\n' "$PREVIOUS_IMAGE" | $SUDO tee "$APP_DIR/.env" >/dev/null
+                  $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d api || true
+                else
+                  $SUDO docker start mvp-api >/dev/null 2>&1 || true
+                fi
+              fi
+              exit "$status"
+            }
+            trap restore_previous_release EXIT INT TERM
+
             $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d
 
             # Health gate: fail the deploy (and surface logs) if the API is unhealthy.
@@ -198,7 +246,11 @@ jobs:
             for i in $(seq 1 48); do
               if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
                 echo "Health OK"
+                # Only unreachable image layers are pruned. Persistent volumes,
+                # bind mounts, Qdrant snapshots and deploy backups are untouched.
                 $SUDO docker image prune -f
+                DEPLOY_SWITCH_ACTIVE=false
+                trap - EXIT INT TERM
                 exit 0
               fi
               sleep 5
@@ -214,4 +266,6 @@ jobs:
                 sleep 5
               done
             fi
+            DEPLOY_SWITCH_ACTIVE=false
+            trap - EXIT INT TERM
             exit 1

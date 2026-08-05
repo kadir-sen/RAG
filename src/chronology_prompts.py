@@ -12,6 +12,7 @@ from .config import BASE_DIR
 
 
 PROMPT_FILE = Path(BASE_DIR) / "config" / "prompts" / "chronology_v2.yaml"
+V3_PROMPT_FILE = Path(BASE_DIR) / "config" / "prompts" / "chronology_v3.yaml"
 
 
 @lru_cache(maxsize=1)
@@ -35,4 +36,59 @@ def chronology_prompt_hash() -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-__all__ = ["chronology_prompt_hash", "load_chronology_prompts"]
+@lru_cache(maxsize=1)
+def load_chronology_v3_prompts() -> Dict[str, str]:
+    try:
+        data = json.loads(V3_PROMPT_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Unable to load chronology V3 prompts: {V3_PROMPT_FILE}") from exc
+    required = {
+        "version", "system", "research_planner", "map_extractor", "extractor",
+        "synthesizer", "verifier", "repair", "style_profile",
+    }
+    missing = required - data.keys()
+    if missing:
+        raise RuntimeError(f"Invalid chronology V3 prompt file; missing={sorted(missing)}")
+    return {str(key): str(value) for key, value in data.items()}
+
+
+def chronology_v3_prompt_hash() -> str:
+    payload = json.dumps(load_chronology_v3_prompts(), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def validate_chronology_runtime() -> None:
+    """Fail closed when a deploy omitted a prompt, model profile or price."""
+    load_chronology_prompts(); v3 = load_chronology_v3_prompts()
+    if v3.get("version") != "chronology-v3":
+        raise RuntimeError("chronology_prompt_version_invalid")
+    from .config import LLM_PRICING
+    from .model_profiles import MODEL_CAPABILITIES, TASK_PROFILES
+    model = "gemini-3.6-flash"
+    if model not in LLM_PRICING or model not in MODEL_CAPABILITIES:
+        raise RuntimeError("chronology_model_contract_missing")
+    expected_price = {"input": 1.50, "cached_input": .15, "output": 7.50}
+    if any(float(LLM_PRICING[model].get(key, -1)) != value
+           for key, value in expected_price.items()):
+        raise RuntimeError("chronology_model_price_invalid")
+    required = {
+        "chronology_research_plan", "chronology_extract", "chronology_aggregation",
+        "chronology_synthesis", "chronology_verify",
+    }
+    if not required <= TASK_PROFILES.keys():
+        raise RuntimeError("chronology_task_profile_missing")
+    # Importing and materialising the schemas detects packaging/import drift
+    # before a job can consume credits and fail at the first provider call.
+    from .chronology_v3 import (
+        ChronologyModel, ExtractionModel, MapExtractionModel, VerificationModel,
+    )
+    for schema in (ChronologyModel, ExtractionModel, MapExtractionModel, VerificationModel):
+        if not schema.model_json_schema().get("properties"):
+            raise RuntimeError("chronology_schema_invalid")
+
+
+__all__ = [
+    "chronology_prompt_hash", "chronology_v3_prompt_hash",
+    "load_chronology_prompts", "load_chronology_v3_prompts",
+    "validate_chronology_runtime",
+]

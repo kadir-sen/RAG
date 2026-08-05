@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from docx import Document
 
 from src.evidence_model import ChronologyEntry, EvidenceItem, VerifiedClaim
-from src.report_docx import build_ai_chronology_docx
+from src.report_docx import build_ai_chronology_docx, validate_ai_chronology_docx
 
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -75,6 +75,10 @@ def test_ai_chronology_uses_real_claim_level_footnotes_and_canonical_layout():
     assert audit.footnote_references == audit.footnote_records == 2
     assert audit.unique_source_ids == 2
     assert audit.unresolved_source_ids == []
+    render_audit = validate_ai_chronology_docx(blob, expected_entries=1)
+    assert render_audit == {
+        "paragraphs": 1, "footnote_references": 2, "footnote_records": 2,
+    }
 
 
 def test_unresolved_sources_are_reported_and_not_turned_into_fake_footnotes():

@@ -165,6 +165,7 @@ MAX_LLM_CALLS_PER_QUERY = int(os.getenv("MAX_LLM_CALLS", "12"))
 LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT", "30"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "1"))
 CHRONOLOGY_PIPELINE_VERSION = os.getenv("CHRONOLOGY_PIPELINE_VERSION", "v2").strip().lower()
+CHRONOLOGY_V3_DEMO_ENABLED = os.getenv("CHRONOLOGY_V3_DEMO_ENABLED", "true").lower() == "true"
 
 # ── Cache settings ──────────────────────────────────────────
 CACHE_DIR = str(BASE_DIR / "cache")

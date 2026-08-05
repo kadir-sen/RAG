@@ -82,10 +82,26 @@ def _assert_ready(project_id: str) -> None:
     raise HTTPException(409, "project_has_no_ready_documents")
 
 
-def _assert_chronology_v2_enabled() -> None:
+def _assert_chronology_enabled() -> None:
     from src.config import CHRONOLOGY_PIPELINE_VERSION
-    if CHRONOLOGY_PIPELINE_VERSION != "v2":
-        raise HTTPException(503, "chronology_v2_disabled")
+    if CHRONOLOGY_PIPELINE_VERSION not in ("v2", "v3"):
+        raise HTTPException(503, "chronology_disabled")
+    try:
+        from src.chronology_prompts import validate_chronology_runtime
+        validate_chronology_runtime()
+    except Exception as exc:
+        raise HTTPException(503, "chronology_configuration_invalid") from exc
+
+
+def _chronology_pipeline(username: str) -> str:
+    from src.config import CHRONOLOGY_V3_DEMO_ENABLED
+    from src.user_store import get_user_store
+    account = get_user_store().billing.summary(username)
+    if CHRONOLOGY_V3_DEMO_ENABLED and account.get("plan_type") == "demo":
+        return "chronology-v3"
+    # V3 rollout is deliberately demo-only until the solicitor/golden acceptance
+    # suite has completed; environment drift must not move admin/Edinburgh jobs.
+    return "chronology-v2"
 
 
 _PUBLIC_ERRORS = {
@@ -113,6 +129,21 @@ def _public(job: dict) -> dict:
     if value.get("status") in ("failed", "credit_balance_exhausted"):
         code = str(value.get("error_code") or "report_generation_failed")
         value["error"] = _PUBLIC_ERRORS.get(code, _PUBLIC_ERRORS["report_generation_failed"])
+    result = value.get("result")
+    if isinstance(result, dict):
+        if value.get("module") == "chronology" or "entries" in result:
+            # Deliberate allow-list: future diagnostics, token or monetary fields
+            # cannot accidentally become part of the normal chronology contract.
+            value["result"] = {
+                key: result[key] for key in ("entries", "evidence") if key in result
+            }
+        else:
+            value["result"] = {key: item for key, item in result.items() if key not in {
+                "research_audit", "verification_audit", "research_questions",
+                "selected_doc_ids", "coverage", "render_audit",
+                "model", "prompt_version", "pipeline_version", "removed_claims", "audit",
+            }}
+    value.pop("coverage_status", None)
     return value
 
 
@@ -122,7 +153,7 @@ def preview_chronology_sources(
     user: UserContext = Depends(get_current_user),
     project: ProjectContext = Depends(require_project_editor),
 ):
-    _assert_chronology_v2_enabled()
+    _assert_chronology_enabled()
     _assert_ready(project.project_id)
     from src.ai_reports import retrieve_evidence
     from src.chronology_v2 import prepare_chronology_query, source_preview
@@ -152,8 +183,12 @@ def generate_chronology_report(
     user: UserContext = Depends(get_current_user),
     project: ProjectContext = Depends(require_project_editor),
 ):
-    _assert_chronology_v2_enabled()
+    _assert_chronology_enabled()
     _assert_ready(project.project_id)
+    from src.user_store import get_user_store
+    account = get_user_store().billing.get_account(user.username)
+    if account and account.get("plan_type") == "demo":
+        get_user_store().billing.enforce_credits(user.username)
     preparation = None
     if body.preparation_id:
         preparation = get_report_job_store().get_preparation(
@@ -164,6 +199,7 @@ def generate_chronology_report(
         allowed = {str(row.get("doc_id") or "") for row in preparation.get("documents", [])}
         if any(doc_id not in allowed for doc_id in body.source_doc_ids):
             raise HTTPException(422, "source_document_not_in_preparation")
+    pipeline_version = _chronology_pipeline(user.username)
     job = get_report_job_store().enqueue(
         project_id=project.project_id, username=user.username, module="chronology",
         title=body.topic,
@@ -173,7 +209,7 @@ def generate_chronology_report(
             "parties": body.parties,
             "preparation_id": body.preparation_id,
             "source_doc_ids": body.source_doc_ids,
-        },
+        }, pipeline_version=pipeline_version,
     )
     return _public(job)
 
@@ -283,16 +319,23 @@ def report_diagnostics(
     if not row:
         raise HTTPException(404, "report_not_found")
     job = store._row(row)
+    from src.billing_store import get_billing_store
     from src.model_profiles import TASK_PROFILES
     from src.run_store import get_run_store
     return {
         "job_id": job_id, "project_id": job["project_id"],
         "pipeline_version": job.get("pipeline_version"),
+        "prompt_version": (job.get("result") or {}).get("prompt_version"),
+        "model": (job.get("result") or {}).get("model"),
         "stage": job.get("stage"), "error_code": job.get("error_code"),
         "technical_error": job.get("error"), "request": job.get("request"),
         "coverage_status": job.get("coverage_status"),
-        "steps": store.list_steps(job_id),
+        "research_audit": (job.get("result") or {}).get("research_audit"),
+        "verification_audit": (job.get("result") or {}).get("verification_audit"),
+        "render_audit": (job.get("result") or {}).get("render_audit"),
+        "steps": store.list_steps(job_id, include_output=True),
         "llm_audit": get_run_store().details(job_id),
+        "billing": get_billing_store().job_usage(job_id),
         "model_profiles": {
             name: asdict(profile) for name, profile in TASK_PROFILES.items()
             if name.startswith("chronology_") or name in ("research_plan", "rerank")

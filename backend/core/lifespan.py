@@ -25,6 +25,11 @@ async def lifespan(app: FastAPI):
 def _startup_sync():
     """Synchronous startup for Cloud Run (stateless — GCS is source of truth)."""
 
+    # Prompt/model/price packaging is a deploy invariant, not a best-effort
+    # external dependency.  Fail startup before workers can accept a broken job.
+    from src.chronology_prompts import validate_chronology_runtime
+    validate_chronology_runtime()
+
     # ── Step 1: Download ALL shared state from GCS FIRST ──
     # This MUST happen before loading any singletons.
     # Cloud Run instances are ephemeral — local disk may be stale or empty.

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import zipfile
+from xml.etree import ElementTree
 from typing import Dict, Iterable, List, Tuple
 
 from docx import Document
@@ -12,6 +14,59 @@ from docx.shared import Cm, Pt
 
 from .evidence_model import ChronologyEntry, EvidenceItem, ReportAudit, VerifiedClaim, evidence_map
 from .word_footnotes import FootnoteRegistry, attach_footnote_part
+
+
+_WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+
+
+def validate_ai_chronology_docx(blob: bytes, *, expected_entries: int) -> Dict[str, int]:
+    """Fail closed when the issued Word file no longer matches the chronology contract."""
+    try:
+        doc = Document(io.BytesIO(blob))
+        section = doc.sections[0]
+        dimensions = (
+            section.page_width.cm, section.page_height.cm,
+            section.top_margin.cm, section.bottom_margin.cm,
+            section.left_margin.cm, section.right_margin.cm,
+        )
+        expected = (21.0, 29.7, 2.54, 2.54, 2.54, 2.54)
+        if any(abs(actual - target) > .03 for actual, target in zip(dimensions, expected)):
+            raise ValueError("chronology_word_page_contract_failed")
+
+        chronology_paragraphs = [
+            paragraph for paragraph in doc.paragraphs
+            if paragraph.text.strip().startswith("6.")
+        ]
+        if len(chronology_paragraphs) != expected_entries:
+            raise ValueError("chronology_word_numbering_failed")
+        for paragraph in chronology_paragraphs:
+            fmt = paragraph.paragraph_format
+            if paragraph.alignment != WD_ALIGN_PARAGRAPH.JUSTIFY:
+                raise ValueError("chronology_word_justification_failed")
+            if fmt.left_indent is None or abs(fmt.left_indent.cm - 1.905) > .03:
+                raise ValueError("chronology_word_indent_failed")
+            if fmt.first_line_indent is None or abs(fmt.first_line_indent.cm + 1.905) > .03:
+                raise ValueError("chronology_word_hanging_indent_failed")
+
+        with zipfile.ZipFile(io.BytesIO(blob)) as package:
+            document_xml = ElementTree.fromstring(package.read("word/document.xml"))
+            footnotes_xml = ElementTree.fromstring(package.read("word/footnotes.xml"))
+        references = document_xml.findall(".//w:footnoteReference", _WORD_NS)
+        footnotes = [
+            node for node in footnotes_xml.findall(".//w:footnote", _WORD_NS)
+            if int(node.attrib.get(f"{{{_WORD_NS['w']}}}id", "-1")) > 0
+        ]
+        if not references or len(references) != len(footnotes):
+            raise ValueError("chronology_word_footnote_contract_failed")
+        return {
+            "paragraphs": len(chronology_paragraphs),
+            "footnote_references": len(references),
+            "footnote_records": len(footnotes),
+        }
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("chronology_word_render_invalid") from exc
 
 
 def _base_document() -> Document:
