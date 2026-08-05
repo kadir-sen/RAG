@@ -51,6 +51,15 @@ from src.billing_store import CreditBalanceExceededError, StorageQuotaExceededEr
 _frontend_dist = Path(_project_root) / "frontend" / "dist"
 
 
+def _resolve_frontend_file(full_path: str, root: Path | None = None) -> Path | None:
+    """Resolve a Vite public asset without allowing traversal outside dist."""
+    dist_root = (root or _frontend_dist).resolve()
+    candidate = (dist_root / full_path).resolve()
+    if candidate.is_relative_to(dist_root) and candidate.is_file():
+        return candidate
+    return None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Document Analysis Platform",
@@ -84,7 +93,7 @@ def create_app() -> FastAPI:
                 )
             elif path.endswith(".svg") or path == "/vite.svg":
                 response.headers["Cache-Control"] = "public, max-age=604800"
-            elif path in ("/", "/index.html"):
+            elif path in ("/", "/index.html", "/boot.js"):
                 # SPA shell must not be cached (otherwise stale bundle hashes).
                 response.headers["Cache-Control"] = "no-cache, must-revalidate"
             return response
@@ -184,10 +193,13 @@ def create_app() -> FastAPI:
 
         @app.get("/{full_path:path}")
         async def serve_spa(full_path: str):
-            """Serve React SPA — all non-API routes return index.html."""
+            """Serve Vite public files, then fall back to the React SPA shell."""
             if full_path.startswith("api/"):
                 from fastapi import HTTPException
                 raise HTTPException(404, "Not found")
+            static_file = _resolve_frontend_file(full_path)
+            if static_file is not None:
+                return FileResponse(str(static_file))
             return FileResponse(str(_frontend_dist / "index.html"))
 
     return app
