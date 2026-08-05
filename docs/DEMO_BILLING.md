@@ -27,8 +27,8 @@ python scripts/create_user.py \
   --display 'Demo User' \
   --role user \
   --plan demo \
-  --initial-credits 1000 \
-  --markup-percent 30 \
+  --initial-credits 5000 \
+  --markup-percent 0 \
   --storage-limit-bytes 30000000000 \
   --model-policy demo-gemini-3.6-v1
 ```

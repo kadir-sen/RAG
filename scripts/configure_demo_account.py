@@ -25,7 +25,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Configure a controlled COAir demo user.")
     parser.add_argument("--username", default="demo")
     parser.add_argument("--key-ref", default="demo")
-    parser.add_argument("--credits", type=float, default=6500.0)
+    parser.add_argument("--credits", type=float, default=5000.0)
     parser.add_argument("--storage-limit-bytes", type=int, default=30_000_000_000)
     parser.add_argument(
         "--password-env", default="",
@@ -64,7 +64,7 @@ def main() -> int:
         store.billing.update_account(
             args.username,
             plan_type="demo",
-            markup_percent=30,
+            markup_percent=0,
             storage_limit_bytes=args.storage_limit_bytes,
             model_policy="demo-tiered-quality-v2",
             provider_key_ref=args.key_ref,
@@ -79,7 +79,7 @@ def main() -> int:
             features={},
             plan_type="demo",
             initial_credits=args.credits,
-            markup_percent=30,
+            markup_percent=0,
             storage_limit_bytes=args.storage_limit_bytes,
             model_policy="demo-tiered-quality-v2",
             provider_key_ref=args.key_ref,
@@ -90,7 +90,7 @@ def main() -> int:
         store.billing.adjust_credits(
             args.username,
             delta,
-            "Align dedicated demo account with USD 50 provider budget at 30% markup",
+            "Align dedicated demo account with USD 50 provider budget at provider cost",
             idempotency_key=(
                 f"configure-demo:{args.username}:{args.credits}:"
                 f"{summary['credits_total']}"

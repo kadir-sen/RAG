@@ -14,7 +14,7 @@ def _run(monkeypatch, store, *, key_loader=lambda _ref: "valid-key-value"):
         "configure_demo_account.py",
         "--username", "demo",
         "--key-ref", "demo",
-        "--credits", "6500",
+        "--credits", "5000",
         "--storage-limit-bytes", "30000000000",
         "--password-env", "DEMO_TEST_PASSWORD",
     ])
@@ -31,12 +31,24 @@ def test_missing_demo_account_is_created_idempotently(monkeypatch, tmp_path):
     assert user["is_active"] is True
     assert store.verify_password("demo", "demo2026") is not None
     assert summary["plan_type"] == "demo"
-    assert summary["credits_total"] == 6500
+    assert summary["credits_total"] == 5000
+    assert summary["markup_percent"] == 0
     assert summary["storage_limit_bytes"] == 30_000_000_000
     assert store.billing.get_account("demo")["provider_key_ref"] == "demo"
 
+    charged = store.billing.record_charge(
+        username="demo", provider="gemini", model="gemini-3.6-flash",
+        prompt_tokens=100, completion_tokens=10, reasoning_tokens=5,
+        provider_cost_nanos=1_000_000_000, idempotency_key="demo-cost-1",
+    )
+    assert charged["credits_used"] == 100
+    assert charged["credits_remaining"] == 4900
+    assert charged["credit_percent_remaining"] == 98
+
     assert _run(monkeypatch, store) == 0
-    assert store.billing.summary("demo")["credits_total"] == 6500
+    repeated = store.billing.summary("demo")
+    assert repeated["credits_total"] == 5000
+    assert repeated["credits_remaining"] == 4900
 
 
 def test_invalid_key_does_not_create_partial_account(monkeypatch, tmp_path):

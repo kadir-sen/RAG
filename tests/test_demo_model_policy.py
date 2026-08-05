@@ -40,6 +40,11 @@ def test_demo_forces_gemini_36_and_minimal_for_lite_tasks(monkeypatch):
     assert native["thinking_level"] == "minimal"
     assert attributed["model"] == "gemini-3.6-flash"
     assert attributed["reasoning_tokens"] == 5
+    assert response.usage.completion_tokens == 10
+    assert response.usage.reasoning_tokens == 5
+    assert attributed["cost_nanos"] == llm_client.estimate_cost_nanos(
+        "gemini-3.6-flash", 100, 15, cached_tokens=2,
+    )
 
 
 def test_demo_upload_processing_uses_25_flash_lite(monkeypatch):

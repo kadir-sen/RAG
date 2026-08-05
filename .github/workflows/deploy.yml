@@ -328,7 +328,7 @@ jobs:
                 $SUDO docker exec \
                   -e DEMO_ACCOUNT_PASSWORD="$DEMO_ACCOUNT_PASSWORD" \
                   mvp-api python scripts/configure_demo_account.py \
-                  --username demo --key-ref demo --credits 6500 \
+                  --username demo --key-ref demo --credits 5000 \
                   --storage-limit-bytes 30000000000 \
                   --password-env DEMO_ACCOUNT_PASSWORD
                 # Only unreachable image layers are pruned. Persistent volumes,

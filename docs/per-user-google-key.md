@@ -30,9 +30,10 @@ dedicated credential. Local FastEmbed vectorization does not use a Google key.
 
 For the controlled production demo profile, run the interactive configuration
 command instead of the alias-only command. It validates the mounted secret
-first, then changes the existing account to a normal user with 6,500 credits
-(USD 50 provider cost plus 30% markup), a 30 GB source-file quota and the tiered
-model policy:
+first, then creates or updates the normal demo user with 5,000 credits (USD 50
+at direct provider cost with no markup), a 30 GB source-file quota and the
+tiered model policy. The percentage decreases from priced input, cached input,
+visible output and thinking tokens reported by the provider:
 
 ```text
 docker exec -it mvp-api python scripts/configure_demo_account.py --username demo
