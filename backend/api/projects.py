@@ -45,7 +45,7 @@ def _stats(project_id: str) -> Dict:
         files = get_document_registry().get_all(project_id=project_id)
     except Exception:
         pass
-    counts = {"document": 0, "email": 0, "data": 0}
+    counts = {"document": 0, "email": 0, "data": 0, "programme": 0}
     status = {"queued": 0, "processing": 0, "ready": 0, "failed": 0}
     seen_names = set()
     for rec in files:
@@ -106,6 +106,11 @@ def _stats(project_id: str) -> Dict:
         status["failed"] = max(status["failed"], job_stats.get("failed", 0))
     except Exception:
         job_stats = {}
+    try:
+        from src.forensic_store import get_forensic_store
+        counts["programme"] = len(get_forensic_store().list_programmes(project_id))
+    except Exception:
+        pass
     try:
         vector_state = get_project_store().get_vector_state(project_id)
         vector = {

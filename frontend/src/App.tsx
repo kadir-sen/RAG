@@ -99,7 +99,8 @@ export default function App() {
               />
               <Route path="/chronology/reports/:jobId" element={<ProjectRequired><Suspense fallback={null}><ChronologyReportPage /></Suspense></ProjectRequired>} />
               <Route path="/chat" element={<ProjectRequired><ChatPage /></ProjectRequired>} />
-              <Route path="/forensic" element={<ProjectRequired><Suspense fallback={null}><ForensicPage /></Suspense></ProjectRequired>} />
+              <Route path="/forensic" element={<Navigate to="/forensic/intake" replace />} />
+              <Route path="/forensic/:moduleSlug" element={<ProjectRequired><Suspense fallback={null}><ForensicPage /></Suspense></ProjectRequired>} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

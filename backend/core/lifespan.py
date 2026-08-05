@@ -10,13 +10,16 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(_startup_sync)
     from backend.tasks.ingestion_jobs import start_ingestion_workers, stop_ingestion_workers
     from backend.tasks.report_jobs import start_report_workers, stop_report_workers
+    from backend.tasks.forensic_jobs import start_forensic_workers, stop_forensic_workers
     start_ingestion_workers()
     start_report_workers()
+    start_forensic_workers()
     try:
         yield
     finally:
         stop_ingestion_workers()
         stop_report_workers()
+        stop_forensic_workers()
 
 
 def _startup_sync():

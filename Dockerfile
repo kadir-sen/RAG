@@ -1,5 +1,8 @@
 FROM python:3.11-slim
 
+ARG COAIR_COMMIT_SHA=development
+ENV COAIR_COMMIT_SHA=${COAIR_COMMIT_SHA}
+
 WORKDIR /app
 
 # Install system dependencies including Tesseract OCR and Node.js
@@ -18,7 +21,11 @@ ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 # Copy requirements first for caching. No torch — server query embedding uses
 # fastembed (ONNX), keeping the image small and RAM low enough for a 2 GB box.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# The API image is the production product. The legacy local Streamlit shell is
+# intentionally excluded; native forensic engines are imported directly from
+# vendor code and rendered by the React application.
+RUN sed '/^streamlit[<=>]/d' requirements.txt > requirements.prod.txt \
+    && pip install --no-cache-dir -r requirements.prod.txt
 # Pre-bake the fastembed bge model into the image so query-time embedding works
 # offline (no first-request download). Keep in sync with LOCAL_EMBEDDING_MODEL.
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-base-en-v1.5')"
@@ -32,16 +39,15 @@ RUN cd frontend && npm run build
 # Copy application code
 COPY src/ ./src/
 COPY backend/ ./backend/
+COPY vendor/ ./vendor/
+COPY THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 # The jargon manager loads this version-controlled glossary during module
 # import, before the API can answer its health check. Keep the copy explicit so
 # future files under config/ (which may be deployment-specific) are not baked
 # into the image accidentally.
 COPY config/jargon_terms.json ./config/jargon_terms.json
 RUN python -c "import json; p='config/jargon_terms.json'; d=json.load(open(p, encoding='utf-8')); assert isinstance(d, dict) and len(d) == 2703"
-COPY app.py .
-COPY debug_app.py .
 COPY entrypoint.sh .
-COPY .streamlit/ ./.streamlit/
 COPY scripts/ ./scripts/
 COPY formatlar/ ./formatlar/
 

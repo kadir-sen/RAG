@@ -40,6 +40,7 @@ jobs:
         # Add more files here as coverage grows; keep them network/key-free so the
         # gate stays fast and deterministic.
         run: |
+          python scripts/verify_forensic_vendor.py
           pytest -q \
             tests/test_sql_security.py \
             tests/test_document_registry_load.py \
@@ -67,6 +68,10 @@ jobs:
             tests/test_durable_job_stores.py \
             tests/test_project_store.py \
             tests/test_project_file_deletion.py \
+            tests/test_forensic_store.py \
+            tests/test_forensic_programme_service.py \
+            tests/test_forensic_engines.py \
+            tests/test_forensic_api_models.py \
             tests/test_run_store.py
 
   # ── 2. Build the Docker image and push it to GHCR ────────────────────────
@@ -101,6 +106,8 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            COAIR_COMMIT_SHA=${{ github.sha }}
           tags: |
             ghcr.io/${{ env.IMAGE_LOWER }}:latest
             ghcr.io/${{ env.IMAGE_LOWER }}:${{ github.sha }}

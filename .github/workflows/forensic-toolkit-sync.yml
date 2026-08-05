@@ -1,0 +1,72 @@
+name: Forensic toolkit upstream sync
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: forensic-toolkit-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve pinned and upstream revisions
+        id: revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          PINNED="$(python -c 'import json; print(json.load(open("vendor/delay-analysis-toolkit.upstream.json"))["commit"])')"
+          LATEST="$(git ls-remote https://github.com/altunozan/delay-analysis-toolkit.git refs/heads/main | cut -f1)"
+          echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$PINNED" = "$LATEST" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Pull squashed subtree update
+        if: steps.revisions.outputs.changed == 'true'
+        run: |
+          git subtree pull --prefix vendor/delay-analysis-toolkit https://github.com/altunozan/delay-analysis-toolkit.git main --squash -m "vendor: sync delay-analysis-toolkit ${{ steps.revisions.outputs.latest }}"
+          python scripts/verify_forensic_vendor.py --update --commit "${{ steps.revisions.outputs.latest }}"
+
+      - uses: actions/setup-python@v5
+        if: steps.revisions.outputs.changed == 'true'
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Test upstream and native adapters
+        if: steps.revisions.outputs.changed == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r vendor/delay-analysis-toolkit/requirements.txt pytest
+          python scripts/verify_forensic_vendor.py
+          python -m compileall -q vendor/delay-analysis-toolkit backend/services/forensic_toolkit
+          (cd vendor/delay-analysis-toolkit && pytest -q test_engine.py test_programme.py test_rlpa.py test_qa.py)
+          pytest -q tests/test_forensic_engines.py tests/test_forensic_store.py tests/test_forensic_programme_service.py tests/test_forensic_api_models.py
+
+      - uses: peter-evans/create-pull-request@v7
+        if: steps.revisions.outputs.changed == 'true'
+        with:
+          branch: automation/forensic-toolkit-sync
+          delete-branch: true
+          title: "vendor: sync Delay Analysis Toolkit upstream"
+          commit-message: "vendor: sync Delay Analysis Toolkit upstream"
+          body: |
+            Automated weekly native-engine update.
+
+            - Previous SHA: `${{ steps.revisions.outputs.pinned }}`
+            - New SHA: `${{ steps.revisions.outputs.latest }}`
+            - Vendor integrity, upstream engine tests and COAir adapter parity tests passed.
+
+            Streamlit UI changes are not copied into COAir automatically. Review engine and adapter behaviour before merging.
+          labels: dependencies,forensic-toolkit

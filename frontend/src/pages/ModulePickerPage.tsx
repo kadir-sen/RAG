@@ -97,7 +97,7 @@ export default function ModulePickerPage() {
               index="03"
               name="Forensic Reports"
               role="Delay Analysis Toolkit"
-              blurb="Programme forensics — DCMA checks, variance and critical path. Opens the toolkit, a separate application."
+              blurb="Run native programme forensics — DCMA, critical path, windows, retrospective and prospective delay analysis."
               mark={<ReportsMark className={MARK_CLASS} />}
               to="/forensic"
             />

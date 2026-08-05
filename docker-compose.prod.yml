@@ -31,6 +31,7 @@ services:
       - MAX_LLM_CALLS=12
       - LLM_MAX_RETRIES=3
       - CHRONOLOGY_PIPELINE_VERSION=v2
+      - FORENSIC_NATIVE_UI_V1=true
     volumes:
       - ./storage:/app/storage
       - ./data:/app/data

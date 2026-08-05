@@ -1,5 +1,5 @@
 export interface ProjectStats {
-  files: { document: number; email: number; data: number };
+  files: { document: number; email: number; data: number; programme: number };
   total_files: number;
   queued: number;
   processing: number;

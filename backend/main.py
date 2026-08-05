@@ -30,6 +30,7 @@ from backend.api import (
     chronology,
     conversations,
     feedback,
+    forensic,
     files,
     documents,
     indexing,
@@ -129,6 +130,7 @@ def create_app() -> FastAPI:
         knowledge.router, prefix="/api", tags=["knowledge"], dependencies=auth_dep + project_dep,
     )
     app.include_router(reports.router, prefix="/api", tags=["reports"], dependencies=auth_dep + project_dep)
+    app.include_router(forensic.router, prefix="/api", tags=["forensic"], dependencies=auth_dep)
     app.include_router(runs.router, prefix="/api", tags=["runs"], dependencies=auth_dep + project_dep)
     # Global usage (cost across the whole tenant) is operational data — admin-only.
     app.include_router(usage.router, prefix="/api", tags=["usage"], dependencies=admin_dep)
