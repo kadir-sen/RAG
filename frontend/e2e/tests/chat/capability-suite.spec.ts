@@ -13,20 +13,19 @@
  *     clickable bubbles). Soft failures are reported but let the suite finish,
  *     so one run tells you exactly which capabilities are demo-ready.
  *
- * Credentials/target come from env (never hard-code secrets in CI):
- *   E2E_USER (default admin) / E2E_PASS (default admin123)
- *   BASE_URL=http://63.184.32.196
+ * Credentials/target come from env (never hard-code secrets or a production
+ * host in the suite): E2E_USER, E2E_PASS and BASE_URL.
  *
  * Run:
- *   BASE_URL=http://63.184.32.196 E2E_USER=admin E2E_PASS=admin123 \
+ *   BASE_URL=http://127.0.0.1:4173 E2E_USER=test-user E2E_PASS=... \
  *     npm run e2e -- tests/chat/capability-suite.spec.ts
  */
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { S } from '../../helpers/selectors';
 
-const USER = process.env.E2E_USER || 'admin';
-const PASS = process.env.E2E_PASS || 'admin123';
+const USER = process.env.E2E_USER ?? '';
+const PASS = process.env.E2E_PASS ?? '';
 const SHOTS = '/tmp/coair-e2e-shots';
 
 // Phrases the backend emits when routing/execution degrades — used to fail a
@@ -88,6 +87,8 @@ function assertRealAnswer(body: string, label: string) {
 }
 
 test.describe('COAir — demo-readiness capability suite', () => {
+  test.skip(!USER || !PASS, 'E2E_USER and E2E_PASS are required for the live capability suite.');
+
   test.beforeEach(async ({ page }) => {
     await login(page);
   });
@@ -105,7 +106,6 @@ test.describe('COAir — demo-readiness capability suite', () => {
 
     // Capability markers (soft): clickable related-doc bubbles OR inline citations.
     const relatedHeader = card.getByText(/Related Documents/i);
-    const citationChips = page.locator(S.assistantMessage).last().locator('button');
     const hasRelated = await relatedHeader.isVisible().catch(() => false);
     const chipCount = await card.locator('button').count();
     expect.soft(hasRelated || chipCount > 0, 'RAG: should surface related docs or citations').toBeTruthy();

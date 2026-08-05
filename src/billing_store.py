@@ -25,8 +25,8 @@ USD_PER_CREDIT = Decimal("0.01")
 DEMO_INITIAL_CREDITS = Decimal("1000")
 DEMO_MARKUP_BPS = 3_000
 DEMO_STORAGE_LIMIT_BYTES = 30_000_000_000
-DEMO_MODEL_POLICY = "demo-gemini-3.6-v1"
-PRICING_VERSION = "google-ai-2026-07-21"
+DEMO_MODEL_POLICY = "demo-tiered-quality-v2"
+PRICING_VERSION = "google-ai-2026-08-05"
 
 
 _SCHEMA = """
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS billing_accounts (
     storage_limit_bytes      INTEGER NOT NULL DEFAULT 0,
     storage_used_bytes       INTEGER NOT NULL DEFAULT 0,
     model_policy             TEXT NOT NULL DEFAULT '',
+    provider_key_ref         TEXT NOT NULL DEFAULT '',
     created_at               TEXT NOT NULL,
     updated_at               TEXT NOT NULL,
     FOREIGN KEY(username) REFERENCES users(username) ON DELETE CASCADE
@@ -141,6 +142,17 @@ class BillingStore:
         self._lock = threading.RLock()
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Additive migration for databases created before dedicated
+            # per-user provider credentials. No existing rows or ledger events
+            # are rewritten.
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(billing_accounts)")
+            }
+            if "provider_key_ref" not in columns:
+                conn.execute(
+                    "ALTER TABLE billing_accounts ADD COLUMN "
+                    "provider_key_ref TEXT NOT NULL DEFAULT ''"
+                )
 
     @classmethod
     def instance(cls) -> "BillingStore":
@@ -170,6 +182,7 @@ class BillingStore:
         markup_bps: int = DEMO_MARKUP_BPS,
         storage_limit_bytes: int = 0,
         model_policy: str = "",
+        provider_key_ref: str = "",
     ) -> Dict[str, Any]:
         if plan_type not in ("legacy", "demo"):
             raise ValueError("unsupported plan_type")
@@ -178,6 +191,8 @@ class BillingStore:
             storage_limit_bytes = storage_limit_bytes or DEMO_STORAGE_LIMIT_BYTES
         if not 0 <= int(markup_bps) <= 100_000:
             raise ValueError("markup_bps must be between 0 and 100000")
+        from .provider_credentials import validate_provider_key_ref
+        provider_key_ref = validate_provider_key_ref(provider_key_ref)
         grant = max(0, _to_microcredits(initial_credits))
         now = _now()
         with self._lock, self._connect() as conn:
@@ -188,9 +203,14 @@ class BillingStore:
             if exists:
                 return self.summary(username, conn=conn)
             conn.execute(
-                "INSERT INTO billing_accounts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO billing_accounts "
+                "(username,plan_type,credits_granted_micro,credits_balance_micro,"
+                "markup_bps,storage_limit_bytes,storage_used_bytes,model_policy,"
+                "provider_key_ref,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 [username, plan_type, grant, grant, int(markup_bps),
-                 max(0, int(storage_limit_bytes)), 0, model_policy, now, now],
+                 max(0, int(storage_limit_bytes)), 0, model_policy,
+                 provider_key_ref, now, now],
             )
             if grant:
                 conn.execute(
@@ -209,10 +229,16 @@ class BillingStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def update_account(self, username: str, *, markup_percent: float | None = None,
+    def update_account(self, username: str, *, plan_type: str | None = None,
+                       markup_percent: float | None = None,
                        storage_limit_bytes: int | None = None,
-                       model_policy: str | None = None) -> Dict[str, Any]:
+                       model_policy: str | None = None,
+                       provider_key_ref: str | None = None) -> Dict[str, Any]:
         sets: List[str] = []; params: List[Any] = []
+        if plan_type is not None:
+            if plan_type not in ("legacy", "demo"):
+                raise ValueError("unsupported plan_type")
+            sets.append("plan_type=?"); params.append(plan_type)
         if markup_percent is not None:
             bps = round(float(markup_percent) * 100)
             if not 0 <= bps <= 100_000:
@@ -224,6 +250,10 @@ class BillingStore:
             sets.append("storage_limit_bytes=?"); params.append(int(storage_limit_bytes))
         if model_policy is not None:
             sets.append("model_policy=?"); params.append(str(model_policy))
+        if provider_key_ref is not None:
+            from .provider_credentials import validate_provider_key_ref
+            sets.append("provider_key_ref=?")
+            params.append(validate_provider_key_ref(provider_key_ref))
         if not sets:
             return self.summary(username)
         sets.append("updated_at=?"); params.extend([_now(), username])
@@ -252,6 +282,7 @@ class BillingStore:
                     "credit_percent_remaining": 100.0,
                     "storage_used_bytes": 0, "storage_limit_bytes": 0,
                     "storage_percent_used": 0.0, "model_policy": "",
+                    "dedicated_provider_key": False,
                 }
             granted = int(row["credits_granted_micro"])
             balance = int(row["credits_balance_micro"])
@@ -276,6 +307,7 @@ class BillingStore:
                 ) if limit > 0 else 0.0,
                 "markup_percent": int(row["markup_bps"]) / 100.0,
                 "model_policy": row["model_policy"],
+                "dedicated_provider_key": bool(row["provider_key_ref"]),
             }
         finally:
             if owns:

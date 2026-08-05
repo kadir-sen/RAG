@@ -42,7 +42,7 @@ export default function ModulePickerPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-5xl mx-auto px-6 py-12 md:py-16">
+      <div className="max-w-5xl mx-auto px-3 py-8 sm:px-6 md:py-16">
         <header className="mb-10">
           <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">
             Select · module
@@ -57,11 +57,11 @@ export default function ModulePickerPage() {
           {current && (
             <Link
               to="/projects"
-              className="mt-4 inline-flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 no-underline hover:border-[var(--ink)] transition-colors"
+              className="mt-4 flex min-h-11 max-w-full flex-wrap items-center gap-2 border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 no-underline hover:border-[var(--ink)] transition-colors sm:inline-flex sm:flex-nowrap"
             >
               <span className="h-2 w-2 rounded-full bg-[var(--green)]" aria-hidden="true" />
               <span className="font-mono text-[9px] uppercase tracking-[.13em] text-[var(--text-muted)]">Active project</span>
-              <strong className="max-w-[320px] truncate text-[11px] text-[var(--text-primary)]">{current.name}</strong>
+              <strong className="min-w-0 max-w-[220px] truncate text-[11px] text-[var(--text-primary)] sm:max-w-[320px]">{current.name}</strong>
               <span className="font-mono text-[9px] text-[var(--text-secondary)]">Manage →</span>
             </Link>
           )}

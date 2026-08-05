@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.forensic_store import ForensicStore, MAX_WORKSPACE_BYTES
+from backend.services.forensic_toolkit.sources import ForensicSourceService
 
 
 def _programme(store: ForensicStore, root: Path, project: str, suffix: str, size: int = 10):
@@ -73,3 +74,90 @@ def test_failed_run_retries_with_same_identity_and_sources(tmp_path: Path):
     assert retried["source_revision"] == run["source_revision"]
     assert retried["attempt"] == 2
     assert retried["status"] == "queued"
+
+
+def test_workspace_state_is_optimistic_and_does_not_mutate_source_revision(tmp_path: Path):
+    store = ForensicStore(tmp_path / "forensic.db")
+    programme = _programme(store, tmp_path, "p1", "a")
+    workspace = store.create_workspace(
+        project_id="p1", username="owner", name="Analysis",
+        programme_ids=[programme["file_id"]], settings={},
+    )
+    before = workspace["source_revision"]
+    updated = store.update_workspace_state(
+        project_id="p1", workspace_id=workspace["workspace_id"], expected_version=1,
+        patch={"contract_completion_milestone": "MS1000"},
+    )
+    assert updated["version"] == 2
+    assert updated["state"]["contract_completion_milestone"] == "MS1000"
+    assert store.get_workspace("p1", workspace["workspace_id"])["source_revision"] == before
+    with pytest.raises(ValueError, match="version_conflict"):
+        store.update_workspace_state(
+            project_id="p1", workspace_id=workspace["workspace_id"],
+            expected_version=1, patch={"missing_inputs": ["logic narrative"]},
+        )
+    run = store.enqueue_run(
+        project_id="p1", workspace_id=workspace["workspace_id"], username="owner",
+        module_slug="dcma", parameters={},
+    )
+    assert run["parameters"]["_state_version"] == 2
+
+
+def test_selected_source_snapshot_survives_original_deletion(tmp_path: Path, monkeypatch):
+    import backend.services.forensic_toolkit.sources as source_module
+
+    monkeypatch.setattr(source_module, "STORAGE_DIR", tmp_path / "storage")
+    store = ForensicStore(tmp_path / "forensic.db")
+    programme = _programme(store, tmp_path, "p1", "a")
+    workspace = store.create_workspace(
+        project_id="p1", username="owner", name="Analysis",
+        programme_ids=[programme["file_id"]], settings={},
+    )
+    service = ForensicSourceService(store)
+    resolved = service.resolve_selection(
+        project_id="p1", workspace_id=workspace["workspace_id"],
+        selections=[{"source_id": programme["file_id"], "selected_scope": {}}],
+    )
+    selected = store.replace_workspace_sources(
+        project_id="p1", workspace_id=workspace["workspace_id"],
+        expected_version=1, sources=resolved,
+    )
+    assert selected["version"] == 2
+    (tmp_path / "a.xer").unlink()
+    pinned = store.resolve_workspace_programmes("p1", workspace["workspace_id"])
+    assert Path(pinned[0]["file_path"]).is_file()
+    assert pinned[0]["sha256"] == resolved[0]["content_hash"]
+
+
+def test_evidence_documents_keep_spreadsheet_row_anchors(tmp_path: Path):
+    store = ForensicStore(tmp_path / "forensic.db")
+    programme = _programme(store, tmp_path, "p1", "a")
+    workspace = store.create_workspace(
+        project_id="p1", username="owner", name="Analysis",
+        programme_ids=[programme["file_id"]], settings={},
+    )
+    csv_path = tmp_path / "events.csv"
+    csv_path.write_text("Date,Event\n2026-01-01,Access granted\n2026-01-02,Work starts\n")
+    selected = [
+        {"source_id": programme["file_id"], "source_kind": "programme",
+         "file_name": "a.xer", "extension": ".xer", "size_bytes": 10,
+         "content_hash": "a" * 64, "status": "ready", "capabilities": [],
+         "selected_scope": {}, "snapshot_path": str(tmp_path / "a.xer")},
+        {"source_id": "doc-events", "source_kind": "data",
+         "file_name": "events.csv", "extension": ".csv",
+         "size_bytes": csv_path.stat().st_size, "content_hash": "b" * 64,
+         "status": "ready", "capabilities": ["table_rows"],
+         "selected_scope": {"row_from": 2, "row_to": 3},
+         "snapshot_path": str(csv_path)},
+    ]
+    store.replace_workspace_sources(
+        project_id="p1", workspace_id=workspace["workspace_id"],
+        expected_version=1, sources=selected,
+    )
+    documents = ForensicSourceService(store).evidence_documents(
+        project_id="p1", workspace_id=workspace["workspace_id"],
+        source_ids=["doc-events"],
+    )
+    assert documents[0][0] == "events.csv"
+    assert "<!-- row:2 --> 2026-01-01 | Access granted" in documents[0][1]
+    assert "<!-- row:1 -->" not in documents[0][1]

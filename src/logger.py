@@ -17,6 +17,8 @@ REDACTION_PATTERNS = [
     # Credit card numbers (13-19 digits, possibly with spaces/dashes)
     (r'\b(?:\d{4}[-\s]?){3,4}\d{1,4}\b', '[CARD_REDACTED]'),
     # API keys (common patterns)
+    (r'\bAQ\.[A-Za-z0-9_-]{20,}\b', '[GOOGLE_API_KEY_REDACTED]'),
+    (r'\bAIza[A-Za-z0-9_-]{20,}\b', '[GOOGLE_API_KEY_REDACTED]'),
     (r'\b[A-Za-z0-9_-]{32,}\b', lambda m: m.group()[:8] + '...' if len(m.group()) > 40 else m.group()),
     # Email addresses (partial redaction)
     (r'\b([A-Za-z0-9._%+-]+)@([A-Za-z0-9.-]+\.[A-Z|a-z]{2,})\b', r'\1[at]\2'),

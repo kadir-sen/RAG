@@ -25,7 +25,8 @@ class CreateUserRequest(BaseModel):
     initial_credits: float = Field(default=1000, ge=0)
     markup_percent: float = Field(default=30, ge=0, le=1000)
     storage_limit_bytes: int = Field(default=30_000_000_000, ge=0)
-    model_policy: str = "demo-gemini-3.6-v1"
+    model_policy: str = "demo-tiered-quality-v2"
+    provider_key_ref: str = Field(default="", max_length=64)
 
 
 class UpdateUserRequest(BaseModel):
@@ -35,9 +36,11 @@ class UpdateUserRequest(BaseModel):
     features: Optional[Dict[str, bool]] = None
     is_active: Optional[bool] = None
     password: Optional[str] = None
+    plan_type: Optional[Literal["demo", "legacy"]] = None
     markup_percent: Optional[float] = Field(default=None, ge=0, le=1000)
     storage_limit_bytes: Optional[int] = Field(default=None, ge=0)
     model_policy: Optional[str] = None
+    provider_key_ref: Optional[str] = Field(default=None, max_length=64)
 
 
 def _enriched(store: UserStore, record: Dict[str, Any]) -> Dict[str, Any]:
@@ -81,6 +84,7 @@ async def create_user(
             markup_percent=req.markup_percent,
             storage_limit_bytes=0 if req.role == "admin" else req.storage_limit_bytes,
             model_policy="" if req.role == "admin" else req.model_policy,
+            provider_key_ref="" if req.role == "admin" else req.provider_key_ref,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -118,7 +122,10 @@ async def update_user(
     store: UserStore = Depends(get_user_store),
 ):
     raw = {k: v for k, v in req.model_dump().items() if v is not None}
-    billing_keys = {"markup_percent", "storage_limit_bytes", "model_policy"}
+    billing_keys = {
+        "plan_type", "markup_percent", "storage_limit_bytes", "model_policy",
+        "provider_key_ref",
+    }
     payload = {k: v for k, v in raw.items() if k not in billing_keys}
     try:
         record = store.update_user(username, **payload)

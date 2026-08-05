@@ -44,6 +44,8 @@ llama-index-vector-stores-qdrant>=0.3.0
 # Data Analysis (SQL-based - safe execution)
 duckdb>=0.9.0
 pandas>=2.0.0
+altair>=6.2,<7
+vl-convert-python>=1.9,<2
 
 # UI (legacy)
 streamlit>=1.44.0

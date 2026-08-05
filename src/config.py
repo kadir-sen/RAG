@@ -16,10 +16,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Model settings
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-# Cheap tier for low-value reasoning (classification, scope detection, table
-# selection, small-result summaries, answer-verification). Half the flash price
-# (see LLM_PRICING). High-value steps (SQL generation, synthesis) stay on GEMINI_MODEL.
-GEMINI_MODEL_LITE = os.getenv("GEMINI_MODEL_LITE", "gemini-3.5-flash-lite")
+# Upload-only cheap tier for metadata, clustering and selective OCR fallback.
+# Query routing, planning, reranking, SQL and synthesis stay on GEMINI_MODEL.
+GEMINI_MODEL_LITE = os.getenv("GEMINI_MODEL_LITE", "gemini-2.5-flash-lite")
+GEMINI_INGESTION_MODEL = os.getenv(
+    "GEMINI_INGESTION_MODEL", "gemini-2.5-flash-lite",
+)
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-sol")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")  # claude-sonnet-4-20250514 or claude-3-5-sonnet-20241022
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
@@ -73,8 +75,9 @@ THINKING_BUDGET_ROUTING = int(os.getenv("THINKING_BUDGET_ROUTING", "0"))
 # Dense vector + lexical (DuckDB FTS/BM25) candidates fused via Reciprocal Rank
 # Fusion, with a document-keyword boost, then an optional LLM rerank. All
 # toggleable; when OFF the original pure-dense path runs unchanged.
-# Route mechanical/structural LLM steps (decompose, rerank — classification is
-# already lite) to GEMINI_MODEL_LITE: same model family, ~3-5x cheaper + faster.
+# Legacy accounts may still route mechanical calls to GEMINI_MODEL_LITE. Demo
+# query policy overrides every Chatbot/Chronology step to Gemini 3.6 Flash; the
+# 2.5 Flash-Lite tier is reserved for explicitly tagged upload processing.
 ENABLE_LITE_TIER = os.getenv("ENABLE_LITE_TIER", "true").lower() in ("1", "true", "yes")
 # Run the independent doc-side and data-side legs of a hybrid query concurrently.
 ENABLE_PARALLEL_RETRIEVAL = os.getenv("ENABLE_PARALLEL_RETRIEVAL", "true").lower() in ("1", "true", "yes")
@@ -177,11 +180,11 @@ Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 # ── Cost Estimation (USD per 1M tokens) ─────────────────────
 LLM_PRICING = {
-    # Google Developer API standard paid tier, checked 2026-08-01.
+    # Google Developer API standard paid tier, checked 2026-08-05.
     "gemini-3.6-flash": {"input": 1.50, "cached_input": 0.15, "output": 7.50},
     "gemini-3.5-flash-lite": {"input": 0.30, "cached_input": 0.03, "output": 2.50},
-    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
-    "gemini-2.5-flash-lite": {"input": 0.075, "output": 0.30},
+    "gemini-2.5-flash": {"input": 0.30, "cached_input": 0.03, "output": 2.50},
+    "gemini-2.5-flash-lite": {"input": 0.10, "cached_input": 0.01, "output": 0.40},
     "gemini-flash-latest": {"input": 0.075, "output": 0.30},
     "gemini-2.0-flash": {"input": 0.075, "output": 0.30},
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},

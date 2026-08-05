@@ -147,6 +147,7 @@ class UserStore:
         markup_percent: float = 30,
         storage_limit_bytes: int = 0,
         model_policy: str = "",
+        provider_key_ref: str = "",
     ) -> Dict[str, Any]:
         if role not in ("user", "admin"):
             raise ValueError(f"invalid role: {role!r}")
@@ -190,6 +191,7 @@ class UserStore:
             markup_bps=round(float(markup_percent) * 100),
             storage_limit_bytes=storage_limit_bytes,
             model_policy=model_policy,
+            provider_key_ref=provider_key_ref,
         )
         return self.get_user(username)
 

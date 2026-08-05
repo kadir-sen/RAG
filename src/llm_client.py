@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from .config import (
-    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE,
+    GEMINI_MODEL, GEMINI_MODEL_LITE, GEMINI_INGESTION_MODEL,
     OPENAI_API_KEY, OPENAI_MODEL,
     ANTHROPIC_API_KEY, ANTHROPIC_MODEL,
     LLM_PRICING, CACHE_DIR, CACHE_TTL_SECONDS, REDIS_URL,
@@ -25,6 +25,7 @@ from .types import LLMUsage, LLMResponse, DualLLMResponse
 from .logger import logger
 from .usage_tracker import enforce_budget, record_usage
 from .model_profiles import clamp_output_tokens, get_task_profile
+from .provider_credentials import get_google_api_key, google_credential_scope
 
 
 # Native google-genai SDK is required for Gemini extended thinking (the legacy
@@ -66,6 +67,11 @@ chronology_call_count_var: ContextVar[int] = ContextVar(
 chronology_budget_active_var: ContextVar[bool] = ContextVar(
     "chronology_budget_active", default=False,
 )
+
+
+def _google_api_key() -> str:
+    """Resolve the active user's server-side key without exposing it to callers."""
+    return get_google_api_key()
 
 
 def begin_chronology_call_budget(limit: int = 40) -> None:
@@ -385,20 +391,30 @@ def _gemini_generate_native(
     response_schema: Optional[Dict[str, Any]] = None,
     timeout_seconds: int = 120,
 ):
-    """Native Gemini 3 call with authoritative usage metadata."""
+    """Native Gemini call with authoritative usage metadata.
+
+    Gemini 3 uses thinking levels.  The upload-only Gemini 2.5 Flash-Lite
+    policy disables thinking with a zero budget so metadata/OCR work does not
+    accidentally spend output-priced reasoning tokens.
+    """
     from google import genai
     from google.genai import types
 
     try:
         client = genai.Client(
-            api_key=GOOGLE_API_KEY,
+            api_key=_google_api_key(),
             http_options=types.HttpOptions(timeout=max(1, timeout_seconds) * 1000),
         )
     except (AttributeError, TypeError):
-        client = genai.Client(api_key=GOOGLE_API_KEY)
+        client = genai.Client(api_key=_google_api_key())
+    thinking_config = (
+        types.ThinkingConfig(thinking_budget=0)
+        if model.removeprefix("models/").startswith("gemini-2.5-")
+        else types.ThinkingConfig(thinking_level=thinking_level)
+    )
     config_kwargs: Dict[str, Any] = {
         "max_output_tokens": max_tokens,
-        "thinking_config": types.ThinkingConfig(thinking_level=thinking_level),
+        "thinking_config": thinking_config,
     }
     if system:
         config_kwargs["system_instruction"] = system
@@ -436,10 +452,8 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
         max_tokens: Max output tokens
         thinking: Extended-thinking token budget (Claude only here; the Gemini
             thinking path bypasses create_llm via _gemini_generate_thinking).
-        model: Optional model override. When empty, the provider default is used.
-            This is how the cheap tier (GEMINI_MODEL_LITE) is selected per call —
-            previously the gemini branch hardcoded GEMINI_MODEL and ignored any
-            override, so model tiering silently never took effect.
+        model: Optional model override. Central policy in generate_text resolves
+            the final model before this factory is called.
 
     Returns:
         Tuple of (llm_instance, model_name)
@@ -469,7 +483,7 @@ def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,
         model = model or GEMINI_MODEL
 
         def _mk(m: str):
-            kwargs = {"api_key": GOOGLE_API_KEY, "model": m,
+            kwargs = {"api_key": _google_api_key(), "model": m,
                       "max_tokens": max_tokens}
             # Gemini 3.5/3.6 removed sampling parameters. Passing a legacy
             # temperature causes a request-level validation error on the GA IDs.
@@ -528,11 +542,13 @@ def estimate_tokens(text: str) -> int:
 def count_input_tokens(model: str, text: str) -> int:
     """Use Gemini count_tokens when available, with a deterministic fallback."""
     estimate = estimate_tokens(text)
-    if not GOOGLE_API_KEY or not model.startswith(("gemini-3.", "models/gemini-3.")):
+    if not model.startswith((
+        "gemini-2.5-", "models/gemini-2.5-", "gemini-3.", "models/gemini-3.",
+    )):
         return estimate
     try:
         from google import genai
-        client = genai.Client(api_key=GOOGLE_API_KEY)
+        client = genai.Client(api_key=_google_api_key())
         result = client.models.count_tokens(model=model, contents=text)
         return int(getattr(result, "total_tokens", 0) or estimate)
     except Exception as exc:
@@ -562,9 +578,25 @@ def _demo_thinking_level(task_type: str, requested_model: str) -> str:
     return "medium"
 
 
+_INGESTION_TASKS = {
+    "ocr", "metadata", "ingestion_metadata", "ingestion_notice_metadata",
+    "ingestion_cluster_label", "ingestion_classification",
+}
+
+
+def _is_ingestion_task(task_type: str) -> bool:
+    task = (task_type or "").strip().lower()
+    return task.startswith("ingestion_") or task in _INGESTION_TASKS
+
+
+def _model_for_task(task_type: str) -> str:
+    """Keep user research on 3.6; reserve the cheap model for file ingestion."""
+    return GEMINI_INGESTION_MODEL if _is_ingestion_task(task_type) else "gemini-3.6-flash"
+
+
 def effective_providers(providers: List[str]) -> List[str]:
-    """Demo accounts are single-provider even if a legacy compare path is called."""
-    return ["gemini"] if _current_model_policy() == "demo-gemini-3.6-v1" else list(providers)
+    """Production quality policy is Gemini-only; never fan out duplicate calls."""
+    return ["gemini"]
 
 
 # ── Core API ─────────────────────────────────────────────────
@@ -622,11 +654,15 @@ def generate_text(
             system = f"{system}\n\n{prepared.context}".strip()
     except Exception:
         pass
-    policy = _current_model_policy()
-    if policy == "demo-gemini-3.6-v1":
-        provider = "gemini"
-        model = "gemini-3.6-flash"
-        thinking_level = thinking_level or _demo_thinking_level(task_type, requested_model)
+    # System-wide model boundary: every interactive/research call uses the
+    # quality model. Only explicitly tagged upload processing may use the cheap
+    # tier. This also closes legacy OpenAI/Claude and Lite fallback paths.
+    provider = "gemini"
+    model = _model_for_task(task_type)
+    thinking_level = thinking_level or (
+        "minimal" if _is_ingestion_task(task_type)
+        else _demo_thinking_level(task_type, requested_model)
+    )
 
     # Resolve model from provider if not explicitly set
     if not model:
@@ -651,7 +687,9 @@ def generate_text(
     # Gemini thinking needs the native google-genai SDK; degrade gracefully if absent.
     use_native_gemini = (
         provider == "gemini" and _GENAI_AVAILABLE
-        and model.startswith(("gemini-3.", "models/gemini-3."))
+        and model.startswith((
+            "gemini-2.5-", "models/gemini-2.5-", "gemini-3.", "models/gemini-3.",
+        ))
     )
     use_gemini_thinking = (provider == "gemini" and thinking > 0 and _GENAI_AVAILABLE)
     if provider == "gemini" and thinking > 0 and not _GENAI_AVAILABLE:
@@ -670,6 +708,9 @@ def generate_text(
         "max_tokens": max_tokens, "prompt_version": prompt_version,
         "system": system, "prompt": prompt, "schema": response_schema,
         "context": cache_context,
+        # Do not share cached provider responses across a dedicated-key user
+        # and the global account. This contains only an alias, never the key.
+        "credential_scope": google_credential_scope(),
     }, ensure_ascii=False, sort_keys=True, default=str)
     cache_key = f"{namespace}:v2:" + hashlib.sha256(key_data.encode()).hexdigest()
 
@@ -726,12 +767,10 @@ def generate_text(
             f"input_budget_exceeded:{task_type}:{exact_input}>{profile.max_input_tokens}"
         )
 
-    # ── Soft per-query budget (degrade, never block) ──
+    # ── Soft per-query budget (reduce thinking, never downgrade/block) ──
     # Cache hits above are always free and already returned. For a real call,
     # if this query has already burned MAX_LLM_CALLS_PER_QUERY non-cache calls,
-    # force the cheap tier + no thinking instead of dropping the answer. This
-    # bleeds cost out of runaway/pathological queries without losing correctness
-    # on normal multi-step ones (the default budget is generous).
+    # reduce thinking without switching away from the task's selected model.
     try:
         from .telemetry import get_current_trace
         _tr = get_current_trace()
@@ -740,22 +779,19 @@ def generate_text(
             if (not chronology_budget_active_var.get()
                     and _real_calls >= MAX_LLM_CALLS_PER_QUERY and provider == "gemini"
                     and task_type != "report_structured"):
-                if model != GEMINI_MODEL_LITE or thinking:
+                if thinking_level != "minimal" or thinking:
                     logger.warning(
                         f"[LLMClient] soft budget hit ({_real_calls} calls) — "
-                        f"degrading to {GEMINI_MODEL_LITE}, thinking=0"
+                        f"keeping {model} and reducing thinking to minimal"
                     )
                     if "budget_soft_cap" not in _tr.errors:
                         _tr.record_error("budget_soft_cap")
-                # Demo accounts keep the quality model and only lower thinking;
-                # legacy accounts retain the historical lite-tier behaviour.
-                if policy == "demo-gemini-3.6-v1":
-                    model = "gemini-3.6-flash"
-                    thinking_level = "minimal"
-                else:
-                    model = GEMINI_MODEL_LITE
-                    thinking = 0
-                    use_native_gemini = False
+                # Never downgrade a user query to a weaker model. Reduce only
+                # thinking after the soft call budget; ingestion remains on its
+                # explicitly selected cheap model.
+                model = _model_for_task(task_type)
+                thinking_level = "minimal"
+                thinking = 0
                 use_gemini_thinking = False
                 use_claude_thinking = False
     except Exception:
@@ -1071,17 +1107,21 @@ def generate_multimodal_text(
     from google import genai
     from google.genai import types
 
-    model = "gemini-3.6-flash" if _current_model_policy() == "demo-gemini-3.6-v1" else GEMINI_MODEL
+    model = _model_for_task(task_type)
     if model not in LLM_PRICING:
         raise ValueError(f"No pricing configured for model: {model}")
     started = time.time()
-    client = genai.Client(api_key=GOOGLE_API_KEY)
+    client = genai.Client(api_key=_google_api_key())
     response = client.models.generate_content(
         model=model,
         contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
         config=types.GenerateContentConfig(
             max_output_tokens=max_tokens,
-            thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+            thinking_config=(
+                types.ThinkingConfig(thinking_budget=0)
+                if model.removeprefix("models/").startswith("gemini-2.5-")
+                else types.ThinkingConfig(thinking_level="minimal")
+            ),
         ),
     )
     meta = getattr(response, "usage_metadata", None)

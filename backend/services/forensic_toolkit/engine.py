@@ -19,6 +19,8 @@ from typing import Any, Callable, Dict, Iterable, List
 from openpyxl import Workbook
 
 from src.config import BASE_DIR
+from src.forensic_store import UPSTREAM_SHA
+from .presentation import build_module_view
 
 
 VENDOR_ROOT = Path(BASE_DIR) / "vendor" / "delay-analysis-toolkit"
@@ -311,106 +313,97 @@ _RUNNERS: Dict[str, Callable] = {
 }
 
 
-def _flatten_tables(value: Any, prefix: str = "result") -> List[Dict[str, Any]]:
-    """Find renderable list-of-record collections without inventing semantics."""
-    tables: List[Dict[str, Any]] = []
-    if isinstance(value, dict):
-        for key, child in value.items():
-            name = f"{prefix}.{key}" if prefix else key
-            if isinstance(child, list) and child and all(isinstance(row, dict) for row in child):
-                tables.append({"name": name, "rows": child})
-            elif isinstance(child, dict):
-                tables.extend(_flatten_tables(child, name))
-    return tables
-
-
-def _metrics(value: Dict[str, Any]) -> List[Dict[str, Any]]:
-    rows = []
-    for key, item in value.items():
-        if isinstance(item, (str, int, float, bool)) or item is None:
-            if key not in {"programme_label", "label", "programme"}:
-                rows.append({"label": key.replace("_", " ").title(), "value": item})
-    return rows[:12]
-
-
-def _xlsx(title: str, tables: List[Dict[str, Any]], metrics: List[Dict[str, Any]]) -> bytes:
+def _report_manifest_xlsx(title: str, full: Dict[str, Any]) -> bytes:
     wb = Workbook()
     sheet = wb.active
-    sheet.title = "Summary"
+    sheet.title = "Report Manifest"
     sheet.append([title])
     sheet.append([])
-    sheet.append(["Metric", "Value"])
-    for metric in metrics:
-        sheet.append([metric["label"], str(metric["value"]) if metric["value"] is not None else ""])
-    for index, table in enumerate(tables[:12], 1):
-        ws = wb.create_sheet(title=(table["name"].split(".")[-1] or f"Table {index}")[:31])
-        rows = table["rows"]
-        headers = list(dict.fromkeys(key for row in rows for key in row.keys()))
-        ws.append(headers)
-        for row in rows:
-            ws.append([json.dumps(row.get(key), ensure_ascii=False) if isinstance(row.get(key), (dict, list))
-                       else row.get(key) for key in headers])
+    sheet.append(["Included run ID"])
+    for run_id in full.get("included_run_ids") or []:
+        sheet.append([run_id])
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
 
 
-def _vega_spec(tables: List[Dict[str, Any]]) -> Dict[str, Any] | None:
-    """Create a conservative Vega-Lite view from a native engine table."""
-    for table in tables:
-        rows = table["rows"][:250]
-        if len(rows) < 2:
-            continue
-        keys = list(rows[0])
-        numeric = next((key for key in keys if any(
-            isinstance(row.get(key), (int, float)) and not isinstance(row.get(key), bool)
-            for row in rows
-        )), None)
-        temporal = next((key for key in keys if key.casefold() in {
-            "date", "data_date", "month_end", "finish", "early_finish", "act_finish",
-        }), None)
-        category = temporal or next((key for key in keys if any(
-            isinstance(row.get(key), str) and row.get(key) for row in rows
-        )), None)
-        if not numeric or not category or numeric == category:
-            continue
-        return {
-            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "description": table["name"], "width": "container", "height": 300,
-            "data": {"values": rows},
-            "mark": {"type": "line" if temporal else "bar", "tooltip": True,
-                     "point": bool(temporal)},
-            "encoding": {
-                "x": {"field": category, "type": "temporal" if temporal else "nominal",
-                      "sort": None, "title": category.replace("_", " ").title()},
-                "y": {"field": numeric, "type": "quantitative",
-                      "title": numeric.replace("_", " ").title()},
-            },
-            "config": {"background": "transparent", "view": {"stroke": "#d8d4ca"}},
-        }
-    return None
+def _report_docx(title: str, prior_runs: List[Dict[str, Any]], programmes,
+                 inventory, parameters: Dict[str, Any]) -> bytes:
+    """Render with the canonical upstream Report Assembler.
 
+    It consumes the actual immutable runs and analyst workspace decisions;
+    module calculations are never recomputed with default parameters here.
+    """
+    from programme import BasisOfAnalysis, ReportSection, SourceFile, build_assembled_report
 
-def _report_docx(title: str, prior_runs: List[Dict[str, Any]]) -> bytes:
-    from docx import Document
-    doc = Document()
-    doc.add_heading(title, 0)
-    doc.add_paragraph("Native COAir Forensic Programme Analysis")
-    for run in prior_runs:
+    workspace_state = parameters.get("_workspace_state") or {}
+    report_state = workspace_state.get("report") or {}
+    selected = set(report_state.get("selected_sections") or [])
+    narratives = workspace_state.get("narratives") or {}
+    sections = []
+    for run in reversed(prior_runs):
+        slug = str(run.get("module_slug") or "")
+        if slug == "report-assembler" or (selected and slug not in selected):
+            continue
         result = run.get("result") or {}
-        doc.add_heading(MODULE_DEFINITIONS.get(run.get("module_slug"), {}).get(
-            "title", run.get("module_slug", "Analysis")), level=1)
-        doc.add_paragraph(
-            f"Run {run.get('run_id')} · source revision {run.get('source_revision', '')[:12]} · "
-            f"upstream {run.get('upstream_sha', '')[:7]}"
-        )
-        for metric in result.get("metrics", [])[:12]:
-            doc.add_paragraph(f"{metric.get('label')}: {metric.get('value')}", style="List Bullet")
-        for warning in result.get("warnings", [])[:10]:
-            doc.add_paragraph(str(warning), style="Intense Quote")
-    output = io.BytesIO()
-    doc.save(output)
-    return output.getvalue()
+        narrative_record = narratives.get(slug) or {}
+        narrative = (narrative_record.get("text") if isinstance(narrative_record, dict)
+                     else str(narrative_record or "")) or result.get("narrative")
+        findings = [f"{metric.get('label')}: {metric.get('value')}"
+                    for metric in result.get("metrics", [])
+                    if metric.get("value") is not None]
+        images = []
+        if report_state.get("include_charts", True) and result.get("chart"):
+            try:
+                import vl_convert as vlc
+                images.append((
+                    vlc.vegalite_to_png(json.dumps(result["chart"]), scale=2),
+                    f"{MODULE_DEFINITIONS.get(slug, {}).get('title', slug)} chart",
+                ))
+            except Exception:
+                # Chart rendering is supplementary; deterministic tables and
+                # caveats must remain exportable if rasterisation fails.
+                pass
+        sections.append(ReportSection(
+            title=MODULE_DEFINITIONS.get(slug, {}).get("title", slug),
+            narrative_md=narrative or None,
+            key_findings=findings,
+            caveats=[str(item) for item in (
+                list(result.get("warnings") or []) + list(result.get("caveats") or [])
+            )], images=images,
+        ))
+
+    hashes = {item["name"]: item.get("sha256", "not recorded") for item in programmes}
+    files = []
+    for revision in inventory.revisions:
+        files.append(SourceFile(
+            file_name=revision.file_name,
+            sha256=hashes.get(revision.file_name, "not recorded"),
+            data_date=revision.data_date,
+            role=("Baseline" if revision.is_baseline else
+                  "Current" if revision.is_current else "Update"),
+            activity_count=revision.activity_count,
+        ))
+    settings = [
+        f"COAir source revision — {parameters.get('_source_revision', 'not recorded')}",
+        f"Delay Analysis Toolkit upstream commit — {UPSTREAM_SHA}",
+        f"Workspace state version — {parameters.get('_state_version', 'not recorded')}",
+    ]
+    for source in parameters.get("_workspace_sources") or []:
+        if source.get("source_kind") != "programme":
+            settings.append(
+                f"Evidence — {source.get('file_name')}: SHA-256 {source.get('content_hash')}"
+            )
+    for module, lines in sorted((workspace_state.get("analysis_basis") or {}).items()):
+        settings.extend(f"{module} — {line}" for line in lines)
+    basis = BasisOfAnalysis(files=files, settings=settings)
+    return build_assembled_report(
+        report_state.get("title") or title,
+        report_state.get("project") or "",
+        report_state.get("prepared_by") or "",
+        sections,
+        basis,
+    )
 
 
 def _upstream_xlsx(module_slug: str, raw: Any, ordered, inventory,
@@ -486,16 +479,63 @@ def run_module(module_slug: str, programmes: List[Dict[str, Any]],
     engine_parameters = dict(parameters)
     engine_parameters["_source_paths"] = [programme["file_path"] for programme in programmes]
     if module_slug == "report-assembler":
-        document = _report_docx(parameters.get("report_title") or "Forensic Programme Analysis",
-                                prior_runs or [])
+        document = _report_docx(
+            parameters.get("report_title") or "Forensic Programme Analysis",
+            prior_runs or [], programmes, inventory, parameters,
+        )
         raw_result: Any = {"sections": len(prior_runs or []),
-                           "included_run_ids": [r["run_id"] for r in prior_runs or []]}
+                           "included_run_ids": [r["run_id"] for r in prior_runs or []],
+                           "included_runs": [{"run_id": r["run_id"],
+                                              "module": r["module_slug"],
+                                              "source_revision": r["source_revision"]}
+                                             for r in prior_runs or []]}
         special_artifacts = [{"kind": "word", "name": "forensic-programme-analysis.docx",
                               "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                               "content": document}]
     else:
         raw_result = _RUNNERS[module_slug](ordered, inventory, engine_parameters)
         special_artifacts = []
+        if (module_slug == "out-of-sequence" and parameters.get("build_repaired_xer")
+                and raw_result.get("repair_plan")):
+            from programme import apply_asbuilt_repairs
+            selected_name, selected_data = _select(
+                ordered, int(parameters.get("programme_index", -1)),
+            )
+            allowed = set(parameters.get("repair_activity_pairs") or [])
+            for repair in raw_result["repair_plan"]:
+                pair = f"{repair.pred_code}->{repair.succ_code}"
+                repair.apply = bool(not allowed or pair in allowed) and not repair.blocked
+            source = next(item for item in programmes if item["name"] == selected_name)
+            repaired, repair_report = apply_asbuilt_repairs(
+                Path(source["file_path"]).read_bytes(), selected_data,
+                raw_result["repair_plan"],
+            )
+            raw_result["repair_report"] = repair_report
+            if repair_report.qa_passed:
+                special_artifacts.append({
+                    "kind": "xer", "name": Path(selected_name).stem + "_asbuilt_repair.xer",
+                    "mime_type": "application/octet-stream",
+                    "content": repaired.encode("latin-1", "replace"),
+                })
+        if module_slug == "time-impact-analysis":
+            from programme import build_impacted_xer
+            selected_name, selected_data = _select(
+                ordered, int(parameters.get("programme_index", -1)),
+            )
+            records = _events(engine_parameters)
+            if records:
+                _event, fragnet = records[0]
+                source = next(item for item in programmes if item["name"] == selected_name)
+                impacted = build_impacted_xer(
+                    Path(source["file_path"]).read_bytes().decode("utf-8", errors="replace"),
+                    selected_data, fragnet, raw_result,
+                )
+                special_artifacts.append({
+                    "kind": "xer",
+                    "name": f"impacted_{_event.event_id}_{Path(selected_name).name}",
+                    "mime_type": "application/octet-stream",
+                    "content": impacted.encode("utf-8"),
+                })
         if module_slug == "as-planned-vs-as-built":
             rlpa_html = raw_result.pop("_rlpa_html")
             path_studio_html = raw_result.pop("_path_studio_html")
@@ -545,24 +585,18 @@ def run_module(module_slug: str, programmes: List[Dict[str, Any]],
     full = json_safe(raw_result)
     if not isinstance(full, dict):
         full = {"value": full}
-    tables = _flatten_tables(full)
-    metrics = _metrics(full)
-    warnings = full.get("warnings", []) if isinstance(full.get("warnings"), list) else []
-    caveats = full.get("caveats", []) if isinstance(full.get("caveats"), list) else []
-    public_tables = [{"name": table["name"], "rows": table["rows"][:500],
-                      "total_rows": len(table["rows"]),
-                      "truncated": len(table["rows"]) > 500} for table in tables[:12]]
+    metrics, public_tables, warnings, caveats, chart = build_module_view(module_slug, full)
     payload = {
         "title": definition["title"], "module": module_slug,
         "metrics": metrics, "tables": public_tables,
         "warnings": warnings[:100], "caveats": caveats[:100],
         "source_programmes": [{k: p[k] for k in ("file_id", "name", "sha256")}
                               for p in programmes],
-        "chart": _vega_spec(tables),
+        "chart": chart,
     }
     json_bytes = json.dumps(full, ensure_ascii=False, indent=2).encode("utf-8")
     if module_slug == "report-assembler":
-        spreadsheet = _xlsx(definition["title"], tables, metrics)
+        spreadsheet = _report_manifest_xlsx(definition["title"], full)
     else:
         spreadsheet = _upstream_xlsx(module_slug, raw_result, ordered, inventory, engine_parameters)
     payload["_artifacts"] = special_artifacts + [

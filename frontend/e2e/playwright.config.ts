@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '.env.e2e') });
 
 const BASE_URL =
-  process.env.BASE_URL || 'https://rag-chatbot-357290910216.europe-west1.run.app';
+  process.env.BASE_URL || 'http://127.0.0.1:4173';
 const IS_CI = !!process.env.CI;
 
 export default defineConfig({

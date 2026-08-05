@@ -4,6 +4,7 @@
 .env.*.local
 .env.production
 .env.staging
+/secrets/
 
 # SSH keys / certificates (never commit)
 *.pem
@@ -85,6 +86,9 @@ frontend/node_modules/
 
 # Frontend test artifacts
 frontend/playwright-report/
+frontend/playwright-report-projects/
+frontend/playwright-report-production/
+frontend/playwright-report-forensic/
 frontend/test-results/
 
 # Windows artifacts

@@ -11,7 +11,7 @@ dotenv.config({ path: path.resolve(__dirname, '.env.e2e') });
 
 export default async function globalTeardown() {
   const baseURL =
-    process.env.BASE_URL || 'https://rag-chatbot-357290910216.europe-west1.run.app';
+    process.env.BASE_URL || 'http://127.0.0.1:4173';
 
   const api = await request.newContext({ baseURL });
   try {

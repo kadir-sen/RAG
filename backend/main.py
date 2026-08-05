@@ -183,6 +183,19 @@ def create_app() -> FastAPI:
                      "attempted_bytes": exc.attempted},
         )
 
+    from src.provider_credentials import ProviderCredentialError
+
+    @app.exception_handler(ProviderCredentialError)
+    async def _provider_credential_handler(_req: Request, _exc: ProviderCredentialError):
+        # Do not expose filesystem paths, aliases or provider key material.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "The dedicated AI service credential is unavailable.",
+                "error": "provider_credential_unavailable",
+            },
+        )
+
     @app.get("/api/health", tags=["health"])
     async def health():
         try:

@@ -1113,6 +1113,7 @@ class NoticeExtractor:
         try:
             resp = llm_client.generate_json(
                 prompt, system=system, model=GEMINI_MODEL_LITE,
+                task_type="ingestion_notice_metadata",
             )
             refined = resp.raw if isinstance(resp.raw, dict) else {}
 

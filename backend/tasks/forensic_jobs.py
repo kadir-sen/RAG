@@ -41,17 +41,25 @@ def _worker() -> None:
             workspace = store.get_workspace(run["project_id"], run["workspace_id"])
             if not workspace:
                 raise ForensicEngineError("forensic_workspace_not_found")
-            programmes = [store.get_programme(run["project_id"], file_id, include_path=True)
-                          for file_id in workspace["programme_ids"]]
-            if any(item is None for item in programmes):
-                raise ForensicEngineError("forensic_source_missing")
+            programmes = store.resolve_workspace_programmes(
+                run["project_id"], run["workspace_id"],
+            )
             store.update_run(run["run_id"], stage="running_engine", progress=.2)
             prior_runs = [item for item in store.list_runs(
                 run["project_id"], run["workspace_id"]
             ) if item["status"] == "ready" and item["run_id"] != run["run_id"]]
+            state_record = store.get_workspace_state(
+                run["project_id"], run["workspace_id"],
+            )
+            runtime_parameters = dict(run["parameters"])
+            runtime_parameters["_workspace_state"] = (state_record or {}).get("state") or {}
+            runtime_parameters["_workspace_sources"] = store.list_workspace_sources(
+                run["project_id"], run["workspace_id"],
+            )
+            runtime_parameters["_source_revision"] = run["source_revision"]
             result = run_module(
-                run["module_slug"], [item for item in programmes if item is not None],
-                run["parameters"], prior_runs=prior_runs,
+                run["module_slug"], programmes,
+                runtime_parameters, prior_runs=prior_runs,
             )
             if bool(run["parameters"].get("_ai_narrative")):
                 store.update_run(run["run_id"], stage="ai_narrative", progress=.7)

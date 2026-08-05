@@ -27,8 +27,10 @@ jobs:
         run: |
           set -euo pipefail
           PINNED="$(python -c 'import json; print(json.load(open("vendor/delay-analysis-toolkit.upstream.json"))["commit"])')"
+          INTERFACE="$(python scripts/verify_forensic_vendor.py --print-locked-interface)"
           LATEST="$(git ls-remote https://github.com/altunozan/delay-analysis-toolkit.git refs/heads/main | cut -f1)"
           echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
+          echo "interface=$INTERFACE" >> "$GITHUB_OUTPUT"
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
           if [ "$PINNED" = "$LATEST" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
 
@@ -36,6 +38,24 @@ jobs:
         if: steps.revisions.outputs.changed == 'true'
         run: |
           git subtree pull --prefix vendor/delay-analysis-toolkit https://github.com/altunozan/delay-analysis-toolkit.git main --squash -m "vendor: sync delay-analysis-toolkit ${{ steps.revisions.outputs.latest }}"
+
+      - name: Detect upstream workflow changes
+        if: steps.revisions.outputs.changed == 'true'
+        id: interface
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT="$(python scripts/verify_forensic_vendor.py --print-interface)"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ "${{ steps.revisions.outputs.interface }}" = "$CURRENT" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Refresh vendor lock
+        if: steps.revisions.outputs.changed == 'true'
+        run: |
           python scripts/verify_forensic_vendor.py --update --commit "${{ steps.revisions.outputs.latest }}"
 
       - uses: actions/setup-python@v5
@@ -51,10 +71,12 @@ jobs:
           pip install -r requirements.txt -r vendor/delay-analysis-toolkit/requirements.txt pytest
           python scripts/verify_forensic_vendor.py
           python -m compileall -q vendor/delay-analysis-toolkit backend/services/forensic_toolkit
-          (cd vendor/delay-analysis-toolkit && pytest -q test_engine.py test_programme.py test_rlpa.py test_qa.py)
-          pytest -q tests/test_forensic_engines.py tests/test_forensic_store.py tests/test_forensic_programme_service.py tests/test_forensic_api_models.py
+          (cd vendor/delay-analysis-toolkit && python test_engine.py && python test_qa.py && pytest -q test_programme.py test_rlpa.py test_ui.py)
+          PYTHONPATH=. pytest -q tests/test_forensic_engines.py tests/test_forensic_store.py tests/test_forensic_programme_service.py tests/test_forensic_api_models.py tests/test_forensic_actions.py
+          (cd frontend && npm ci && npm run build && npx playwright install --with-deps chromium && npm run e2e:forensic)
 
       - uses: peter-evans/create-pull-request@v7
+        id: pull-request
         if: steps.revisions.outputs.changed == 'true'
         with:
           branch: automation/forensic-toolkit-sync
@@ -66,7 +88,17 @@ jobs:
 
             - Previous SHA: `${{ steps.revisions.outputs.pinned }}`
             - New SHA: `${{ steps.revisions.outputs.latest }}`
+            - Upstream workflow changed: `${{ steps.interface.outputs.changed }}`
             - Vendor integrity, upstream engine tests and COAir adapter parity tests passed.
 
             Streamlit UI changes are not copied into COAir automatically. Review engine and adapter behaviour before merging.
           labels: dependencies,forensic-toolkit
+
+      - name: Merge engine-only compatible update
+        if: >-
+          steps.revisions.outputs.changed == 'true' &&
+          steps.interface.outputs.changed == 'false' &&
+          steps.pull-request.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr merge "${{ steps.pull-request.outputs.pull-request-number }}" --squash --delete-branch

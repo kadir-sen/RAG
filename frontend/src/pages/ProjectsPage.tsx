@@ -9,6 +9,7 @@ import QueryHistory from '../components/projects/QueryHistory';
 import { useAuthStore } from '../stores/authStore';
 import ModuleTile from '../components/modules/ModuleTile';
 import { ChatbotMark, ChronologyMark, ReportsMark } from '../components/modules/ModuleMarks';
+import { isAxiosError } from 'axios';
 
 const PAGE_SIZE = 50;
 
@@ -137,8 +138,15 @@ export default function ProjectsPage() {
       setJobs(await getIndexingStatus());
       await queryClient.invalidateQueries({ queryKey: ['files', selectedProjectId] });
       await queryClient.invalidateQueries({ queryKey: ['library', selectedProjectId] });
-    } catch {
-      setActionError('One or more files could not be uploaded. Completed uploads remain queued.');
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 413
+          && error.response.data?.error === 'storage_quota_exceeded') {
+        const used = Number(error.response.data.storage_used_bytes ?? user?.storage_used_bytes ?? 0);
+        const limit = Number(error.response.data.storage_limit_bytes ?? user?.storage_limit_bytes ?? 30_000_000_000);
+        setActionError(`The upload exceeds your source-file allowance: ${storage(used)} used of ${storage(limit)}. Delete an existing source file or contact an administrator.`);
+      } else {
+        setActionError('One or more files could not be uploaded. Completed uploads remain queued.');
+      }
     } finally {
       await refreshMe();
       setUploading(false);
@@ -206,8 +214,8 @@ export default function ProjectsPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-10">
-        <header className="mb-7 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+      <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-3 md:py-10">
+        <header className="mb-4 flex flex-col gap-4 md:mb-7 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">Project management</p>
             <h1 className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">Projects and source records</h1>
@@ -217,9 +225,33 @@ export default function ProjectsPage() {
 
         {actionError && <div role="alert" className="mb-5 border border-[var(--danger)] bg-[var(--bg-primary)] px-4 py-3 text-[11px] text-[var(--danger)]">{actionError}</div>}
 
-        <div className="grid xl:grid-cols-[300px_minmax(0,1fr)] gap-6">
-          <aside className="space-y-5">
-            <section className="border border-[var(--border)] bg-[var(--wash)] p-4">
+        <div className="grid xl:grid-cols-[300px_minmax(0,1fr)] gap-5 md:gap-6">
+          <aside className="space-y-4 md:grid md:grid-cols-2 md:gap-5 md:space-y-0 xl:block xl:space-y-5">
+            <section className="border border-[var(--border)] bg-[var(--wash)] p-4 md:hidden" aria-labelledby="mobile-project-controls">
+              <h2 id="mobile-project-controls" className="font-mono text-[10px] uppercase tracking-[.16em] text-[var(--text-muted)]">Project controls</h2>
+              <label htmlFor="mobile-project-select" className="mt-3 block font-mono text-[9px] uppercase tracking-[.12em] text-[var(--text-secondary)]">Active project</label>
+              <select
+                id="mobile-project-select"
+                value={selectedProjectId ?? ''}
+                onChange={(event) => select(event.target.value || null)}
+                className="mt-1 min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-base text-[var(--text-primary)]"
+              >
+                <option value="">Select a project</option>
+                {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}</option>)}
+              </select>
+              <details className="mt-3 border-t border-[var(--border)] pt-3">
+                <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between font-mono text-[10px] uppercase tracking-[.12em] text-[var(--text-primary)]">
+                  Create new project <span aria-hidden="true">＋</span>
+                </summary>
+                <form onSubmit={addProject} className="pt-2">
+                  <label htmlFor="new-project-name-mobile" className="sr-only">Project name</label>
+                  <input id="new-project-name-mobile" value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" className="min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-base text-[var(--text-primary)]" />
+                  <button disabled={creating || !name.trim()} className="mt-2 min-h-11 w-full border border-[var(--border)] px-3 text-[11px] text-[var(--text-primary)] hover:border-[var(--ink)] disabled:opacity-40">{creating ? 'Creating…' : 'Create project'}</button>
+                </form>
+              </details>
+            </section>
+
+            <section className="hidden border border-[var(--border)] bg-[var(--wash)] p-4 md:block">
               <h2 className="font-mono text-[10px] uppercase tracking-[.16em] text-[var(--text-muted)]">Your projects</h2>
               <div className="mt-3 space-y-2">
                 {projects.map((project) => (
@@ -244,7 +276,7 @@ export default function ProjectsPage() {
             </section>
 
             {user?.plan_type === 'demo' && (
-              <section className="border border-[var(--border)] bg-[var(--wash)] p-4">
+              <section className="border border-[var(--border)] bg-[var(--wash)] p-4 md:col-span-2 xl:col-auto">
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="font-mono text-[10px] uppercase tracking-[.16em] text-[var(--text-muted)]">Account capacity</h2>
                   <span className="font-mono text-[10px] text-[var(--text-secondary)]">{user.storage_percent_used.toFixed(1)}% used</span>
@@ -253,16 +285,17 @@ export default function ProjectsPage() {
                   <div className="h-full bg-[var(--accent)]" style={{ width: `${Math.min(100, user.storage_percent_used)}%` }} />
                 </div>
                 <p className="mt-2 font-mono text-[9px] text-[var(--text-muted)]">{storage(user.storage_used_bytes)} / {storage(user.storage_limit_bytes)} source files</p>
+                <p className="mt-1 hidden text-[10px] text-[var(--text-secondary)] sm:block">30 GB is shared across all projects. OCR, vectors and generated reports do not consume this allowance.</p>
                 <p className="mt-1 font-mono text-[9px] text-[var(--text-muted)]">{user.credits_remaining.toFixed(2)} / {user.credits_total.toFixed(2)} credits remaining</p>
               </section>
             )}
 
-            <section className="border border-[var(--border)] bg-[var(--wash)] p-4">
+            <section className="hidden border border-[var(--border)] bg-[var(--wash)] p-4 md:block">
               <h2 className="font-mono text-[10px] uppercase tracking-[.16em] text-[var(--text-muted)]">New project</h2>
               <form onSubmit={addProject} className="mt-3">
                 <label htmlFor="new-project-name" className="sr-only">Project name</label>
-                <input id="new-project-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] text-sm text-[var(--text-primary)] rounded-[2px]" />
-                <button disabled={creating || !name.trim()} className="mt-3 w-full px-3 py-2 border border-[var(--border)] text-[11px] text-[var(--text-primary)] hover:border-[var(--ink)] disabled:opacity-40">{creating ? 'Creating…' : 'Create project'}</button>
+                <input id="new-project-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" className="min-h-11 w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] text-base md:text-sm text-[var(--text-primary)] rounded-[2px]" />
+                <button disabled={creating || !name.trim()} className="mt-3 min-h-11 w-full px-3 py-2 border border-[var(--border)] text-[11px] text-[var(--text-primary)] hover:border-[var(--ink)] disabled:opacity-40">{creating ? 'Creating…' : 'Create project'}</button>
               </form>
             </section>
           </aside>
@@ -275,27 +308,27 @@ export default function ProjectsPage() {
               </div>
             ) : (
               <>
-                <section className="border border-[var(--border)] bg-[var(--wash)]">
+                <section className="flex flex-col border border-[var(--border)] bg-[var(--wash)]">
                   <div className="p-4 border-b border-[var(--border)] flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
                       <p className="font-mono text-[9px] uppercase tracking-[.15em] text-[var(--text-muted)]">Selected project</p>
-                      <div className="mt-1 flex items-center gap-2">
-                        <h2 className="text-[17px] font-semibold text-[var(--text-primary)]">{current.name}</h2>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <h2 className="min-w-0 break-words text-[17px] font-semibold text-[var(--text-primary)]">{current.name}</h2>
                         <span className="border border-[var(--border)] px-1.5 py-0.5 font-mono text-[8px] uppercase text-[var(--text-muted)]">{current.stats.report_ready ? 'ready' : 'processing'}</span>
                         <span className="border border-[var(--border)] px-1.5 py-0.5 font-mono text-[8px] uppercase text-[var(--text-muted)]">vector {current.stats.vector.status}</span>
                       </div>
                       <p className="mt-1 text-[11px] text-[var(--text-muted)]">Only this record is available in Chatbot, Chronology and Forensic Reports.</p>
                     </div>
                     {canRename && (
-                      <div className="flex min-w-0 md:w-[360px] gap-2">
+                      <div className="flex min-w-0 flex-col gap-2 sm:flex-row md:w-[360px]">
                         <label htmlFor="project-name" className="sr-only">Rename project</label>
-                        <input id="project-name" value={renameValue} onChange={(event) => setRenameValue(event.target.value)} className="min-w-0 flex-1 bg-[var(--bg-primary)] border border-[var(--border)] px-3 py-2 text-[11px] text-[var(--text-primary)]" />
-                        <button type="button" disabled={!renameValue.trim() || renameValue.trim() === current.name} onClick={() => void saveName()} className="border border-[var(--border)] px-3 font-mono text-[9px] uppercase disabled:opacity-40">Save name</button>
+                        <input id="project-name" value={renameValue} onChange={(event) => setRenameValue(event.target.value)} className="min-h-11 min-w-0 flex-1 bg-[var(--bg-primary)] border border-[var(--border)] px-3 py-2 text-base md:text-[11px] text-[var(--text-primary)]" />
+                        <button type="button" disabled={!renameValue.trim() || renameValue.trim() === current.name} onClick={() => void saveName()} className="min-h-11 border border-[var(--border)] px-3 font-mono text-[9px] uppercase disabled:opacity-40">Save name</button>
                       </div>
                     )}
                   </div>
 
-                  <div className="grid sm:grid-cols-2 lg:grid-cols-8 border-b border-[var(--border)]">
+                  <div data-testid="project-metrics" className="order-3 grid grid-cols-2 border-b border-[var(--border)] md:order-2 md:grid-cols-4 lg:grid-cols-8">
                     {[
                       ['Documents', current.stats.files.document],
                       ['Mail', current.stats.files.email],
@@ -306,31 +339,31 @@ export default function ProjectsPage() {
                       ['Model tokens', current.usage.prompt_tokens + current.usage.completion_tokens],
                       ['Credits used', current.usage.credits_used.toFixed(2)],
                     ].map(([label, value]) => (
-                      <div key={label} className="p-4 border-b sm:border-b-0 sm:border-r last:border-r-0 border-[var(--border)]">
+                      <div key={label} className="min-w-0 border-b border-r border-[var(--border)] p-3 last:border-r-0 md:p-4 lg:border-b-0">
                         <p className="font-mono text-[9px] uppercase text-[var(--text-muted)]">{label}</p>
                         <p className="mt-1 text-xl font-semibold text-[var(--text-primary)]">{Number(value).toLocaleString()}</p>
                       </div>
                     ))}
                   </div>
 
-                  <div className="border-b border-[var(--border)] bg-[var(--bg-primary)] p-5 md:p-7">
+                  <div data-testid="project-modules" className="order-2 border-b border-[var(--border)] bg-[var(--bg-primary)] p-4 md:order-3 md:p-7">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                       <div><p className="font-mono text-[9px] uppercase tracking-[.16em] text-[var(--text-muted)]">Start with a module</p><h3 className="mt-1 text-lg font-semibold text-[var(--text-primary)]">Work in {current.name}</h3></div>
                       {!canOpen && <p className="font-mono text-[9px] text-[var(--amber)]">{active.length || current.stats.queued + current.stats.processing} remaining · ETA {duration(current.stats.eta_seconds)}</p>}
                     </div>
-                    <div className="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-5 md:gap-7">
+                    <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3 md:gap-7">
                       <ModuleTile index="01" name="Chatbot" role="Ask and investigate" blurb={`${current.name} · Search documents, correspondence and project data.`} mark={<ChatbotMark className="h-full w-full" />} to={canOpen ? '/chat' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
                       <ModuleTile index="02" name="Chronology" role="Build an evidence timeline" blurb={`${current.name} · Generate a sourced English chronology and Word report.`} mark={<ChronologyMark className="h-full w-full" />} to={canOpen ? '/chronology' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
                       <ModuleTile index="03" name="Forensic Reports" role="Native programme analysis" blurb={`${current.name} · Upload XER programmes and run DCMA, critical-path and delay analyses inside COAir.`} mark={<ReportsMark className="h-full w-full" />} to={canOpenForensic ? '/forensic' : undefined} status={canOpenForensic ? 'live' : 'soon'} statusLabel={canOpenForensic ? 'Ready' : 'Processing'} />
                     </div>
                   </div>
 
-                  <div className="p-3 border-b border-[var(--border)]">
-                    {canEditFiles ? <FileUploadArea onUpload={addFiles} isUploading={uploading} /> : <p className="p-3 text-[11px] text-[var(--text-muted)]">Viewer access · uploads and deletion are disabled.</p>}
+                  <div className="order-4 p-3 border-b border-[var(--border)]">
+                    {canEditFiles ? <FileUploadArea onUpload={addFiles} isUploading={uploading} storageUsedBytes={user?.storage_used_bytes} storageLimitBytes={user?.storage_limit_bytes} /> : <p className="p-3 text-[11px] text-[var(--text-muted)]">Viewer access · uploads and deletion are disabled.</p>}
                   </div>
 
                   {jobs.length > 0 && (
-                    <div className="max-h-52 overflow-y-auto border-b border-[var(--border)]">
+                    <div className="order-5 max-h-52 overflow-y-auto border-b border-[var(--border)]">
                       {jobs.map((job) => (
                         <div key={job.file_id} className="px-4 py-3 border-b border-[var(--border)] last:border-b-0 bg-[var(--bg-primary)]">
                           <div className="flex justify-between gap-4 text-[11px]"><span className="truncate text-[var(--text-primary)]">{job.filename}</span><span className="font-mono uppercase text-[var(--text-muted)]">{job.status}</span></div>
@@ -355,9 +388,9 @@ export default function ProjectsPage() {
                     </div>
                     <div className="flex flex-col sm:flex-row gap-2">
                       <label htmlFor="project-file-search" className="sr-only">Search project files</label>
-                      <input id="project-file-search" type="search" value={fileSearch} onChange={(event) => { setFileSearch(event.target.value); setFilePage(1); }} placeholder="Search file name" className="w-full sm:w-60 bg-[var(--bg-primary)] border border-[var(--border)] px-3 py-2 text-[11px] text-[var(--text-primary)]" />
+                      <input id="project-file-search" type="search" value={fileSearch} onChange={(event) => { setFileSearch(event.target.value); setFilePage(1); }} placeholder="Search file name" className="min-h-11 w-full sm:w-60 bg-[var(--bg-primary)] border border-[var(--border)] px-3 py-2 text-base md:text-[11px] text-[var(--text-primary)]" />
                       <label htmlFor="project-file-type" className="sr-only">Filter by file type</label>
-                      <select id="project-file-type" value={fileType} onChange={(event) => { setFileType(event.target.value as typeof fileType); setFilePage(1); }} className="bg-[var(--bg-primary)] border border-[var(--border)] px-3 py-2 text-[11px] text-[var(--text-primary)]">
+                      <select id="project-file-type" value={fileType} onChange={(event) => { setFileType(event.target.value as typeof fileType); setFilePage(1); }} className="min-h-11 bg-[var(--bg-primary)] border border-[var(--border)] px-3 py-2 text-base md:text-[11px] text-[var(--text-primary)]">
                         <option value="all">All file types</option>
                         <option value="document">Documents</option>
                         <option value="email">Mail</option>
@@ -372,22 +405,27 @@ export default function ProjectsPage() {
                     ) : visibleFiles.length === 0 ? (
                       <p className="p-5 text-[11px] text-[var(--text-muted)]">No files match this view.</p>
                     ) : visibleFiles.map((file) => (
-                      <div key={file.id} className="group flex items-center gap-3 border-b border-[var(--border)] last:border-b-0 bg-[var(--bg-primary)] px-4 py-3">
-                        <span className="w-20 shrink-0 font-mono text-[8px] uppercase tracking-[.1em] text-[var(--text-muted)]">{typeLabel(file.file_type)}</span>
-                        <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--text-primary)]" title={file.name}>{file.name}</span>
+                      <div key={file.id} className="group flex min-h-14 items-center gap-3 border-b border-[var(--border)] last:border-b-0 bg-[var(--bg-primary)] px-3 py-2 md:px-4 md:py-3">
+                        <span className="hidden w-20 shrink-0 font-mono text-[8px] uppercase tracking-[.1em] text-[var(--text-muted)] md:block">{typeLabel(file.file_type)}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[12px] text-[var(--text-primary)] md:text-[11px]" title={file.name}>{file.name}</span>
+                          <span className="mt-1 flex gap-2 font-mono text-[8px] uppercase tracking-[.08em] text-[var(--text-muted)] md:hidden">
+                            <span>{typeLabel(file.file_type)}</span><span aria-hidden="true">·</span><span>{file.status ?? 'ready'}</span>
+                          </span>
+                        </span>
                         <span className="hidden md:block font-mono text-[9px] uppercase text-[var(--text-muted)]">{file.status ?? 'ready'}</span>
                         {canEditFiles && (
-                          <button type="button" disabled={deletingId === file.id} onClick={() => void removeFile(file)} aria-label={`Delete ${file.name}`} className="px-2 py-1 font-mono text-[9px] uppercase text-[var(--text-muted)] hover:text-[var(--danger)] disabled:opacity-40">{deletingId === file.id ? 'Deleting…' : 'Delete'}</button>
+                          <button type="button" disabled={deletingId === file.id} onClick={() => void removeFile(file)} aria-label={`Delete ${file.name}`} className="min-h-11 min-w-11 shrink-0 px-2 py-1 font-mono text-[9px] uppercase text-[var(--text-muted)] hover:text-[var(--danger)] disabled:opacity-40">{deletingId === file.id ? 'Deleting…' : 'Delete'}</button>
                         )}
                       </div>
                     ))}
                   </div>
 
                   {filteredFiles.length > PAGE_SIZE && (
-                    <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-3">
-                      <button type="button" disabled={filePage === 1} onClick={() => setFilePage((page) => Math.max(1, page - 1))} className="font-mono text-[9px] uppercase text-[var(--text-secondary)] disabled:opacity-30">← Previous</button>
+                    <div className="flex items-center justify-between border-t border-[var(--border)] px-3 py-2 md:px-4 md:py-3">
+                      <button type="button" disabled={filePage === 1} onClick={() => setFilePage((page) => Math.max(1, page - 1))} className="min-h-11 px-1 font-mono text-[9px] uppercase text-[var(--text-secondary)] disabled:opacity-30">← Previous</button>
                       <span className="font-mono text-[9px] text-[var(--text-muted)]">Page {filePage.toLocaleString()} / {pageCount.toLocaleString()}</span>
-                      <button type="button" disabled={filePage === pageCount} onClick={() => setFilePage((page) => Math.min(pageCount, page + 1))} className="font-mono text-[9px] uppercase text-[var(--text-secondary)] disabled:opacity-30">Next →</button>
+                      <button type="button" disabled={filePage === pageCount} onClick={() => setFilePage((page) => Math.min(pageCount, page + 1))} className="min-h-11 px-1 font-mono text-[9px] uppercase text-[var(--text-secondary)] disabled:opacity-30">Next →</button>
                     </div>
                   )}
                 </section>
@@ -395,9 +433,9 @@ export default function ProjectsPage() {
                 <QueryHistory projectId={current.project_id} />
 
                 {canRename && (
-                  <section className="mt-6 border border-[var(--border)] bg-[var(--wash)] p-4 flex items-center justify-between gap-4">
+                  <section className="mt-6 flex flex-col gap-4 border border-[var(--border)] bg-[var(--wash)] p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div><p className="font-mono text-[9px] uppercase text-[var(--text-muted)]">Project lifecycle</p><p className="mt-1 text-[10px] text-[var(--text-secondary)]">Archiving hides the project but retains its documents and evidence.</p></div>
-                    <button type="button" onClick={() => void archiveCurrent()} className="shrink-0 border border-[var(--danger)] px-3 py-2 font-mono text-[9px] uppercase text-[var(--danger)]">Archive project</button>
+                    <button type="button" onClick={() => void archiveCurrent()} className="min-h-11 w-full shrink-0 border border-[var(--danger)] px-3 py-2 font-mono text-[9px] uppercase text-[var(--danger)] sm:w-auto">Archive project</button>
                   </section>
                 )}
               </>
