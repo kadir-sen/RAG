@@ -23,6 +23,8 @@ def test_deploy_requires_verified_backup_and_never_prunes_volumes():
     combined = workflow + (ROOT / "scripts/create_deploy_backup.sh").read_text(encoding="utf-8")
     for command in forbidden:
         assert command not in combined
+    assert 'sudo -n true' in workflow
+    assert '$BACKUP_RUNNER env' in workflow
 
 
 def test_backup_covers_application_data_and_qdrant_snapshot():
