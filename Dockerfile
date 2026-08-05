@@ -1,3 +1,25 @@
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --production=false
+COPY frontend/ ./
+RUN npm run build
+
+
+FROM python:3.11-slim AS python-builder
+
+WORKDIR /build
+
+# hdbscan does not publish a wheel for every architecture. Compile all Python
+# wheels in this disposable stage so the production image contains no compiler.
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt ./
+RUN sed '/^streamlit[<=>]/d' requirements.txt > requirements.prod.txt \
+    && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.prod.txt
+
+
 FROM python:3.11-slim
 
 ARG COAIR_COMMIT_SHA=development
@@ -5,14 +27,13 @@ ENV COAIR_COMMIT_SHA=${COAIR_COMMIT_SHA}
 
 WORKDIR /app
 
-# Install system dependencies including Tesseract OCR and Node.js
+# Install runtime-only system dependencies. Node and the C toolchain remain in
+# their build stages and are not shipped to production.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     tesseract-ocr-tur \
     curl \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Tesseract environment variable
@@ -20,21 +41,20 @@ ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 # Copy requirements first for caching. No torch — server query embedding uses
 # fastembed (ONNX), keeping the image small and RAM low enough for a 2 GB box.
-COPY requirements.txt .
+COPY requirements.txt ./
+COPY --from=python-builder /build/requirements.prod.txt ./requirements.prod.txt
+COPY --from=python-builder /wheels /wheels
 # The API image is the production product. The legacy local Streamlit shell is
 # intentionally excluded; native forensic engines are imported directly from
 # vendor code and rendered by the React application.
-RUN sed '/^streamlit[<=>]/d' requirements.txt > requirements.prod.txt \
-    && pip install --no-cache-dir -r requirements.prod.txt
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.prod.txt \
+    && rm -rf /wheels
 # Pre-bake the fastembed bge model into the image so query-time embedding works
 # offline (no first-request download). Keep in sync with LOCAL_EMBEDDING_MODEL.
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-base-en-v1.5')"
 
-# Build frontend
-COPY frontend/package.json frontend/package-lock.json ./frontend/
-RUN cd frontend && npm ci --production=false
-COPY frontend/ ./frontend/
-RUN cd frontend && npm run build
+# Only the compiled React assets enter the API image.
+COPY --from=frontend-builder /build/frontend/dist ./frontend/dist
 
 # Copy application code
 COPY src/ ./src/

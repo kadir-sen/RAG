@@ -162,6 +162,10 @@ jobs:
 
             cd "$APP_DIR"
 
+            # Keep the exact image reference so a failed native/API health gate
+            # can restore the previously running release.
+            PREVIOUS_IMAGE="$($SUDO docker inspect --format '{{.Config.Image}}' mvp-api 2>/dev/null || true)"
+
             # Refresh the compose file with the version shipped this run.
             $SUDO cp "$HOME/coair-deploy/docker-compose.prod.yml" "$APP_DIR/docker-compose.prod.yml"
 
@@ -185,7 +189,6 @@ jobs:
 
             $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml pull api
             $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d
-            $SUDO docker image prune -f
 
             # Health gate: fail the deploy (and surface logs) if the API is unhealthy.
             echo "Waiting for API health..."
@@ -195,10 +198,20 @@ jobs:
             for i in $(seq 1 48); do
               if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
                 echo "Health OK"
+                $SUDO docker image prune -f
                 exit 0
               fi
               sleep 5
             done
             echo "Health check FAILED after ~240s — last logs:"
             $SUDO docker compose -f docker-compose.prod.yml logs --tail=100 api
+            if [ -n "$PREVIOUS_IMAGE" ] && [ "$PREVIOUS_IMAGE" != "$IMAGE" ]; then
+              echo "Rolling back to $PREVIOUS_IMAGE"
+              printf 'API_IMAGE=%s\n' "$PREVIOUS_IMAGE" | $SUDO tee "$APP_DIR/.env" >/dev/null
+              $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d api
+              for i in $(seq 1 24); do
+                curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1 && break
+                sleep 5
+              done
+            fi
             exit 1
