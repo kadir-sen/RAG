@@ -116,6 +116,7 @@ jobs:
             tests/test_durable_job_stores.py \
             tests/test_billing_store.py \
             tests/test_provider_credentials.py \
+            tests/test_configure_demo_account.py \
             tests/test_demo_model_policy.py \
             tests/test_ingestion_model_routing.py \
             tests/test_deploy_data_safety.py \

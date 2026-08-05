@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Idempotently convert an existing account into the controlled demo plan.
+"""Idempotently create or update the controlled demo account.
 
 The password is read with ``getpass`` so it is not placed in shell history.
 The provider key must already exist as a protected mounted secret; this script
@@ -33,13 +33,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    store = UserStore()
-    record = store.get_user(args.username)
-    if not record:
-        print("error: user_not_found", file=sys.stderr)
-        return 2
     try:
-        # Fail before any mutation if the dedicated secret is unavailable.
+        # Fail before creating or changing an account if the dedicated secret
+        # is unavailable.  This prevents a partially configured demo login.
         get_google_api_key_for_ref(args.key_ref)
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -53,23 +49,41 @@ def main() -> int:
         print("error: password must contain at least 8 characters", file=sys.stderr)
         return 2
 
-    store.update_user(
-        args.username,
-        display_name=record.get("display_name") or "Demo User",
-        role="user",
-        token_limit=int(record.get("token_limit") or 1_000_000),
-        features=record.get("features") or {},
-        password=password,
-        is_active=True,
-    )
-    store.billing.update_account(
-        args.username,
-        plan_type="demo",
-        markup_percent=30,
-        storage_limit_bytes=args.storage_limit_bytes,
-        model_policy="demo-tiered-quality-v2",
-        provider_key_ref=args.key_ref,
-    )
+    store = UserStore()
+    record = store.get_user(args.username)
+    if record:
+        store.update_user(
+            args.username,
+            display_name=record.get("display_name") or "Demo User",
+            role="user",
+            token_limit=int(record.get("token_limit") or 1_000_000),
+            features=record.get("features") or {},
+            password=password,
+            is_active=True,
+        )
+        store.billing.update_account(
+            args.username,
+            plan_type="demo",
+            markup_percent=30,
+            storage_limit_bytes=args.storage_limit_bytes,
+            model_policy="demo-tiered-quality-v2",
+            provider_key_ref=args.key_ref,
+        )
+    else:
+        store.create_user(
+            username=args.username,
+            password=password,
+            display_name="Demo User",
+            role="user",
+            token_limit=1_000_000,
+            features={},
+            plan_type="demo",
+            initial_credits=args.credits,
+            markup_percent=30,
+            storage_limit_bytes=args.storage_limit_bytes,
+            model_policy="demo-tiered-quality-v2",
+            provider_key_ref=args.key_ref,
+        )
     summary = store.billing.summary(args.username)
     delta = round(float(args.credits) - float(summary["credits_total"]), 6)
     if delta:
