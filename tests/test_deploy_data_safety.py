@@ -32,3 +32,4 @@ def test_backup_covers_application_data_and_qdrant_snapshot():
     assert 'sha256sum -c SHA256SUMS' in script
     assert 'docker stop --time 45 "$API_CONTAINER"' in script
     assert 'docker start "$API_CONTAINER"' in script
+    assert 'BACKUP_ROOT="${BACKUP_ROOT:-$APP_DIR/.deploy-backups}"' in script
