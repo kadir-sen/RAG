@@ -214,8 +214,8 @@ export default function ProjectsPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-6 md:py-10">
-        <header className="mb-7 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+      <div className="max-w-7xl mx-auto px-3 sm:px-4 md:px-6 py-4 md:py-10">
+        <header className="mb-5 flex flex-col gap-4 md:mb-7 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">Project management</p>
             <h1 className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">Projects and source records</h1>
