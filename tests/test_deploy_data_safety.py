@@ -27,6 +27,18 @@ def test_deploy_requires_verified_backup_and_never_prunes_volumes():
     assert '$BACKUP_RUNNER env' in workflow
 
 
+def test_unused_image_cleanup_precedes_candidate_pull_and_never_touches_data():
+    workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    cleanup = "$SUDO docker image prune -a -f"
+    pull = "docker compose -f docker-compose.prod.yml pull api"
+    backup = 'bash "$HOME/coair-deploy/scripts/create_deploy_backup.sh"'
+    assert cleanup in workflow
+    cleanup_index = workflow.index(cleanup)
+    pull_index = workflow.index(pull, cleanup_index)
+    backup_index = workflow.index(backup, pull_index)
+    assert cleanup_index < pull_index < backup_index
+
+
 def test_backup_covers_application_data_and_qdrant_snapshot():
     script = (ROOT / "scripts/create_deploy_backup.sh").read_text(encoding="utf-8")
     assert 'tar -C "$APP_DIR" -cf "$backup_dir/application-data.tar" storage data' in script

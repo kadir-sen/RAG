@@ -263,6 +263,13 @@ jobs:
             printf '%s\n' "$QDRANT_MOUNTS" | grep -qx '/qdrant/storage'
             printf '%s\n' "$QDRANT_MOUNTS" | grep -qx '/qdrant/snapshots'
 
+            # Reclaim only images that no running/stopped container references.
+            # The current API image is protected by mvp-api and remains available
+            # for rollback; user data, volumes, snapshots and deploy backups are
+            # outside Docker images and are never touched. Do this before pulling
+            # the candidate image so that candidate cannot be pruned as unused.
+            $SUDO docker image prune -a -f
+
             # Authenticate to GHCR to pull the private image (token is ephemeral).
             printf '%s' "$GHCR_TOKEN" | $SUDO docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
