@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # currently deployed API and exits non-zero, preventing the image switch.
 
 APP_DIR="${APP_DIR:-/opt/mvp-api}"
-BACKUP_ROOT="${BACKUP_ROOT:-$(dirname "$APP_DIR")/coair-backups}"
+BACKUP_ROOT="${BACKUP_ROOT:-$APP_DIR/.deploy-backups}"
 API_CONTAINER="${API_CONTAINER:-mvp-api}"
 QDRANT_CONTAINER="${QDRANT_CONTAINER:-mvp-qdrant}"
 QDRANT_COLLECTION="${QDRANT_COLLECTION:-coair}"

@@ -212,7 +212,7 @@ jobs:
             QDRANT_COLLECTION="${QDRANT_COLLECTION:-coair}"
             $SUDO env \
               APP_DIR="$APP_DIR" \
-              BACKUP_ROOT="$(dirname "$APP_DIR")/coair-backups" \
+              BACKUP_ROOT="$APP_DIR/.deploy-backups" \
               QDRANT_API_KEY="$QDRANT_SERVER_API_KEY" \
               QDRANT_COLLECTION="$QDRANT_COLLECTION" \
               bash "$HOME/coair-deploy/scripts/create_deploy_backup.sh"
