@@ -61,6 +61,10 @@ COPY src/ ./src/
 COPY backend/ ./backend/
 COPY vendor/ ./vendor/
 COPY THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
+# Import the exact Qdrant adapter used by QueryRouter. This catches a dependency
+# pair that installs cleanly but fails at runtime before any chat request can
+# reach the LLM.
+RUN python -c "from src.vector_runtime import validate_vector_runtime_dependencies; validate_vector_runtime_dependencies('qdrant')"
 # The jargon manager loads this version-controlled glossary during module
 # import, before the API can answer its health check. Keep the copy explicit so
 # future files under config/ (which may be deployment-specific) are not baked

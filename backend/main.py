@@ -200,13 +200,16 @@ def create_app() -> FastAPI:
     async def health():
         try:
             from src.chronology_prompts import validate_chronology_runtime
+            from src.vector_runtime import validate_vector_runtime_dependencies
+
             validate_chronology_runtime()
+            validate_vector_runtime_dependencies()
         except Exception as exc:
             return JSONResponse(
                 status_code=503,
-                content={"status": "unhealthy", "component": "chronology", "error": str(exc)},
+                content={"status": "unhealthy", "component": "runtime", "error": str(exc)},
             )
-        return {"status": "ok", "chronology": "ready"}
+        return {"status": "ok", "chronology": "ready", "vector_runtime": "ready"}
 
     # Serve React frontend in production
     if _frontend_dist.exists():

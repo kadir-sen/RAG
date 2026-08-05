@@ -322,16 +322,12 @@ class DocumentRAG:
     def _setup_qdrant(self):
         """Initialize Qdrant vector store. Lazy imports so the package is only
         required when this backend is actually selected."""
-        try:
-            from qdrant_client import QdrantClient
-            from qdrant_client.http import models as qmodels
-            from llama_index.vector_stores.qdrant import QdrantVectorStore
-        except ImportError as e:
-            raise RuntimeError(
-                "VECTOR_STORE_BACKEND=qdrant requires `qdrant-client` and "
-                "`llama-index-vector-stores-qdrant`. Install via "
-                "`pip install -r requirements.txt`."
-            ) from e
+        from .vector_runtime import validate_vector_runtime_dependencies
+
+        validate_vector_runtime_dependencies("qdrant")
+        from qdrant_client import QdrantClient
+        from qdrant_client.http import models as qmodels
+        from llama_index.vector_stores.qdrant import QdrantVectorStore
 
         logger.info(f"[Qdrant] Connecting to {QDRANT_URL} ...")
         self.qdrant_client = QdrantClient(

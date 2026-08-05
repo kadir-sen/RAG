@@ -119,6 +119,7 @@ jobs:
             tests/test_configure_demo_account.py \
             tests/test_demo_model_policy.py \
             tests/test_ingestion_model_routing.py \
+            tests/test_vector_runtime.py \
             tests/test_deploy_data_safety.py \
             tests/test_project_store.py \
             tests/test_project_file_deletion.py \
