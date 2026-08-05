@@ -431,10 +431,14 @@ def _generate_chronology_v2(
 
 
 def generate_chronology(**kwargs) -> Dict:
-    """Run Chronology V2 inside an isolated dynamic provider-call budget."""
+    """Run the job-pinned chronology pipeline inside an isolated call budget."""
     from .llm_client import begin_chronology_call_budget, end_chronology_call_budget
     begin_chronology_call_budget(40)
     try:
+        pipeline_version = str(kwargs.pop("pipeline_version", "chronology-v2") or "chronology-v2")
+        if pipeline_version == "chronology-v3":
+            from .chronology_v3 import generate_chronology_v3
+            return generate_chronology_v3(**kwargs)
         return _generate_chronology_v2(**kwargs)
     finally:
         end_chronology_call_budget()

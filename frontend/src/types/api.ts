@@ -290,6 +290,8 @@ export interface DocContent {
   schema_columns?: SchemaColumn[];
   description?: string;
   sheet_name?: string;
+  row_from?: number | null;
+  row_to?: number | null;
 }
 
 export interface ActivityStep {

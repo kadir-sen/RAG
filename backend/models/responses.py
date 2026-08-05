@@ -246,3 +246,5 @@ class DocContent(BaseModel):
     schema_columns: List[SchemaColumn] = Field(default_factory=list)
     description: str = ""
     sheet_name: str = ""
+    row_from: Optional[int] = None
+    row_to: Optional[int] = None

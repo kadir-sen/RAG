@@ -458,6 +458,29 @@ class BillingStore:
                 row[key.removesuffix("_micros")] = _credits(int(row.pop(key) or 0))
         return {"groups": rows}
 
+    def job_usage(self, job_id: str) -> Dict[str, Any]:
+        """Admin-safe exact token/cost totals for one background report job."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) calls,COALESCE(SUM(prompt_tokens),0) prompt_tokens,"
+                "COALESCE(SUM(completion_tokens),0) completion_tokens,"
+                "COALESCE(SUM(reasoning_tokens),0) reasoning_tokens,"
+                "COALESCE(SUM(cached_tokens),0) cached_tokens,"
+                "COALESCE(SUM(provider_cost_nanos),0) provider_cost_nanos,"
+                "COALESCE(SUM(retail_credit_micros),0) retail_credit_micros,"
+                "COALESCE(SUM(debited_credit_micros),0) debited_credit_micros,"
+                "COALESCE(SUM(uncovered_credit_micros),0) uncovered_credit_micros "
+                "FROM billing_ledger WHERE job_id=? AND event_type='charge'",
+                [job_id],
+            ).fetchone()
+        value = dict(row)
+        value["provider_cost_usd"] = round(
+            int(value.pop("provider_cost_nanos") or 0) / NANOUSD_PER_USD, 9
+        )
+        for key in ("retail_credit_micros", "debited_credit_micros", "uncovered_credit_micros"):
+            value[key.removesuffix("_micros")] = _credits(int(value.pop(key) or 0))
+        return value
+
 
 def get_billing_store() -> BillingStore:
     return BillingStore.instance()

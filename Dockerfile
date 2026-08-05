@@ -66,7 +66,11 @@ COPY THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 # future files under config/ (which may be deployment-specific) are not baked
 # into the image accidentally.
 COPY config/jargon_terms.json ./config/jargon_terms.json
-RUN python -c "import json; p='config/jargon_terms.json'; d=json.load(open(p, encoding='utf-8')); assert isinstance(d, dict) and len(d) == 2703"
+COPY config/prompts/chronology_v2.yaml ./config/prompts/chronology_v2.yaml
+COPY config/prompts/chronology_v3.yaml ./config/prompts/chronology_v3.yaml
+RUN python -c "import json; p='config/jargon_terms.json'; d=json.load(open(p, encoding='utf-8')); assert isinstance(d, dict) and len(d) == 2703" \
+    && python -c "import json; p='config/prompts/chronology_v2.yaml'; d=json.load(open(p, encoding='utf-8')); required={'version','system','research_planner','extractor','synthesizer','verifier','style_profile'}; assert required <= d.keys()" \
+    && python -c "import json; p='config/prompts/chronology_v3.yaml'; d=json.load(open(p, encoding='utf-8')); required={'version','system','research_planner','map_extractor','extractor','synthesizer','verifier','repair','style_profile'}; assert required <= d.keys()"
 COPY entrypoint.sh .
 COPY scripts/ ./scripts/
 COPY formatlar/ ./formatlar/

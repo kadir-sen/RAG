@@ -21,6 +21,7 @@ function SchemaPanel({ content }: { content: DocContent }) {
         <span>
           {open ? '▾' : '▸'} Schema · {cols.length} columns
           {withMeaning ? ` · ${withMeaning} with meaning` : ''}
+          {content.row_from ? ` · rows ${content.row_from}–${content.row_to ?? content.row_from}` : ''}
         </span>
         {content.sheet_name ? <span className="opacity-70">sheet: {content.sheet_name}</span> : null}
       </button>
