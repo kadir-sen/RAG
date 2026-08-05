@@ -210,7 +210,19 @@ jobs:
             # data, snapshots, backups, containers or volumes.
             QDRANT_COLLECTION="$(sed -n 's/^QDRANT_COLLECTION=//p' "$APP_DIR/.env.production" | tail -1)"
             QDRANT_COLLECTION="${QDRANT_COLLECTION:-coair}"
-            $SUDO env \
+            # Docker-group access does not imply permission to read files owned
+            # by Qdrant's container UID. Run the backup itself as root so its
+            # snapshot can be copied and checksum-verified. Lightsail's deploy
+            # user is provisioned with passwordless sudo; fail closed otherwise.
+            if [ "$(id -u)" -eq 0 ]; then
+              BACKUP_RUNNER=""
+            elif sudo -n true >/dev/null 2>&1; then
+              BACKUP_RUNNER="sudo"
+            else
+              echo "Passwordless sudo is required for a complete Qdrant backup." >&2
+              exit 1
+            fi
+            $BACKUP_RUNNER env \
               APP_DIR="$APP_DIR" \
               BACKUP_ROOT="$APP_DIR/.deploy-backups" \
               QDRANT_API_KEY="$QDRANT_SERVER_API_KEY" \
