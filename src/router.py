@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Tuple, Dict, Any, List, Optional
 
 from .config import (
-    GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_MODEL_LITE,
+    GEMINI_MODEL, GEMINI_MODEL_LITE,
     ENABLE_THINKING, THINKING_BUDGET_SYNTHESIS, ENABLE_LITE_TIER,
     ENABLE_PARALLEL_RETRIEVAL,
 )
@@ -174,6 +174,24 @@ _ANCHOR_TEXTS = {
 _anchor_embeddings: Optional[Dict[str, list]] = None
 
 
+def _routing_embed_model():
+    """Reuse the document index's configured embedding model.
+
+    Production uses local FastEmbed/BGE.  The old router constructed a second
+    paid Gemini embedding client directly, bypassing both the configured
+    provider and the user's ingestion cost policy.
+    """
+    from llama_index.core import Settings
+    model = Settings.embed_model
+    if model is None:
+        from .document_rag import get_document_rag
+        get_document_rag()  # initialises the shared Settings.embed_model
+        model = Settings.embed_model
+    if model is None:
+        raise RuntimeError("embedding_model_unavailable")
+    return model
+
+
 def _get_anchor_embeddings() -> Dict[str, list]:
     """Embed anchor texts once and cache in memory."""
     global _anchor_embeddings
@@ -181,14 +199,7 @@ def _get_anchor_embeddings() -> Dict[str, list]:
         return _anchor_embeddings
 
     try:
-        from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
-        from .config import EMBEDDING_MODEL, EMBEDDING_DIMENSION
-
-        embed_model = GoogleGenAIEmbedding(
-            api_key=GOOGLE_API_KEY,
-            model_name=EMBEDDING_MODEL,
-            embedding_config={"output_dimensionality": EMBEDDING_DIMENSION},
-        )
+        embed_model = _routing_embed_model()
 
         _anchor_embeddings = {}
         for qtype, texts in _ANCHOR_TEXTS.items():
@@ -1044,15 +1055,8 @@ class QueryRouter:
             return None
 
         try:
-            from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
-            from .config import EMBEDDING_MODEL, EMBEDDING_DIMENSION
-
-            embed_model = GoogleGenAIEmbedding(
-                api_key=GOOGLE_API_KEY,
-                model_name=EMBEDDING_MODEL,
-                embedding_config={"output_dimensionality": EMBEDDING_DIMENSION},
-            )
-            query_vec = embed_model.get_text_embedding(query)
+            embed_model = _routing_embed_model()
+            query_vec = embed_model.get_query_embedding(query)
 
             best_type = None
             best_sim = -1.0

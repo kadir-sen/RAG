@@ -142,7 +142,7 @@
   /* ── Layout tokens (chat shell) ── */
   --bubble-radius: 2px;    /* drawings have no rounded corners */
   --avatar-size: 30px;
-  --topnav-height: 48px;
+  --topnav-height: 56px;
   --grid-size: 24px;
 
   /* ── File-type indicator dots ──
@@ -418,10 +418,28 @@ pre {
   font-size: .6rem;
   letter-spacing: .1em;
   text-transform: uppercase;
+  min-width: 44px;
+  min-height: 44px;
   padding: .25rem .5rem;
   border-radius: 2px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: border-color .15s, color .15s, background .15s;
+}
+
+.sheet-toggle-label {
+  display: none;
+}
+
+.sheet-toggle-icon {
+  display: block;
+}
+
+@media (min-width: 640px) {
+  .sheet-toggle-label { display: inline; }
+  .sheet-toggle-icon { display: none; }
 }
 
 .sheet-toggle:hover {

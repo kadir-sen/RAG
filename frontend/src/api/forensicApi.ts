@@ -20,6 +20,73 @@ export interface ForensicWorkspace {
   upstream_sha: string;
   created_at: string;
   updated_at: string;
+  state_version: number;
+  pipeline_version: string;
+  evidence_source_ids: string[];
+}
+
+export interface ForensicProjectSource {
+  source_id: string;
+  source_kind: 'programme' | 'document' | 'email' | 'data';
+  file_name: string;
+  extension: string;
+  size_bytes: number;
+  content_hash: string;
+  status: string;
+  capabilities: string[];
+  metadata: {
+    title?: string;
+    reference?: string;
+    sheets?: string[];
+    pages?: number;
+    text_only?: boolean;
+  };
+}
+
+export interface ForensicWorkspaceState {
+  pipeline_version: string;
+  baseline_programme_id: string;
+  current_programme_id: string;
+  contract_completion_milestone: string;
+  missing_inputs: string[];
+  analysis_basis: Record<string, string[]>;
+  event_register: Record<string, unknown>;
+  apab: Record<string, unknown>;
+  umbrella: Record<string, unknown>;
+  sequence: Record<string, unknown>;
+  hierarchy: Record<string, unknown>;
+  explain: Record<string, unknown>;
+  iap: Record<string, unknown>;
+  cab: Record<string, unknown>;
+  narratives: Record<string, unknown>;
+  report: Record<string, unknown>;
+}
+
+export interface WorkspaceStateRecord {
+  workspace_id: string;
+  project_id: string;
+  version: number;
+  state: ForensicWorkspaceState;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ParityControl {
+  name: string;
+  label: string;
+  kind: string;
+  default?: unknown;
+  required?: boolean;
+  options?: string[];
+}
+
+export interface ModuleParityContract {
+  steps?: string[];
+  controls: ParityControl[];
+  actions: string[];
+  views?: string[];
+  submodules?: string[];
+  artifacts?: string[];
 }
 
 export interface ForensicArtifact {
@@ -81,11 +148,16 @@ export interface ForensicRun {
 export interface ForensicStatus {
   available: boolean;
   enabled: boolean;
+  parity_available: boolean;
+  parity_enabled: boolean;
+  parity_validation: boolean;
+  pipeline_version: string;
+  parity_fingerprint: string;
   coair_sha: string;
   upstream_sha: string;
   streamlit: false;
   max_workspace_bytes: number;
-  modules: Array<{ slug: string; title: string; group: string; minimum_files: number }>;
+  modules: Array<{ slug: string; title: string; group: string; minimum_files: number; parity: ModuleParityContract }>;
 }
 
 export async function getForensicStatus(): Promise<ForensicStatus> {
@@ -96,6 +168,11 @@ export async function getForensicStatus(): Promise<ForensicStatus> {
 export async function listProgrammes(): Promise<ProgrammeFile[]> {
   const { data } = await apiClient.get<{ programmes: ProgrammeFile[] }>('/forensic/programmes');
   return data.programmes;
+}
+
+export async function listForensicSources(): Promise<ForensicProjectSource[]> {
+  const { data } = await apiClient.get<{ sources: ForensicProjectSource[] }>('/forensic/sources');
+  return data.sources;
 }
 
 export async function uploadProgramme(file: File): Promise<ProgrammeFile> {
@@ -133,6 +210,35 @@ export async function updateWorkspace(
   return data;
 }
 
+export async function getWorkspaceState(workspaceId: string): Promise<WorkspaceStateRecord> {
+  const { data } = await apiClient.get<WorkspaceStateRecord>(`/forensic/workspaces/${workspaceId}/state`);
+  return data;
+}
+
+export async function patchWorkspaceState(
+  workspaceId: string,
+  expectedVersion: number,
+  patch: Record<string, unknown>,
+): Promise<WorkspaceStateRecord> {
+  const { data } = await apiClient.patch<WorkspaceStateRecord>(
+    `/forensic/workspaces/${workspaceId}/state`,
+    { expected_version: expectedVersion, ...patch },
+  );
+  return data;
+}
+
+export async function replaceWorkspaceSources(
+  workspaceId: string,
+  expectedVersion: number,
+  sourceIds: string[],
+): Promise<{ workspace: ForensicWorkspace; state: WorkspaceStateRecord; sources: ForensicProjectSource[]; source_revision: string }> {
+  const { data } = await apiClient.put(
+    `/forensic/workspaces/${workspaceId}/sources`,
+    { expected_version: expectedVersion, sources: sourceIds.map((source_id) => ({ source_id, selected_scope: {} })) },
+  );
+  return data;
+}
+
 export async function listForensicRuns(workspaceId = ''): Promise<ForensicRun[]> {
   const { data } = await apiClient.get<{ runs: ForensicRun[] }>('/forensic/runs', {
     params: workspaceId ? { workspace_id: workspaceId } : undefined,
@@ -149,6 +255,20 @@ export async function createForensicRun(
   const { data } = await apiClient.post<ForensicRun>(
     `/forensic/workspaces/${workspaceId}/modules/${moduleSlug}/runs`,
     { parameters: { kind: moduleSlug, ...parameters }, ai_narrative: aiNarrative },
+  );
+  return data;
+}
+
+export async function createForensicAction<T>(
+  workspaceId: string,
+  moduleSlug: string,
+  actionSlug: string,
+  payload: Record<string, unknown>,
+): Promise<T> {
+  const { data } = await apiClient.post<T>(
+    `/forensic/workspaces/${workspaceId}/modules/${moduleSlug}/actions/${actionSlug}`,
+    { action: actionSlug, ...payload },
+    { timeout: 240_000 },
   );
   return data;
 }

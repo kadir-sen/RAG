@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuthStore } from '../../stores/authStore';
+import { useUIStore } from '../../stores/uiStore';
 
 function initial(name: string): string {
   const trimmed = (name || '').trim();
@@ -9,6 +10,7 @@ function initial(name: string): string {
 export default function UserMenu() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const toggleSettings = useUIStore((s) => s.toggleSettings);
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -26,7 +28,7 @@ export default function UserMenu() {
   if (!user) {
     return (
       <div
-        className="w-7 h-7 rounded-[2px] border border-[var(--border)] grid place-items-center font-mono text-[var(--text-muted)] text-[11px]"
+        className="w-11 h-11 rounded-[2px] border border-[var(--border)] grid place-items-center font-mono text-[var(--text-muted)] text-[11px]"
         aria-label="No user"
       >
         ?
@@ -41,7 +43,7 @@ export default function UserMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Account menu for ${user.display_name}`}
-        className="w-7 h-7 rounded-[2px] bg-[var(--ink)] flex items-center justify-center font-mono text-[var(--accent-ink)] text-[11px] font-bold hover:opacity-88 transition-opacity"
+        className="w-11 h-11 rounded-[2px] bg-[var(--ink)] flex items-center justify-center font-mono text-[var(--accent-ink)] text-[11px] font-bold hover:opacity-88 transition-opacity"
       >
         {initial(user.display_name || user.username)}
       </button>
@@ -63,10 +65,20 @@ export default function UserMenu() {
             role="menuitem"
             onClick={() => {
               setOpen(false);
+              toggleSettings();
+            }}
+            className="w-full text-left px-3 py-3 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] font-mono tracking-wide transition-colors sm:hidden"
+          >
+            Settings
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
               logout();
               window.location.assign('/login');
             }}
-            className="w-full text-left px-3 py-2.5 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] font-mono tracking-wide transition-colors"
+            className="w-full text-left px-3 py-3 text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] font-mono tracking-wide transition-colors"
           >
             Sign out →
           </button>

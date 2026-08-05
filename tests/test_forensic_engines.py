@@ -1,4 +1,5 @@
 from pathlib import Path
+import io
 
 import pytest
 
@@ -63,6 +64,7 @@ def test_native_module_runs_against_upstream_xer_fixtures(module_slug: str):
     assert len(output["_artifacts"]) >= 2
     assert {artifact["kind"] for artifact in output["_artifacts"]} >= {"json", "excel"}
     assert all(artifact["content"] for artifact in output["_artifacts"])
+    assert all(not table["name"].startswith("result.") for table in output["tables"])
 
 
 def test_streamlit_ui_is_not_imported_by_native_engine():
@@ -70,3 +72,40 @@ def test_streamlit_ui_is_not_imported_by_native_engine():
     run_module("intake", _programmes(), {})
     assert "streamlit" not in sys.modules
     assert "views" not in sys.modules
+
+
+def test_tia_uses_upstream_impacted_xer_export():
+    output = run_module("time-impact-analysis", _programmes(), {"events": EVENTS})
+    impacted = [artifact for artifact in output["_artifacts"] if artifact["kind"] == "xer"]
+    assert len(impacted) == 1
+    assert b"EV-001-FRAG-01" in impacted[0]["content"]
+
+
+def test_report_assembler_uses_upstream_word_builder_and_actual_run_state():
+    from docx import Document
+
+    dcma = run_module("dcma", _programmes(), {})
+    dcma.pop("_artifacts")
+    prior = [{
+        "run_id": "frun_dcma", "module_slug": "dcma", "result": dcma,
+        "source_revision": "revision-123", "upstream_sha": UPSTREAM_SHA,
+    }]
+    output = run_module("report-assembler", _programmes(), {
+        "report_title": "Independent Programme Review",
+        "_source_revision": "revision-123", "_state_version": 4,
+        "_workspace_state": {
+            "report": {"title": "Independent Programme Review", "project": "Harbour Point",
+                       "prepared_by": "Analyst", "selected_sections": ["dcma"],
+                       "include_charts": False},
+            "analysis_basis": {"dcma": ["Strict constraints enabled"]},
+            "narratives": {"dcma": {"text": "The deterministic checks were reviewed."}},
+        },
+        "_workspace_sources": [],
+    }, prior_runs=prior)
+    word = next(artifact for artifact in output["_artifacts"] if artifact["kind"] == "word")
+    document = Document(io.BytesIO(word["content"]))
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "Independent Programme Review" in text
+    assert "DCMA 14-Point Assessment" in text
+    assert "Appendix A — Basis of Analysis" in text
+    assert "Strict constraints enabled" in text

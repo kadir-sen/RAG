@@ -15,7 +15,11 @@ export default function SheetToggle() {
       aria-label="Switch between drawing sheet and blueprint"
       title="Switch between drawing sheet and blueprint"
     >
-      {mode === 'dark' ? 'Drawing sheet' : 'Blueprint'}
+      <svg className="sheet-toggle-icon" aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 4a8 8 0 010 16z" fill="currentColor" stroke="none" />
+      </svg>
+      <span className="sheet-toggle-label">{mode === 'dark' ? 'Drawing sheet' : 'Blueprint'}</span>
     </button>
   );
 }

@@ -95,6 +95,38 @@ CREATE TABLE IF NOT EXISTS forensic_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_forensic_artifacts_run
     ON forensic_artifacts(run_id, created_at);
+
+CREATE TABLE IF NOT EXISTS forensic_workspace_state (
+    workspace_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    state_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(workspace_id) REFERENCES forensic_workspaces(workspace_id)
+);
+CREATE INDEX IF NOT EXISTS idx_forensic_workspace_state_project
+    ON forensic_workspace_state(project_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS forensic_workspace_sources (
+    workspace_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    extension TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    content_hash TEXT NOT NULL,
+    status TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL,
+    selected_scope_json TEXT NOT NULL,
+    snapshot_path TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workspace_id, source_id),
+    FOREIGN KEY(workspace_id) REFERENCES forensic_workspaces(workspace_id)
+);
+CREATE INDEX IF NOT EXISTS idx_forensic_workspace_sources_project
+    ON forensic_workspace_sources(project_id, workspace_id, source_kind);
 """
 
 
@@ -113,6 +145,71 @@ def source_revision(programmes: List[Dict[str, Any]], settings: Dict[str, Any]) 
             key=lambda item: item["file_id"],
         ),
         "settings": settings,
+        "upstream_sha": UPSTREAM_SHA,
+    }
+    return hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+
+
+def default_workspace_state() -> Dict[str, Any]:
+    """Canonical durable counterpart of the upstream Streamlit session state.
+
+    The object is deliberately versioned and explicit.  Page-local React form
+    values do not belong here; only decisions read by another module or by the
+    report assembler are persisted in this contract.
+    """
+    return {
+        "pipeline_version": "forensic-parity-v1",
+        "baseline_programme_id": "",
+        "current_programme_id": "",
+        "contract_completion_milestone": "",
+        "missing_inputs": [],
+        "analysis_basis": {},
+        "event_register": {},
+        "apab": {
+            "milestones": [], "paths": {}, "path_basis": {},
+            "key_dates": {}, "date_basis": "late",
+        },
+        "umbrella": {"groups": {}, "proposed": [], "rounds": []},
+        "sequence": {"mappings": {}, "confirmed": {}},
+        "hierarchy": {"saved_configurations": {}},
+        "explain": {"confirmed_drivers": {}},
+        "iap": {"events": [], "last_run_id": ""},
+        "tia": {"event_candidates": [], "candidate_source_ids": [],
+                "candidate_audit_run_id": ""},
+        "cab": {"groups": [], "extracted_activity_codes": [], "last_run_id": ""},
+        "narratives": {},
+        "report": {
+            "title": "Preliminary Delay Analysis Report",
+            "project": "", "prepared_by": "", "selected_sections": [],
+            "include_charts": True,
+        },
+    }
+
+
+def _deep_merge(current: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    merged = json.loads(_json(current))
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def workspace_source_revision(sources: List[Dict[str, Any]], state: Dict[str, Any] | None = None) -> str:
+    """Hash only immutable source selections.
+
+    Analyst decisions have their own optimistic ``state_version``.  Mixing
+    those decisions into the source revision made every legitimate state edit
+    look like a changed corpus and prevented the next module from running.
+    ``state`` remains an optional argument for backwards-compatible callers.
+    """
+    payload = {
+        "sources": sorted(
+            ({"source_id": item["source_id"], "content_hash": item["content_hash"],
+              "scope": item.get("selected_scope") or {}} for item in sources),
+            key=lambda item: item["source_id"],
+        ),
         "upstream_sha": UPSTREAM_SHA,
     }
     return hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
@@ -239,6 +336,13 @@ class ForensicStore:
                  _json(settings), revision, UPSTREAM_SHA, now, now],
             )
             row = conn.execute("SELECT * FROM forensic_workspaces WHERE workspace_id=?", [workspace_id]).fetchone()
+            initial = default_workspace_state()
+            initial["baseline_programme_id"] = programme_ids[0] if programme_ids else ""
+            initial["current_programme_id"] = programme_ids[-1] if programme_ids else ""
+            conn.execute(
+                "INSERT INTO forensic_workspace_state VALUES (?,?,?,?,?,?)",
+                [workspace_id, project_id, 1, _json(initial), now, now],
+            )
         assert row is not None
         return self._workspace(row)
 
@@ -294,15 +398,174 @@ class ForensicStore:
         item["settings"] = json.loads(item.pop("settings_json"))
         return item
 
+    def get_workspace_state(self, project_id: str, workspace_id: str) -> Optional[Dict[str, Any]]:
+        if not self.get_workspace(project_id, workspace_id):
+            return None
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM forensic_workspace_state WHERE project_id=? AND workspace_id=?",
+                [project_id, workspace_id],
+            ).fetchone()
+            if row is None:
+                now = _now()
+                state = default_workspace_state()
+                workspace = self.get_workspace(project_id, workspace_id)
+                ids = list((workspace or {}).get("programme_ids") or [])
+                state["baseline_programme_id"] = ids[0] if ids else ""
+                state["current_programme_id"] = ids[-1] if ids else ""
+                conn.execute(
+                    "INSERT INTO forensic_workspace_state VALUES (?,?,?,?,?,?)",
+                    [workspace_id, project_id, 1, _json(state), now, now],
+                )
+                return {"workspace_id": workspace_id, "project_id": project_id,
+                        "version": 1, "state": state, "created_at": now,
+                        "updated_at": now}
+        return {
+            "workspace_id": row["workspace_id"], "project_id": row["project_id"],
+            "version": int(row["version"]), "state": json.loads(row["state_json"]),
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+        }
+
+    def update_workspace_state(self, *, project_id: str, workspace_id: str,
+                               expected_version: int, patch: Dict[str, Any]) -> Dict[str, Any]:
+        current = self.get_workspace_state(project_id, workspace_id)
+        if current is None:
+            raise ValueError("forensic_workspace_not_found")
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM forensic_workspace_state WHERE project_id=? AND workspace_id=?",
+                [project_id, workspace_id],
+            ).fetchone()
+            if row is None:
+                raise ValueError("forensic_workspace_state_not_found")
+            if int(row["version"]) != int(expected_version):
+                raise ValueError("forensic_workspace_state_version_conflict")
+            state = _deep_merge(json.loads(row["state_json"]), patch)
+            version = int(row["version"]) + 1
+            now = _now()
+            conn.execute(
+                "UPDATE forensic_workspace_state SET version=?,state_json=?,updated_at=? "
+                "WHERE project_id=? AND workspace_id=?",
+                [version, _json(state), now, project_id, workspace_id],
+            )
+        return {"workspace_id": workspace_id, "project_id": project_id,
+                "version": version, "state": state,
+                "created_at": row["created_at"], "updated_at": now}
+
+    @staticmethod
+    def _source(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "source_id": row["source_id"], "source_kind": row["source_kind"],
+            "file_name": row["file_name"], "extension": row["extension"],
+            "size_bytes": int(row["size_bytes"]), "content_hash": row["content_hash"],
+            "status": row["status"], "capabilities": json.loads(row["capabilities_json"]),
+            "selected_scope": json.loads(row["selected_scope_json"]),
+            "snapshot_path": row["snapshot_path"], "created_at": row["created_at"],
+        }
+
+    def list_workspace_sources(self, project_id: str, workspace_id: str) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM forensic_workspace_sources WHERE project_id=? AND workspace_id=? "
+                "ORDER BY source_kind,file_name", [project_id, workspace_id],
+            ).fetchall()
+        return [self._source(row) for row in rows]
+
+    def resolve_workspace_programmes(self, project_id: str,
+                                     workspace_id: str) -> List[Dict[str, Any]]:
+        """Return pinned XER snapshots, falling back to legacy programme rows."""
+        selected = [item for item in self.list_workspace_sources(project_id, workspace_id)
+                    if item["source_kind"] == "programme"]
+        if selected:
+            programmes = []
+            for item in selected:
+                path = Path(item.get("snapshot_path") or "")
+                if not path.is_file():
+                    raise ValueError("forensic_source_missing")
+                programmes.append({
+                    "file_id": item["source_id"], "name": item["file_name"],
+                    "size_bytes": item["size_bytes"], "sha256": item["content_hash"],
+                    "file_path": str(path),
+                })
+            return programmes
+        workspace = self.get_workspace(project_id, workspace_id)
+        if not workspace:
+            raise ValueError("forensic_workspace_not_found")
+        return self._resolve_programmes(project_id, workspace["programme_ids"])
+
+    def replace_workspace_sources(self, *, project_id: str, workspace_id: str,
+                                  expected_version: int,
+                                  sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+        current = self.get_workspace_state(project_id, workspace_id)
+        if current is None:
+            raise ValueError("forensic_workspace_not_found")
+        programme_ids = [item["source_id"] for item in sources
+                         if item["source_kind"] == "programme"]
+        if not programme_ids:
+            raise ValueError("forensic_programme_selection_invalid")
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            state_row = conn.execute(
+                "SELECT * FROM forensic_workspace_state WHERE project_id=? AND workspace_id=?",
+                [project_id, workspace_id],
+            ).fetchone()
+            if state_row is None:
+                raise ValueError("forensic_workspace_state_not_found")
+            if int(state_row["version"]) != int(expected_version):
+                raise ValueError("forensic_workspace_state_version_conflict")
+            now = _now()
+            conn.execute(
+                "DELETE FROM forensic_workspace_sources WHERE project_id=? AND workspace_id=?",
+                [project_id, workspace_id],
+            )
+            for item in sources:
+                conn.execute(
+                    "INSERT INTO forensic_workspace_sources VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [workspace_id, project_id, item["source_id"], item["source_kind"],
+                     item["file_name"], item.get("extension", ""),
+                     int(item.get("size_bytes") or 0), item["content_hash"],
+                     item.get("status", "ready"), _json(item.get("capabilities") or []),
+                     _json(item.get("selected_scope") or {}), item.get("snapshot_path"), now],
+                )
+            state = json.loads(state_row["state_json"])
+            if state.get("baseline_programme_id") not in programme_ids:
+                state["baseline_programme_id"] = programme_ids[0]
+            if state.get("current_programme_id") not in programme_ids:
+                state["current_programme_id"] = programme_ids[-1]
+            version = int(state_row["version"]) + 1
+            revision = workspace_source_revision(sources, state)
+            conn.execute(
+                "UPDATE forensic_workspace_state SET version=?,state_json=?,updated_at=? "
+                "WHERE project_id=? AND workspace_id=?",
+                [version, _json(state), now, project_id, workspace_id],
+            )
+            conn.execute(
+                "UPDATE forensic_workspaces SET programme_ids_json=?,source_revision=?,updated_at=? "
+                "WHERE project_id=? AND workspace_id=?",
+                [_json(programme_ids), revision, now, project_id, workspace_id],
+            )
+        return {"workspace_id": workspace_id, "project_id": project_id,
+                "version": version, "state": state,
+                "source_revision": revision, "sources": sources,
+                "updated_at": now}
+
     def enqueue_run(self, *, project_id: str, workspace_id: str, username: str,
                     module_slug: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         workspace = self.get_workspace(project_id, workspace_id)
         if not workspace:
             raise ValueError("forensic_workspace_not_found")
-        programmes = self._resolve_programmes(project_id, workspace["programme_ids"])
-        current_revision = source_revision(programmes, workspace["settings"])
+        programmes = self.resolve_workspace_programmes(project_id, workspace_id)
+        selected_sources = self.list_workspace_sources(project_id, workspace_id)
+        state_record = self.get_workspace_state(project_id, workspace_id)
+        current_revision = (
+            workspace_source_revision(selected_sources)
+            if selected_sources else source_revision(programmes, workspace["settings"])
+        )
         if current_revision != workspace["source_revision"]:
             raise ValueError("forensic_workspace_sources_changed")
+        parameters = dict(parameters)
+        parameters["_state_version"] = int((state_record or {}).get("version") or 1)
         run_id = f"frun_{uuid.uuid4().hex[:20]}"
         now = _now()
         with self._connect() as conn:
@@ -397,6 +660,13 @@ class ForensicStore:
         current = self.get_run(project_id, run_id)
         if not current or current["status"] != "failed":
             return None
+        workspace = self.get_workspace(project_id, current["workspace_id"])
+        if not workspace or workspace["source_revision"] != current["source_revision"]:
+            return None
+        state = self.get_workspace_state(project_id, current["workspace_id"])
+        expected_state_version = int((current.get("parameters") or {}).get("_state_version") or 1)
+        if not state or int(state["version"]) != expected_state_version:
+            return None
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -460,4 +730,5 @@ def get_forensic_store() -> ForensicStore:
 
 
 __all__ = ["ForensicStore", "MAX_WORKSPACE_BYTES", "UPSTREAM_SHA",
-           "get_forensic_store", "source_revision"]
+           "default_workspace_state", "get_forensic_store", "source_revision",
+           "workspace_source_revision"]

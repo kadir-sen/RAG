@@ -58,7 +58,11 @@ def main() -> int:
     ap.add_argument("--initial-credits", type=float, default=1000.0)
     ap.add_argument("--markup-percent", type=float, default=30.0)
     ap.add_argument("--storage-limit-bytes", type=int, default=30_000_000_000)
-    ap.add_argument("--model-policy", default="demo-gemini-3.6-v1")
+    ap.add_argument("--model-policy", default="demo-tiered-quality-v2")
+    ap.add_argument(
+        "--provider-key-ref", default=None,
+        help="Alias of a server-mounted Google key; never pass the key itself.",
+    )
     ap.add_argument("--add-credits", type=float, default=0.0,
                     help="Append a signed credit adjustment to an existing account.")
     ap.add_argument("--reason", default="", help="Required with --add-credits.")
@@ -107,6 +111,11 @@ def main() -> int:
             features=features,
             password=args.password,
         )
+        if args.provider_key_ref is not None:
+            store.billing.update_account(
+                args.username,
+                provider_key_ref="" if args.role == "admin" else args.provider_key_ref,
+            )
         print(f"updated {args.username}: {record}")
     else:
         record = store.create_user(
@@ -121,6 +130,8 @@ def main() -> int:
             markup_percent=args.markup_percent,
             storage_limit_bytes=0 if args.role == "admin" else args.storage_limit_bytes,
             model_policy="" if args.role == "admin" else args.model_policy,
+            provider_key_ref=("" if args.role == "admin" else
+                              (args.provider_key_ref or "")),
         )
         print(f"created {args.username}: {record}")
     return 0

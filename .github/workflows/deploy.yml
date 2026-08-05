@@ -17,9 +17,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ── 1. Fast offline unit tests (the deploy gate) ─────────────────────────
+  # ── 1. Frontend build + isolated Projects/Forensic E2E gates ─────────────
+  frontend:
+    name: Frontend build & Projects/Forensic E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build production frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run isolated Projects and module tests
+        working-directory: frontend
+        run: npm run e2e:projects
+
+      - name: Run isolated native forensic parity tests
+        working-directory: frontend
+        run: npm run e2e:forensic
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: projects-playwright-diagnostics
+          path: |
+            frontend/playwright-report-projects
+            frontend/playwright-report-forensic
+            frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ── 2. Fast offline unit tests (the deploy gate) ─────────────────────────
   test:
     name: Fast tests
+    needs: frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +115,9 @@ jobs:
             tests/test_chronology_v3.py \
             tests/test_durable_job_stores.py \
             tests/test_billing_store.py \
+            tests/test_provider_credentials.py \
+            tests/test_demo_model_policy.py \
+            tests/test_ingestion_model_routing.py \
             tests/test_deploy_data_safety.py \
             tests/test_project_store.py \
             tests/test_project_file_deletion.py \
@@ -76,9 +125,10 @@ jobs:
             tests/test_forensic_programme_service.py \
             tests/test_forensic_engines.py \
             tests/test_forensic_api_models.py \
+            tests/test_forensic_actions.py \
             tests/test_run_store.py
 
-  # ── 2. Build the Docker image and push it to GHCR ────────────────────────
+  # ── 3. Build the Docker image and push it to GHCR ────────────────────────
   build-and-push:
     name: Build & push image
     needs: test
@@ -122,7 +172,7 @@ jobs:
         id: imgref
         run: echo "image=ghcr.io/${IMAGE_LOWER}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-  # ── 3. Deploy to the AWS Lightsail host over SSH ─────────────────────────
+  # ── 4. Deploy to the AWS Lightsail host over SSH ─────────────────────────
   deploy:
     name: Deploy to Lightsail
     needs: build-and-push
@@ -151,12 +201,14 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           APP_DIR: ${{ secrets.LIGHTSAIL_APP_DIR || '/opt/mvp-api' }}
+          DEMO_GOOGLE_API_KEY: ${{ secrets.DEMO_GOOGLE_API_KEY }}
+          DEMO_ACCOUNT_PASSWORD: ${{ secrets.DEMO_ACCOUNT_PASSWORD }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          envs: IMAGE,GHCR_TOKEN,GHCR_USER,APP_DIR
+          envs: IMAGE,GHCR_TOKEN,GHCR_USER,APP_DIR,DEMO_GOOGLE_API_KEY,DEMO_ACCOUNT_PASSWORD
           command_timeout: 60m
           script: |
             set -euo pipefail
@@ -166,6 +218,17 @@ jobs:
             docker info >/dev/null 2>&1 || SUDO="sudo"
 
             cd "$APP_DIR"
+
+            # Dedicated demo credentials are mandatory for this rollout. Keep
+            # the Google key outside Git, SQLite, the image and container env.
+            if [ -z "${DEMO_GOOGLE_API_KEY:-}" ] || [ -z "${DEMO_ACCOUNT_PASSWORD:-}" ]; then
+              echo "DEMO_GOOGLE_API_KEY and DEMO_ACCOUNT_PASSWORD production secrets are required." >&2
+              exit 1
+            fi
+            $SUDO install -d -m 700 "$APP_DIR/secrets/google_keys"
+            $SUDO install -m 600 /dev/null "$APP_DIR/secrets/google_keys/demo"
+            printf '%s' "$DEMO_GOOGLE_API_KEY" | $SUDO tee "$APP_DIR/secrets/google_keys/demo" >/dev/null
+            $SUDO chmod 600 "$APP_DIR/secrets/google_keys/demo"
 
             # Keep the exact image reference so a failed native/API health gate
             # can restore the previously running release.
@@ -258,6 +321,15 @@ jobs:
             for i in $(seq 1 48); do
               if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
                 echo "Health OK"
+                # Idempotently convert the existing legacy admin named demo to
+                # the controlled external demo account. The command validates
+                # the mounted key before changing role, password or billing.
+                $SUDO docker exec \
+                  -e DEMO_ACCOUNT_PASSWORD="$DEMO_ACCOUNT_PASSWORD" \
+                  mvp-api python scripts/configure_demo_account.py \
+                  --username demo --key-ref demo --credits 6500 \
+                  --storage-limit-bytes 30000000000 \
+                  --password-env DEMO_ACCOUNT_PASSWORD
                 # Only unreachable image layers are pruned. Persistent volumes,
                 # bind mounts, Qdrant snapshots and deploy backups are untouched.
                 $SUDO docker image prune -f
@@ -281,3 +353,61 @@ jobs:
             DEPLOY_SWITCH_ACTIVE=false
             trap - EXIT INT TERM
             exit 1
+
+  # ── 5. Public, read-only Projects/mobile smoke ───────────────────────────
+  production-ui-smoke:
+    name: Production read-only UI smoke
+    needs: deploy
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Detect production smoke configuration
+        id: smoke-config
+        env:
+          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          PROD_E2E_USERNAME: ${{ secrets.PROD_E2E_USERNAME }}
+          PROD_E2E_PASSWORD: ${{ secrets.PROD_E2E_PASSWORD }}
+          PROD_E2E_PROJECT_ID: ${{ secrets.PROD_E2E_PROJECT_ID }}
+        run: |
+          if [ -n "$PROD_BASE_URL" ] && [ -n "$PROD_E2E_USERNAME" ] && [ -n "$PROD_E2E_PASSWORD" ] && [ -n "$PROD_E2E_PROJECT_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Production UI smoke skipped until PROD_BASE_URL, PROD_E2E_USERNAME, PROD_E2E_PASSWORD and PROD_E2E_PROJECT_ID are configured."
+          fi
+
+      - name: Install production smoke dependencies
+        if: steps.smoke-config.outputs.enabled == 'true'
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run read-only production smoke
+        if: steps.smoke-config.outputs.enabled == 'true'
+        working-directory: frontend
+        env:
+          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          PROD_E2E_USERNAME: ${{ secrets.PROD_E2E_USERNAME }}
+          PROD_E2E_PASSWORD: ${{ secrets.PROD_E2E_PASSWORD }}
+          PROD_E2E_PROJECT_ID: ${{ secrets.PROD_E2E_PROJECT_ID }}
+        run: npm run e2e:projects:production
+
+      - name: Upload production smoke diagnostics
+        if: failure() && steps.smoke-config.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-projects-playwright-diagnostics
+          path: |
+            frontend/playwright-report-production
+            frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 14

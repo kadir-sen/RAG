@@ -36,7 +36,6 @@ from .config import (
     OCR_IMAGE_COVERAGE_THRESHOLD,
     OCR_VISION_FALLBACK_ENABLED,
     OCR_VISION_CONFIDENCE_THRESHOLD,
-    GOOGLE_API_KEY,
     GEMINI_MODEL,
 )
 from .logger import logger
@@ -513,7 +512,6 @@ class OCRPipeline:
 
             if (
                 OCR_VISION_FALLBACK_ENABLED
-                and GOOGLE_API_KEY
                 and (confidence is None or confidence < OCR_VISION_CONFIDENCE_THRESHOLD
                      or len(text) < 10)
             ):
@@ -544,7 +542,7 @@ class OCRPipeline:
             )
 
     def _vision_fallback(self, image_bytes: bytes) -> str:
-        """Use the quality model only for pages Tesseract could not read well."""
+        """Use the upload-only cheap vision model when Tesseract cannot read a page."""
         try:
             from .llm_client import generate_multimodal_text
             response = generate_multimodal_text(

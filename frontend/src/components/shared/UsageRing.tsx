@@ -115,7 +115,7 @@ export default function UsageRing({ size = 18, showLabel = false, showTokens = f
         />
       </svg>
       {showLabel && (
-        <span className={`font-mono text-[10px] tracking-wider tabular-nums ${textClass}`}>
+        <span className={`hidden font-mono text-[10px] tracking-wider tabular-nums sm:inline ${textClass}`}>
           {remaining.toFixed(0)}%
         </span>
       )}

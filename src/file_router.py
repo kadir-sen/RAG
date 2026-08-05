@@ -123,10 +123,12 @@ def route_file(
         # produce embeddings so we skip them.
         if file_type in ("document", "email"):
             try:
+                import contextvars as _contextvars
                 import threading as _t
                 from .document_clusterer import get_clusterer
+                _ctx = _contextvars.copy_context()
                 _t.Thread(
-                    target=lambda: get_clusterer().assign_new_doc(doc_id),
+                    target=lambda: _ctx.run(get_clusterer().assign_new_doc, doc_id),
                     daemon=True,
                 ).start()
             except Exception as ce:
@@ -199,6 +201,7 @@ def _enrich_document_llm(file_path: str, full_text: str,
             system="You are a precise construction-document indexer. Output JSON only.",
             model=GEMINI_MODEL_LITE,
             cache_key=cache_key,
+            task_type="ingestion_metadata",
         )
         data = resp.raw if isinstance(resp.raw, dict) else {}
         summary = str(data.get("summary", "")).strip()[:300] or None

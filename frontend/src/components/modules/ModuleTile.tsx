@@ -45,7 +45,7 @@ export default function ModuleTile({
   const body = (
     <>
       <span
-        className={`tile-mark relative block aspect-square border overflow-hidden transition-all duration-150 ${
+        className={`tile-mark relative block h-20 w-20 flex-none border overflow-hidden transition-all duration-150 sm:h-auto sm:w-full sm:max-w-[132px] sm:aspect-square sm:self-center lg:max-w-none ${
           disabled
             ? 'border-[var(--border)] opacity-40'
             : 'border-[var(--border)] group-hover:border-[var(--ink)] group-focus-visible:border-[var(--ink)]'
@@ -61,7 +61,7 @@ export default function ModuleTile({
         )}
       </span>
 
-      <span className="flex flex-col gap-1">
+      <span className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-none">
         <span className="flex items-baseline gap-2">
           <span className="font-mono text-[10px] tabular-nums tracking-[0.18em] text-[var(--text-muted)]">
             {index}
@@ -91,7 +91,7 @@ export default function ModuleTile({
     </>
   );
 
-  const shared = 'group flex flex-col gap-3.5 text-left';
+  const shared = 'group flex min-h-20 flex-row items-start gap-3.5 text-left sm:flex-col';
 
   if (to) {
     return (

@@ -28,6 +28,11 @@ services:
       # Versioned runtime policy. Keep these outside the persistent server env
       # so an older MAX_LLM_CALLS value cannot silently disable the rollout.
       - GEMINI_MODEL=gemini-3.6-flash
+      - GEMINI_MODEL_LITE=gemini-2.5-flash-lite
+      - GEMINI_INGESTION_MODEL=gemini-2.5-flash-lite
+      # Document and query vectors use the same local 768d BGE model. This is
+      # both cheaper and required for compatibility with the existing corpus.
+      - EMBEDDING_PROVIDER=fastembed
       - MAX_LLM_CALLS=12
       - LLM_MAX_RETRIES=3
       - CHRONOLOGY_PIPELINE_VERSION=v2
@@ -35,6 +40,9 @@ services:
     volumes:
       - ./storage:/app/storage
       - ./data:/app/data
+      # Per-user provider keys live on the host, outside Git and the image.
+      # A billing account stores only the matching filename/alias.
+      - ./secrets/google_keys:/run/secrets/google_keys:ro
     depends_on:
       qdrant:
         condition: service_started

@@ -42,6 +42,16 @@ MODEL_CAPABILITIES: Dict[str, ModelCapabilities] = {
         output_tokens=65_536,
         thinking_levels=("minimal", "low", "medium", "high"),
     ),
+    "gemini-2.5-flash": ModelCapabilities(
+        input_tokens=1_048_576,
+        output_tokens=65_536,
+        thinking_levels=("off", "low", "medium", "high"),
+    ),
+    "gemini-2.5-flash-lite": ModelCapabilities(
+        input_tokens=1_048_576,
+        output_tokens=65_536,
+        thinking_levels=("off", "low", "medium", "high"),
+    ),
 }
 
 
@@ -84,6 +94,10 @@ def get_task_profile(task_type: str) -> TaskProfile:
         "classification": "routing_classification",
         "scope": "routing_classification",
         "answer_check": "routing_classification",
+        "ingestion_metadata": "metadata",
+        "ingestion_notice_metadata": "metadata",
+        "ingestion_cluster_label": "metadata",
+        "ingestion_classification": "metadata",
         "query_plan": "research_plan",
         "answer_synthesis": "chat_answer",
         "document_synthesis": "chat_answer",

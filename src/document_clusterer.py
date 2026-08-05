@@ -509,6 +509,7 @@ class DocumentClusterer:
                 system="You generate concise document topic labels for construction project libraries.",
                 max_tokens=20,
                 provider="gemini",
+                task_type="ingestion_cluster_label",
             )
             text = (resp.text or "").strip().strip('"').strip("'")
             # First line only, trim trailing punctuation

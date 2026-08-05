@@ -126,3 +126,47 @@ def test_concurrent_storage_checks_cannot_oversubscribe(billing):
         results = list(pool.map(add, ["p1", "p2"]))
     assert sorted(results) == [False, True]
     assert billing.summary("demo")["storage_used_bytes"] == 60
+
+
+def test_dedicated_provider_key_binding_stores_only_alias(billing):
+    value = billing.update_account("demo", plan_type="demo", provider_key_ref="demo")
+    assert value["plan_type"] == "demo"
+    assert value["dedicated_provider_key"] is True
+    assert billing.get_account("demo")["provider_key_ref"] == "demo"
+    assert "AQ." not in repr(billing.get_account("demo"))
+
+    value = billing.update_account("demo", provider_key_ref="")
+    assert value["dedicated_provider_key"] is False
+
+
+@pytest.mark.parametrize("bad_ref", ["../demo", "/demo", "demo/key", "two words"])
+def test_provider_key_binding_rejects_unsafe_aliases(billing, bad_ref):
+    with pytest.raises(ValueError, match="provider_key_ref"):
+        billing.update_account("demo", provider_key_ref=bad_ref)
+
+
+def test_provider_key_column_is_added_without_rewriting_existing_account(tmp_path):
+    path = tmp_path / "legacy-users.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE users(username TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO users VALUES ('demo')")
+    conn.execute(
+        """CREATE TABLE billing_accounts (
+        username TEXT PRIMARY KEY, plan_type TEXT NOT NULL,
+        credits_granted_micro INTEGER NOT NULL, credits_balance_micro INTEGER NOT NULL,
+        markup_bps INTEGER NOT NULL, storage_limit_bytes INTEGER NOT NULL,
+        storage_used_bytes INTEGER NOT NULL, model_policy TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"""
+    )
+    conn.execute(
+        "INSERT INTO billing_accounts VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("demo", "demo", 7, 6, 3000, 30_000_000_000, 123,
+         "old-policy", "before", "before"),
+    )
+    conn.commit(); conn.close()
+
+    migrated = BillingStore(path)
+    row = migrated.get_account("demo")
+    assert row["credits_balance_micro"] == 6
+    assert row["storage_used_bytes"] == 123
+    assert row["provider_key_ref"] == ""

@@ -16,14 +16,14 @@ export default function ProjectSelector() {
   return (
     <div
       data-testid="project-context"
-      className="flex h-9 min-w-0 items-stretch border border-[var(--border)] bg-[var(--bg-primary)] rounded-[2px]"
+      className="flex h-11 min-w-0 items-stretch border border-[var(--border)] bg-[var(--bg-primary)] rounded-[2px]"
     >
       <button
         type="button"
         onClick={() => navigate('/projects')}
         aria-label={current ? `Manage project ${current.name}` : 'Open project management'}
         title="Open project management"
-        className="flex min-w-0 items-center gap-2 px-2.5 text-left hover:bg-[var(--bg-hover)] transition-colors"
+        className="flex min-w-0 items-center gap-2 px-2 text-left hover:bg-[var(--bg-hover)] transition-colors sm:px-2.5"
       >
         <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-[var(--text-secondary)]">
           <path d="M3 6.75A1.75 1.75 0 014.75 5h4l2 2h8.5A1.75 1.75 0 0121 8.75v8.5A1.75 1.75 0 0119.25 19H4.75A1.75 1.75 0 013 17.25z" />
@@ -32,12 +32,12 @@ export default function ProjectSelector() {
           <span className="hidden sm:block font-mono text-[8px] uppercase tracking-[.16em] text-[var(--text-muted)]">
             {location.pathname === '/projects' ? 'Project management' : 'Active project'}
           </span>
-          <span className="block max-w-[120px] md:max-w-[210px] truncate text-[11px] font-semibold text-[var(--text-primary)]">
+          <span className="block max-w-[96px] sm:max-w-[160px] md:max-w-[210px] truncate text-[11px] font-semibold text-[var(--text-primary)]">
             {current?.name ?? 'Select a project'}
           </span>
         </span>
       </button>
-      <div className="relative w-8 shrink-0 border-l border-[var(--border)] hover:bg-[var(--bg-hover)] transition-colors">
+      <div className="relative w-11 shrink-0 border-l border-[var(--border)] hover:bg-[var(--bg-hover)] transition-colors">
         <select
           aria-label="Switch active project"
           value={selected ?? ''}

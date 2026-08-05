@@ -4,20 +4,25 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import AIReportPanel from '../components/reports/AIReportPanel';
 import {
   createForensicRun,
+  createForensicAction,
   createWorkspace,
   deleteProgramme,
   downloadForensicArtifact,
   fetchForensicArtifact,
   getForensicRun,
   getForensicStatus,
+  getWorkspaceState,
+  listForensicSources,
   listForensicRuns,
   listProgrammes,
   listWorkspaces,
   retryForensicRun,
+  patchWorkspaceState,
+  replaceWorkspaceSources,
   updateWorkspace,
   uploadProgramme,
 } from '../api/forensicApi';
-import type { ForensicRun, ProgrammeFile, ResultTable } from '../api/forensicApi';
+import type { ForensicProjectSource, ForensicRun, ProgrammeFile, ResultTable } from '../api/forensicApi';
 import { useProjectStore } from '../stores/projectStore';
 import { useAuthStore } from '../stores/authStore';
 
@@ -155,6 +160,12 @@ type ModuleFormState = {
   eventDuration: string;
   predecessor: string;
   successor: string;
+  buildOosRepair: boolean;
+  oosPairs: string;
+  reportProject: string;
+  reportPreparedBy: string;
+  reportSections: string;
+  includeReportCharts: boolean;
 };
 
 const INITIAL_FORM: ModuleFormState = {
@@ -163,6 +174,8 @@ const INITIAL_FORM: ModuleFormState = {
   reportTitle: 'Forensic Programme Analysis', dateBasis: 'target',
   eventId: 'EV-001', eventTitle: '', eventDate: '', eventDescription: '',
   eventDuration: '10', predecessor: '', successor: '',
+  buildOosRepair: false, oosPairs: '',
+  reportProject: '', reportPreparedBy: '', reportSections: '', includeReportCharts: true,
 };
 
 function eventPayload(form: ModuleFormState) {
@@ -188,7 +201,10 @@ function parametersFor(slug: string, form: ModuleFormState): Record<string, unkn
     case 'dcma': return { programme_index: form.programmeIndex, thresholds: {} };
     case 'baseline-critical-path': return { programme_index: form.programmeIndex, method: form.method, near_critical_days: Number(form.threshold), float_tolerance_days: 0, branch_tolerance_hours: 1, end_task_code: form.endTask };
     case 'revision-comparison': return { old_index: 0, new_index: -1, end_task_code: form.endTask };
-    case 'out-of-sequence': return { programme_index: form.programmeIndex };
+    case 'out-of-sequence': return {
+      programme_index: form.programmeIndex, build_repaired_xer: form.buildOosRepair,
+      repair_activity_pairs: form.oosPairs.split(/[\s,]+/).filter(Boolean),
+    };
     case 'float-erosion': return { near_critical_days: Number(form.threshold) };
     case 'progress-s-curve': return { weight_scheme: form.weight };
     case 'resource-loading': return { programme_index: form.programmeIndex };
@@ -214,7 +230,7 @@ function ModuleForm({ slug, programmes, form, setForm }: {
   setForm: React.Dispatch<React.SetStateAction<ModuleFormState>>;
 }) {
   const input = 'w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[12px] text-[var(--text-primary)]';
-  const set = (key: keyof ModuleFormState, value: string | number) => setForm((old) => ({ ...old, [key]: value }));
+  const set = (key: keyof ModuleFormState, value: string | number | boolean) => setForm((old) => ({ ...old, [key]: value }));
   const needsEvent = slug === 'time-impact-analysis' || slug === 'impacted-as-planned';
   return (
     <div className="grid gap-4 sm:grid-cols-2">
@@ -226,12 +242,13 @@ function ModuleForm({ slug, programmes, form, setForm }: {
         </label>
       )}
       {slug === 'baseline-critical-path' && <label className="text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Identification method<select value={form.method} onChange={(e) => set('method', e.target.value)} className={`${input} mt-1 normal-case`}><option value="longest_path">Longest path</option><option value="float">Total float</option></select></label>}
+      {slug === 'out-of-sequence' && <div className="space-y-3 sm:col-span-2"><label className="flex min-h-11 items-center gap-3 border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-[11px] text-[var(--text-secondary)]"><input type="checkbox" checked={form.buildOosRepair} onChange={(event) => set('buildOosRepair', event.target.checked)} />Build a repaired XER copy after upstream round-trip QA</label>{form.buildOosRepair && <label className="block text-[10px] uppercase text-[var(--text-muted)]">Accepted predecessor→successor pairs (optional)<textarea value={form.oosPairs} onChange={(event) => set('oosPairs', event.target.value)} placeholder="Leave empty to accept every concrete, unblocked upstream fit; or enter A1000->A1010" className={`${input} mt-1 min-h-20 normal-case`} /></label>}</div>}
       {['baseline-critical-path', 'float-erosion'].includes(slug) && <label className="text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Near-critical threshold (days)<input type="number" min="0" value={form.threshold} onChange={(e) => set('threshold', e.target.value)} className={`${input} mt-1 normal-case`} /></label>}
       {['baseline-critical-path', 'revision-comparison', 'as-built-critical-path', 'windows-analysis', 'time-impact-analysis'].includes(slug) && <label className="text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Completion milestone (optional)<input value={form.endTask} onChange={(e) => set('endTask', e.target.value)} placeholder="Activity ID" className={`${input} mt-1 normal-case`} /></label>}
       {slug === 'progress-s-curve' && <label className="text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Weighting<select value={form.weight} onChange={(e) => set('weight', e.target.value)} className={`${input} mt-1 normal-case`}><option value="duration">Activity duration</option><option value="count">Activity count</option><option value="resource_qty">Resource quantity</option></select></label>}
       {slug === 'hierarchy' && <label className="sm:col-span-2 text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Dimension IDs (optional, comma separated)<input value={form.dimensions} onChange={(e) => set('dimensions', e.target.value)} placeholder="Leave empty to use the first available dimensions" className={`${input} mt-1 normal-case`} /></label>}
       {slug === 'collapsed-as-built' && <label className="sm:col-span-2 text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Confirmed event activity IDs<textarea required value={form.removeCodes} onChange={(e) => set('removeCodes', e.target.value)} placeholder="A1000, A1010" className={`${input} mt-1 min-h-24 normal-case`} /></label>}
-      {slug === 'report-assembler' && <label className="sm:col-span-2 text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Report title<input value={form.reportTitle} onChange={(e) => set('reportTitle', e.target.value)} className={`${input} mt-1 normal-case`} /></label>}
+      {slug === 'report-assembler' && <><label className="sm:col-span-2 text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Report title<input value={form.reportTitle} onChange={(e) => set('reportTitle', e.target.value)} className={`${input} mt-1 normal-case`} /></label><label className="text-[10px] uppercase text-[var(--text-muted)]">Project<input value={form.reportProject} onChange={(e) => set('reportProject', e.target.value)} className={`${input} mt-1 normal-case`} /></label><label className="text-[10px] uppercase text-[var(--text-muted)]">Prepared by<input value={form.reportPreparedBy} onChange={(e) => set('reportPreparedBy', e.target.value)} className={`${input} mt-1 normal-case`} /></label><label className="sm:col-span-2 text-[10px] uppercase text-[var(--text-muted)]">Sections (module slugs, comma separated)<input value={form.reportSections} onChange={(e) => set('reportSections', e.target.value)} placeholder="Leave empty to include all completed module runs" className={`${input} mt-1 normal-case`} /></label><label className="flex min-h-11 items-center gap-3 border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-[11px] normal-case text-[var(--text-secondary)]"><input type="checkbox" checked={form.includeReportCharts} onChange={(event) => set('includeReportCharts', event.target.checked)} />Embed available module charts</label></>}
       {slug === 'as-planned-vs-as-built' && <label className="text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">Baseline date basis<select value={form.dateBasis} onChange={(e) => set('dateBasis', e.target.value)} className={`${input} mt-1 normal-case`}><option value="target">Target dates</option><option value="late">Late dates</option><option value="early">Early dates</option></select></label>}
       {needsEvent && <>
         <div className="sm:col-span-2 border-t border-[var(--border)] pt-4"><p className="font-mono text-[9px] uppercase tracking-[.14em] text-[var(--text-muted)]">Analyst-confirmed delay event and fragnet</p></div>
@@ -247,18 +264,98 @@ function ModuleForm({ slug, programmes, form, setForm }: {
   );
 }
 
-function IntakePanel({ canEdit, workspaceId, onWorkspace }: { canEdit: boolean; workspaceId: string; onWorkspace: (id: string) => void }) {
+function ProjectSourcesPanel({
+  sources, selected, onSelected, programmes, baselineId, currentId,
+  contractMilestone, onBaseline, onCurrent, onContractMilestone, canEdit,
+}: {
+  sources: ForensicProjectSource[];
+  selected: string[];
+  onSelected: React.Dispatch<React.SetStateAction<string[]>>;
+  programmes: ProgrammeFile[];
+  baselineId: string;
+  currentId: string;
+  contractMilestone: string;
+  onBaseline: (value: string) => void;
+  onCurrent: (value: string) => void;
+  onContractMilestone: (value: string) => void;
+  canEdit: boolean;
+}) {
+  const [query, setQuery] = useState('');
+  const [kind, setKind] = useState('all');
+  const filtered = useMemo(() => sources.filter((source) => {
+    const matchesKind = kind === 'all' || source.source_kind === kind;
+    const haystack = `${source.file_name} ${source.metadata.title ?? ''} ${source.metadata.reference ?? ''}`.toLocaleLowerCase();
+    return matchesKind && haystack.includes(query.trim().toLocaleLowerCase());
+  }), [sources, query, kind]);
+  const input = 'min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-[12px] text-[var(--text-primary)]';
+  return (
+    <section className="border border-[var(--border)] bg-[var(--bg-primary)]">
+      <div className="border-b border-[var(--border)] p-4">
+        <p className="font-mono text-[9px] uppercase tracking-[.15em] text-[var(--text-muted)]">Project Sources</p>
+        <h2 className="mt-2 text-[14px] font-semibold text-[var(--text-primary)]">Use existing evidence without uploading it again</h2>
+        <p className="mt-1 text-[10px] leading-4 text-[var(--text-muted)]">PDF, Word, text, email and spreadsheet records are pinned by content hash. Text-only legacy records are labelled honestly and remain usable for AI evidence extraction.</p>
+      </div>
+      <div className="grid gap-3 border-b border-[var(--border)] bg-[var(--wash)] p-4 sm:grid-cols-[1fr_180px]">
+        <label className="font-mono text-[9px] uppercase text-[var(--text-muted)]">Search sources<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name, title or reference" className={`${input} mt-1 font-sans normal-case`} /></label>
+        <label className="font-mono text-[9px] uppercase text-[var(--text-muted)]">Type<select value={kind} onChange={(event) => setKind(event.target.value)} className={`${input} mt-1 font-sans normal-case`}><option value="all">All evidence</option><option value="document">Documents</option><option value="email">Email</option><option value="data">Excel / CSV</option></select></label>
+      </div>
+      <div className="max-h-[420px] divide-y divide-[var(--border)] overflow-y-auto">
+        {filtered.map((source) => {
+          const checked = selected.includes(source.source_id);
+          return <label key={source.source_id} className="flex min-h-14 cursor-pointer items-start gap-3 p-4 hover:bg-[var(--wash)]">
+            <input type="checkbox" className="mt-1 size-4" checked={checked} disabled={!canEdit} onChange={(event) => onSelected((old) => event.target.checked ? [...old, source.source_id] : old.filter((id) => id !== source.source_id))} />
+            <span className="min-w-0 flex-1"><span className="block break-words text-[11px] font-medium text-[var(--text-primary)]">{source.file_name}</span><span className="mt-1 block font-mono text-[8px] uppercase text-[var(--text-muted)]">{source.source_kind} · {source.status.replaceAll('_', ' ')} · {source.size_bytes ? bytes(source.size_bytes) : 'text index'} · SHA {source.content_hash.slice(0, 12)}</span>{source.metadata.sheets?.length ? <span className="mt-1 block text-[9px] text-[var(--text-muted)]">Sheets: {source.metadata.sheets.join(', ')}</span> : null}</span>
+            {source.capabilities.includes('text_only') && <span className="border border-[var(--amber)] px-2 py-1 font-mono text-[8px] uppercase text-[var(--amber)]">Text only</span>}
+          </label>;
+        })}
+        {!filtered.length && <p className="p-5 text-[11px] text-[var(--text-muted)]">No project source matches this filter.</p>}
+      </div>
+      <div className="grid gap-4 border-t border-[var(--border)] bg-[var(--wash)] p-4 md:grid-cols-3">
+        <label className="font-mono text-[9px] uppercase text-[var(--text-muted)]">Contract baseline<select value={baselineId} disabled={!canEdit} onChange={(event) => onBaseline(event.target.value)} className={`${input} mt-1 font-sans normal-case`}><option value="">Select programme</option>{programmes.map((item) => <option key={item.file_id} value={item.file_id}>{item.name}</option>)}</select></label>
+        <label className="font-mono text-[9px] uppercase text-[var(--text-muted)]">Current update<select value={currentId} disabled={!canEdit} onChange={(event) => onCurrent(event.target.value)} className={`${input} mt-1 font-sans normal-case`}><option value="">Select programme</option>{programmes.map((item) => <option key={item.file_id} value={item.file_id}>{item.name}</option>)}</select></label>
+        <label className="font-mono text-[9px] uppercase text-[var(--text-muted)]">Contractual completion milestone<input value={contractMilestone} disabled={!canEdit} onChange={(event) => onContractMilestone(event.target.value)} placeholder="Activity ID" className={`${input} mt-1 font-sans normal-case`} /></label>
+      </div>
+    </section>
+  );
+}
+
+function IntakePanel({ canEdit, parityAvailable, workspaceId, onWorkspace }: { canEdit: boolean; parityAvailable: boolean; workspaceId: string; onWorkspace: (id: string) => void }) {
   const queryClient = useQueryClient();
   const programmes = useQuery({ queryKey: ['forensic-programmes'], queryFn: listProgrammes });
   const workspaces = useQuery({ queryKey: ['forensic-workspaces'], queryFn: listWorkspaces });
+  const sources = useQuery({
+    queryKey: ['forensic-project-sources'], queryFn: listForensicSources,
+    enabled: parityAvailable,
+  });
+  const workspaceState = useQuery({
+    queryKey: ['forensic-workspace-state', workspaceId],
+    queryFn: () => getWorkspaceState(workspaceId),
+    enabled: parityAvailable && Boolean(workspaceId),
+  });
   const [selected, setSelected] = useState<string[]>([]);
+  const [selectedEvidence, setSelectedEvidence] = useState<string[]>([]);
   const [name, setName] = useState('Programme Analysis');
+  const [baselineId, setBaselineId] = useState('');
+  const [currentId, setCurrentId] = useState('');
+  const [contractMilestone, setContractMilestone] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
     const workspace = workspaces.data?.find((item) => item.workspace_id === workspaceId);
-    if (workspace) { setSelected(workspace.programme_ids); setName(workspace.name); }
+    if (workspace) {
+      setSelected(workspace.programme_ids);
+      setSelectedEvidence(workspace.evidence_source_ids ?? []);
+      setName(workspace.name);
+      setBaselineId(workspace.programme_ids[0] ?? '');
+      setCurrentId(workspace.programme_ids.at(-1) ?? '');
+    }
   }, [workspaceId, workspaces.data]);
+  useEffect(() => {
+    if (!workspaceState.data) return;
+    setBaselineId(workspaceState.data.state.baseline_programme_id);
+    setCurrentId(workspaceState.data.state.current_programme_id);
+    setContractMilestone(workspaceState.data.state.contract_completion_milestone);
+  }, [workspaceState.data]);
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -276,7 +373,20 @@ function IntakePanel({ canEdit, workspaceId, onWorkspace }: { canEdit: boolean; 
       const workspace = existing
         ? await updateWorkspace(existing.workspace_id, { name, programme_ids: selected })
         : await createWorkspace({ name, programme_ids: selected, settings: {} });
+      if (parityAvailable) {
+        const sourceResult = await replaceWorkspaceSources(
+          workspace.workspace_id,
+          existing ? (workspaceState.data?.version ?? workspace.state_version) : workspace.state_version,
+          [...selected, ...selectedEvidence],
+        );
+        await patchWorkspaceState(workspace.workspace_id, sourceResult.state.version, {
+          baseline_programme_id: baselineId || selected[0],
+          current_programme_id: currentId || selected.at(-1),
+          contract_completion_milestone: contractMilestone,
+        });
+      }
       await queryClient.invalidateQueries({ queryKey: ['forensic-workspaces'] });
+      await queryClient.invalidateQueries({ queryKey: ['forensic-workspace-state', workspace.workspace_id] });
       onWorkspace(workspace.workspace_id);
     } catch (e) { setError(errorMessage(e)); } finally { setBusy(false); }
   };
@@ -301,17 +411,37 @@ function IntakePanel({ canEdit, workspaceId, onWorkspace }: { canEdit: boolean; 
         </div>
         {canEdit && <div className="flex flex-col gap-3 border-t border-[var(--border)] bg-[var(--wash)] p-4 sm:flex-row"><input value={name} onChange={(e) => setName(e.target.value)} className="min-w-0 flex-1 border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[12px]" /><button disabled={busy || !selected.length || !name.trim()} onClick={() => void save()} className="border border-[var(--ink)] px-4 py-2 text-[11px] text-[var(--text-primary)] disabled:opacity-40">{workspaceId ? 'Update workspace' : 'Create workspace'}</button></div>}
       </section>
+      {parityAvailable && <ProjectSourcesPanel
+        sources={(sources.data ?? []).filter((item) => item.source_kind !== 'programme')}
+        selected={selectedEvidence}
+        onSelected={setSelectedEvidence}
+        programmes={(programmes.data ?? []).filter((item) => selected.includes(item.file_id))}
+        baselineId={baselineId}
+        currentId={currentId}
+        contractMilestone={contractMilestone}
+        onBaseline={setBaselineId}
+        onCurrent={setCurrentId}
+        onContractMilestone={setContractMilestone}
+        canEdit={canEdit}
+      />}
     </div>
   );
 }
 
-function RunPanel({ slug, workspaceId, programmes, canEdit }: { slug: string; workspaceId: string; programmes: ProgrammeFile[]; canEdit: boolean }) {
+function RunPanel({ slug, workspaceId, programmes, canEdit, parityAvailable, evidenceSourceIds }: { slug: string; workspaceId: string; programmes: ProgrammeFile[]; canEdit: boolean; parityAvailable: boolean; evidenceSourceIds: string[] }) {
   const queryClient = useQueryClient();
   const [form, setForm] = useState(INITIAL_FORM);
   const [selectedRunId, setSelectedRunId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [aiNarrative, setAiNarrative] = useState(false);
   const [error, setError] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
+  const [fragnetDraft, setFragnetDraft] = useState<Array<Record<string, unknown>>>([]);
+  const state = useQuery({
+    queryKey: ['forensic-workspace-state', workspaceId],
+    queryFn: () => getWorkspaceState(workspaceId),
+    enabled: parityAvailable && Boolean(workspaceId),
+  });
   const runs = useQuery({ queryKey: ['forensic-runs', workspaceId], queryFn: () => listForensicRuns(workspaceId), enabled: Boolean(workspaceId), refetchInterval: 2500 });
   const relevant = useMemo(() => (runs.data ?? []).filter((run) => run.module_slug === slug), [runs.data, slug]);
   useEffect(() => { setSelectedRunId(relevant[0]?.run_id ?? ''); }, [slug, relevant[0]?.run_id]);
@@ -320,9 +450,106 @@ function RunPanel({ slug, workspaceId, programmes, canEdit }: { slug: string; wo
   const submit = async () => {
     setSubmitting(true); setError('');
     try {
+      if (slug === 'report-assembler' && parityAvailable && state.data) {
+        await patchWorkspaceState(workspaceId, state.data.version, {
+          report: {
+            title: form.reportTitle, project: form.reportProject,
+            prepared_by: form.reportPreparedBy,
+            selected_sections: form.reportSections.split(/[\s,]+/).filter(Boolean),
+            include_charts: form.includeReportCharts,
+          },
+        });
+        await state.refetch();
+      }
       const created = await createForensicRun(workspaceId, slug, parametersFor(slug, form), aiNarrative);
       setSelectedRunId(created.run_id);
       await queryClient.invalidateQueries({ queryKey: ['forensic-runs', workspaceId] });
+    } catch (e) { setError(errorMessage(e)); } finally { setSubmitting(false); }
+  };
+  const extractEvents = async () => {
+    if (!state.data || !evidenceSourceIds.length) return;
+    setSubmitting(true); setError(''); setActionMessage('');
+    try {
+      const value = await createForensicAction<{ candidates: unknown[]; dropped_unverified: number; state_version: number }>(
+        workspaceId, slug, 'extract_events', {
+          expected_version: state.data.version,
+          source_ids: evidenceSourceIds,
+          query: form.eventDescription,
+        },
+      );
+      setActionMessage(`${value.candidates.length} verified candidate event(s) proposed; ${value.dropped_unverified} unverified item(s) discarded.`);
+      await state.refetch();
+    } catch (e) { setError(errorMessage(e)); } finally { setSubmitting(false); }
+  };
+  const generateNarrative = async () => {
+    if (!state.data || !run) return;
+    setSubmitting(true); setError(''); setActionMessage('');
+    try {
+      await createForensicAction(
+        workspaceId, slug, 'generate_narrative', {
+          expected_version: state.data.version, run_id: run.run_id,
+          analyst_instructions: '',
+        },
+      );
+      setActionMessage('A Gemini 3.6 Flash narrative draft was saved for analyst review and Report Assembler.');
+      await state.refetch();
+    } catch (e) { setError(errorMessage(e)); } finally { setSubmitting(false); }
+  };
+  const currentProgrammeId = programmes[
+    form.programmeIndex >= 0 ? form.programmeIndex : programmes.length - 1
+  ]?.file_id ?? '';
+  const extractClauses = async () => {
+    if (!state.data || !evidenceSourceIds.length) return;
+    setSubmitting(true); setError(''); setActionMessage('');
+    try {
+      const value = await createForensicAction<{ clauses: unknown[] }>(workspaceId, slug, 'extract_clause', {
+        expected_version: state.data.version, source_ids: evidenceSourceIds,
+      });
+      setActionMessage(`${value.clauses.length} contract topic(s) passed verbatim validation.`);
+      await state.refetch();
+    } catch (e) { setError(errorMessage(e)); } finally { setSubmitting(false); }
+  };
+  const recommendFragnet = async () => {
+    if (!state.data || !currentProgrammeId || !form.eventTitle.trim()) return;
+    setSubmitting(true); setError(''); setActionMessage('');
+    try {
+      const value = await createForensicAction<{ fragnet: Array<Record<string, unknown>>; validation_issues: string[] }>(workspaceId, slug, 'recommend_fragnet', {
+        expected_version: state.data.version, programme_id: currentProgrammeId,
+        event: eventPayload(form)[0].event,
+      });
+      setFragnetDraft(value.fragnet);
+      setActionMessage(`Fragnet draft created with ${value.fragnet.length} activities and ${value.validation_issues.length} deterministic validation issue(s).`);
+      await state.refetch();
+    } catch (e) { setError(errorMessage(e)); } finally { setSubmitting(false); }
+  };
+  const recommendLogic = async () => {
+    if (!state.data || !currentProgrammeId || !fragnetDraft.length) return;
+    setSubmitting(true); setError(''); setActionMessage('');
+    try {
+      const value = await createForensicAction<{ recommendation: { predecessors: unknown[]; successors: unknown[]; warnings: string[] } }>(workspaceId, slug, 'recommend_logic', {
+        expected_version: state.data.version, programme_id: currentProgrammeId,
+        event: eventPayload(form)[0].event, fragnet: fragnetDraft,
+      });
+      setActionMessage(`Logic recommendation retained ${value.recommendation.predecessors.length} predecessor and ${value.recommendation.successors.length} successor candidate(s) after programme-ID validation.`);
+      await state.refetch();
+    } catch (e) { setError(errorMessage(e)); } finally { setSubmitting(false); }
+  };
+  const reviewSequence = async () => {
+    if (!state.data || !run || !currentProgrammeId) return;
+    const mapping = run.result?.tables.find((table) => table.name === 'Mapping editor')?.rows ?? [];
+    if (!mapping.length) return;
+    setSubmitting(true); setError(''); setActionMessage('');
+    try {
+      const value = await createForensicAction<{ corrections: Record<string, unknown> }>(workspaceId, slug, 'ai_review', {
+        expected_version: state.data.version, programme_id: currentProgrammeId,
+        rows: mapping.map((row) => ({
+          task_code: String(row.task_code ?? ''), name: String(row.name ?? ''),
+          front: String(row.front ?? ''), stage: String(row.stage ?? ''),
+          rationale: `${String(row.front_evidence ?? '')}; ${String(row.stage_evidence ?? '')}`,
+        })),
+      });
+      setActionMessage(`${Object.keys(value.corrections).length} validated sequence correction(s) proposed for analyst review.`);
+      await state.refetch();
     } catch (e) { setError(errorMessage(e)); } finally { setSubmitting(false); }
   };
   return (
@@ -330,6 +557,8 @@ function RunPanel({ slug, workspaceId, programmes, canEdit }: { slug: string; wo
       <section className="border border-[var(--border)] bg-[var(--wash)] p-5">
         <ModuleForm slug={slug} programmes={programmes} form={form} setForm={setForm} />
         {error && <p role="alert" className="mt-4 text-[11px] text-[var(--danger)]">{error}</p>}
+        {actionMessage && <p role="status" className="mt-4 border border-[var(--accent)] p-3 text-[11px] text-[var(--text-secondary)]">{actionMessage}</p>}
+        {parityAvailable && slug === 'time-impact-analysis' && <div className="mt-5 space-y-4 border border-[var(--border)] bg-[var(--bg-primary)] p-4"><div><p className="font-mono text-[9px] uppercase text-[var(--text-muted)]">Steps 2–5 · Evidence, event, fragnet and logic</p><p className="mt-2 text-[10px] leading-4 text-[var(--text-secondary)]">Gemini proposals are written to versioned workspace state only after the toolkit’s strict parsers verify quotations, activity IDs, stages and network links. They still require analyst confirmation.</p></div><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"><button type="button" disabled={!canEdit || submitting || !state.data || !evidenceSourceIds.length} onClick={() => void extractEvents()} className="min-h-11 border border-[var(--border)] px-3 text-[10px] disabled:opacity-40">Extract event candidates</button><button type="button" disabled={!canEdit || submitting || !state.data || !evidenceSourceIds.length} onClick={() => void extractClauses()} className="min-h-11 border border-[var(--border)] px-3 text-[10px] disabled:opacity-40">Map contract clauses</button><button type="button" disabled={!canEdit || submitting || !state.data || !currentProgrammeId || !form.eventTitle.trim()} onClick={() => void recommendFragnet()} className="min-h-11 border border-[var(--border)] px-3 text-[10px] disabled:opacity-40">Recommend fragnet</button><button type="button" disabled={!canEdit || submitting || !state.data || !fragnetDraft.length} onClick={() => void recommendLogic()} className="min-h-11 border border-[var(--border)] px-3 text-[10px] disabled:opacity-40">Recommend logic</button></div>{fragnetDraft.length > 0 && <details className="border-t border-[var(--border)] pt-3"><summary className="cursor-pointer font-mono text-[9px] uppercase text-[var(--text-muted)]">Review proposed fragnet ({fragnetDraft.length})</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap text-[9px] text-[var(--text-secondary)]">{JSON.stringify(fragnetDraft, null, 2)}</pre></details>}</div>}
         {slug !== 'intake' && <label className="mt-5 flex items-start gap-2 text-[10px] leading-4 text-[var(--text-secondary)]"><input type="checkbox" checked={aiNarrative} onChange={(e) => setAiNarrative(e.target.checked)} /><span>Add a Gemini 3.6 Flash expert narrative. Deterministic calculations remain free; only this optional narrative uses project credits.</span></label>}
         <button disabled={!canEdit || submitting || !workspaceId} onClick={() => void submit()} className="mt-4 border border-[var(--accent)] bg-[var(--accent)] px-5 py-2.5 text-[11px] font-medium text-[var(--accent-ink)] disabled:opacity-40">{submitting ? 'Queuing…' : 'Run analysis'}</button>
         {!canEdit && <p className="mt-2 text-[10px] text-[var(--text-muted)]">Viewer access is read-only.</p>}
@@ -346,6 +575,8 @@ function RunPanel({ slug, workspaceId, programmes, canEdit }: { slug: string; wo
           {run.result.warnings.length > 0 && <div className="border border-[var(--amber)] p-4"><p className="font-mono text-[9px] uppercase text-[var(--amber)]">Engine warnings</p><ul className="mt-2 space-y-1 text-[11px] text-[var(--text-secondary)]">{run.result.warnings.map((warning, index) => <li key={index}>• {warning}</li>)}</ul></div>}
           {run.result.ai_status === 'credit_balance_exhausted' && <p className="border border-[var(--danger)] p-3 text-[11px] text-[var(--danger)]">Credit balance exhausted. The deterministic analysis and downloads remain available; add credits and start a new narrative run.</p>}
           {run.result.narrative && <section className="border border-[var(--border)] bg-[var(--bg-primary)] p-5"><p className="font-mono text-[9px] uppercase tracking-[.14em] text-[var(--text-muted)]">AI narrative · Gemini 3.6 Flash</p><p className="mt-3 whitespace-pre-wrap text-[12px] leading-6 text-[var(--text-secondary)]">{run.result.narrative}</p></section>}
+          {parityAvailable && canEdit && slug === 'sequence-coding' && <button type="button" disabled={submitting || !state.data} onClick={() => void reviewSequence()} className="min-h-11 border border-[var(--border)] px-4 text-[10px] text-[var(--text-primary)] disabled:opacity-40">AI-review mapping with upstream stage validator</button>}
+          {parityAvailable && canEdit && <button type="button" disabled={submitting || !state.data} onClick={() => void generateNarrative()} className="min-h-11 border border-[var(--accent)] px-4 text-[10px] text-[var(--text-primary)] disabled:opacity-40">Generate analyst-review narrative</button>}
           {run.result.chart && <VegaLitePanel spec={run.result.chart} />}
           {run.artifacts.filter((artifact) => artifact.kind === 'html').map((artifact) => <SandboxedHtmlPanel key={artifact.artifact_id} artifactId={artifact.artifact_id} title={artifact.name} />)}
           {run.result.tables.map((table) => <ResultTableView key={table.name} table={table} />)}
@@ -394,7 +625,8 @@ export default function ForensicPage() {
         {slug === 'evidence-report' ? <AIReportPanel module="forensic" /> : <div className="mx-auto max-w-6xl px-4 py-6 md:px-8 md:py-8">
           <label className="mb-5 block font-mono text-[9px] uppercase tracking-[.12em] text-[var(--text-muted)] lg:hidden">Analysis module<select value={slug} onChange={(e) => navigate(`/forensic/${e.target.value}${workspaceId ? `?workspace=${workspaceId}` : ''}`)} className="mt-1 block w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[11px] normal-case text-[var(--text-primary)]">{MODULE_OPTIONS.map((item) => <option key={item.slug} value={item.slug}>{item.label}</option>)}<option value="evidence-report">Evidence-led Forensic Draft</option></select></label>
           <header className="mb-6 flex flex-col gap-4 border-b border-[var(--border)] pb-5 md:flex-row md:items-end md:justify-between"><div><p className="font-mono text-[9px] uppercase tracking-[.15em] text-[var(--text-muted)]">{definition?.group ?? 'Programme'} · deterministic engine</p><h1 className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">{definition?.title ?? 'Forensic Programme Analysis'}</h1><p className="mt-2 text-[11px] text-[var(--text-muted)]">Results are tied to source revision {selectedWorkspace?.source_revision.slice(0, 12) ?? '—'}.</p></div><label className="text-[9px] uppercase tracking-[.12em] text-[var(--text-muted)]">Workspace<select value={workspaceId} onChange={(e) => setSearchParams(e.target.value ? { workspace: e.target.value } : {})} className="mt-1 block min-w-[260px] border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[11px] normal-case text-[var(--text-primary)]"><option value="">No workspace selected</option>{(workspaces.data ?? []).map((workspace) => <option key={workspace.workspace_id} value={workspace.workspace_id}>{workspace.name}</option>)}</select></label></header>
-          {slug === 'intake' ? <IntakePanel canEdit={canEdit} workspaceId={workspaceId} onWorkspace={(id) => setSearchParams({ workspace: id })} /> : !selectedWorkspace ? <div className="border border-[var(--border)] bg-[var(--wash)] p-6"><p className="text-[12px] text-[var(--text-secondary)]">Create or select a programme workspace before running this module.</p><Link to="/forensic/intake" className="mt-4 inline-block border border-[var(--border)] px-3 py-2 text-[10px]">Open Intake</Link></div> : <RunPanel slug={slug} workspaceId={workspaceId} programmes={selectedProgrammes} canEdit={canEdit} />}
+          {definition?.parity.steps?.length ? <ol aria-label="Module workflow" className="mb-6 grid gap-px border border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 lg:grid-cols-4">{definition.parity.steps.map((step, index) => <li key={step} className="min-h-14 bg-[var(--wash)] p-3 text-[10px] leading-4 text-[var(--text-secondary)]"><span className="mr-2 font-mono text-[9px] text-[var(--accent)]">{String(index + 1).padStart(2, '0')}</span>{step.replace(/^[①②③④⑤⑥⑦]\s*/, '')}</li>)}</ol> : null}
+          {slug === 'intake' ? <IntakePanel canEdit={canEdit} parityAvailable={Boolean(status.data.parity_available)} workspaceId={workspaceId} onWorkspace={(id) => setSearchParams({ workspace: id })} /> : !selectedWorkspace ? <div className="border border-[var(--border)] bg-[var(--wash)] p-6"><p className="text-[12px] text-[var(--text-secondary)]">Create or select a programme workspace before running this module.</p><Link to="/forensic/intake" className="mt-4 inline-block border border-[var(--border)] px-3 py-2 text-[10px]">Open Intake</Link></div> : <RunPanel slug={slug} workspaceId={workspaceId} programmes={selectedProgrammes} canEdit={canEdit} parityAvailable={Boolean(status.data.parity_available)} evidenceSourceIds={selectedWorkspace.evidence_source_ids ?? []} />}
         </div>}
       </div>
     </div>
