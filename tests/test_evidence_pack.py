@@ -143,3 +143,108 @@ def test_a_lexical_only_node_no_longer_yields_a_none_score():
     source = DocumentRAG._node_to_source(object.__new__(DocumentRAG), node)
     assert source["score"] == 5.0
     assert source["score"] is not None
+
+
+# ── Budget-bounded selection (select_pack) ───────────────────────────────
+
+from src.evidence_pack import MAX_PACK_CHARS, PackSelection, select_pack  # noqa: E402
+
+FACETS = {
+    "delay_prolongation": ("delay", "prolongation"),
+    "party_positions": ("contended", "position"),
+}
+
+
+def _scored(source_id, score, chars=1000, file_name="a.pdf", text=""):
+    return EvidenceItem(source_id, f"doc-{source_id}", file_name, page=1,
+                        excerpt=(text or "x" * chars), score=score)
+
+
+def test_selection_is_bounded_by_characters_not_document_count():
+    """The old rule capped count, which bounded neither cost nor batch risk."""
+    # Spread across files so the budget, not the per-document share, is what bites.
+    evidence = [_scored(f"s{i}", 1.0, chars=10_000, file_name=f"f{i}.pdf")
+                for i in range(200)]
+    pack = select_pack(evidence, facets={}, max_chars=50_000)
+    assert pack.stats["selected_chars"] <= 50_000
+    assert pack.stats["dropped_budget"] > 0
+
+
+def test_one_document_cannot_crowd_out_the_rest():
+    """A 1.8 MB inquiry report was 45% of one production pack."""
+    hog = [_scored(f"h{i}", 1.0, chars=5_000, file_name="inquiry.pdf") for i in range(100)]
+    others = [_scored(f"o{i}", 0.9, chars=5_000, file_name=f"letter-{i}.pdf") for i in range(20)]
+    pack = select_pack(hog + others, facets={}, max_chars=100_000,
+                       max_document_share=0.25)
+
+    per_file: dict[str, int] = {}
+    for item in pack.evidence:
+        per_file[item.file_name] = per_file.get(item.file_name, 0) + len(item.excerpt)
+    assert per_file["inquiry.pdf"] <= 25_000
+    assert len(per_file) > 1, "other documents must still get in"
+    assert pack.stats["dropped_document_cap"] > 0
+
+
+def test_the_cap_groups_by_file_not_by_fragment():
+    """doc_id is a fragment: ~14 per file in production, ~2,000 chars each.
+
+    Capping per doc_id would cap nothing at all.
+    """
+    fragments = [
+        EvidenceItem(f"s{i}", f"fragment-{i}", "one-file.pdf", page=i,
+                     excerpt="x" * 5_000, score=1.0)
+        for i in range(50)
+    ]
+    pack = select_pack(fragments, facets={}, max_chars=100_000,
+                       max_document_share=0.25)
+    assert pack.stats["selected_chars"] <= 25_000
+
+
+def test_a_narrow_topic_costs_less_than_the_ceiling():
+    """Adaptive: qualifying passages run out, the pack stops."""
+    evidence = [_scored("top", 1.0, chars=2_000)] + [
+        _scored(f"weak{i}", 0.05, chars=2_000) for i in range(300)
+    ]
+    pack = select_pack(evidence, facets={}, max_chars=MAX_PACK_CHARS)
+    assert pack.stats["selected_passages"] == 1
+    assert pack.stats["dropped_below_floor"] == 300
+    assert pack.stats["selected_chars"] < MAX_PACK_CHARS / 10
+
+
+def test_a_broad_topic_fills_the_budget():
+    evidence = [_scored(f"s{i}", 1.0 - i / 1000, chars=2_000, file_name=f"f{i % 20}.pdf")
+                for i in range(500)]
+    pack = select_pack(evidence, facets={}, max_chars=100_000)
+    assert 90_000 <= pack.stats["selected_chars"] <= 100_000
+
+
+def test_an_uncovered_facet_gets_a_passage_even_below_the_floor():
+    evidence = [_scored(f"s{i}", 1.0, chars=500, text="contract scope wording")
+                for i in range(5)]
+    evidence.append(_scored("rare", 0.01, chars=500,
+                            text="the contended position of the parties"))
+    pack = select_pack(evidence, facets=FACETS, max_chars=100_000)
+
+    assert "rare" in {item.source_id for item in pack.evidence}
+    assert pack.stats["admitted_for_coverage"] == 1
+
+
+def test_coverage_rescue_still_respects_the_budget():
+    evidence = [_scored("big", 1.0, chars=9_000, text="delay and prolongation")]
+    evidence.append(_scored("rare", 0.01, chars=9_000,
+                            text="the contended position of the parties"))
+    pack = select_pack(evidence, facets=FACETS, max_chars=10_000)
+    assert pack.stats["selected_chars"] <= 10_000
+
+
+def test_empty_evidence_selects_nothing_without_error():
+    pack = select_pack([], facets=FACETS)
+    assert isinstance(pack, PackSelection)
+    assert pack.evidence == []
+    assert pack.stats["candidates"] == 0
+
+
+def test_a_passage_is_never_selected_twice():
+    duplicate = _scored("same", 1.0, chars=100, text="delay")
+    pack = select_pack([duplicate, duplicate], facets=FACETS, max_chars=10_000)
+    assert len(pack.evidence) == 1

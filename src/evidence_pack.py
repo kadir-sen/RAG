@@ -14,7 +14,7 @@ whether the pack was enough — so v2 and v3 give the same answer to both.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence
+from typing import Dict, List, Mapping, Sequence
 
 from .evidence_model import EvidenceItem
 
@@ -25,12 +25,145 @@ from .evidence_model import EvidenceItem
 # ships, it just stops claiming to be a full one.
 THIN_RECORD_EVENTS = 8
 
+# Ceiling on the evidence handed to extraction, in characters. Three batches at
+# EVIDENCE_BATCH_CHARS. The old rule capped the *count* of selected documents at
+# twelve, which controlled neither cost nor truncation risk: a document here can
+# be 16 characters or 290,000, so twelve of them was anywhere between one batch
+# and fifty. Bounding the text bounds both.
+MAX_PACK_CHARS = 240_000
+
+# No single file may take more than this share of the budget. One 1.8 MB inquiry
+# report would otherwise crowd out every contemporaneous letter — and a
+# chronology is built from the letters.
+MAX_DOCUMENT_SHARE = 0.25
+
+# Keep passages scoring at least this fraction of the best one. Scores are
+# ordinal (see ai_reports._rank_normalised), so this is "ranked respectably by
+# some lane", not a calibrated probability. It is what makes the pack adaptive:
+# a narrow topic runs out of qualifying passages early and costs less, while a
+# broad one fills the budget.
+RELEVANCE_FLOOR = 0.35
+
+# How many scored passages retrieval hands to the selector. This is a candidate
+# pool, not the pack: the selector still has to fit them inside MAX_PACK_CHARS.
+# It was 120, which at a 1,200-character excerpt could not fill the budget even
+# in principle, so the ceiling would never have been reachable.
+CANDIDATE_PASSAGES = 400
+
 
 @dataclass(frozen=True)
 class PackAssessment:
     status: str                                   # "complete" | "partial"
     reasons: List[str] = field(default_factory=list)
     pack: Dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PackSelection:
+    evidence: List[EvidenceItem] = field(default_factory=list)
+    stats: Dict = field(default_factory=dict)
+
+
+def _facet_hits(text: str, facets: Mapping[str, Sequence[str]]) -> List[str]:
+    lowered = (text or "").casefold()
+    return [name for name, terms in facets.items()
+            if any(term.casefold() in lowered for term in terms)]
+
+
+def select_pack(
+    evidence: Sequence[EvidenceItem],
+    *,
+    facets: Mapping[str, Sequence[str]] | None = None,
+    max_chars: int = MAX_PACK_CHARS,
+    max_document_share: float = MAX_DOCUMENT_SHARE,
+    relevance_floor: float = RELEVANCE_FLOOR,
+) -> PackSelection:
+    """Choose the evidence to extract from, bounded by text rather than count.
+
+    Replaces "take the top twelve documents". That rule limited the wrong
+    dimension — a `doc_id` in this corpus is a fragment, averaging ~2,000
+    characters and ~14 to a file, so twelve of them was ~24,000 characters of a
+    240,000,000-character corpus, about a hundredth of a percent. It also had no
+    relevance threshold, so it padded a narrow topic with twelve items whether
+    or not twelve were worth reading.
+
+    Four rules, in order:
+
+    1. Keep passages within `relevance_floor` of the best. This is what makes
+       the pack adaptive: a narrow topic stops early.
+    2. Guarantee every coverage facet at least one passage, admitting a
+       below-floor passage where that is the only way — an uncovered facet is
+       worth more than a marginally better duplicate.
+    3. Never let one file exceed `max_document_share` of the budget.
+    4. Fill by relevance until `max_chars`.
+
+    Grouping is by `file_name`, not `doc_id`: the cap is meant to stop one
+    *document* dominating, and doc_ids are fragments of documents.
+    """
+    ranked = sorted(evidence, key=lambda item: float(item.score or 0.0), reverse=True)
+    stats: Dict = {
+        "candidates": len(ranked), "dropped_below_floor": 0,
+        "dropped_document_cap": 0, "dropped_budget": 0,
+        "admitted_for_coverage": 0,
+    }
+    if not ranked:
+        return PackSelection([], stats)
+
+    best = float(ranked[0].score or 0.0)
+    floor = best * relevance_floor
+    stats["relevance_floor"] = round(floor, 6)
+
+    facet_map = dict(facets or {})
+    per_document_cap = max(1, int(max_chars * max_document_share))
+
+    chosen: List[EvidenceItem] = []
+    chosen_ids: set[str] = set()
+    used_chars = 0
+    per_document: Dict[str, int] = {}
+    covered: set[str] = set()
+
+    def admit(item: EvidenceItem, *, for_coverage: bool = False) -> bool:
+        nonlocal used_chars
+        size = len(item.excerpt or "")
+        if item.source_id in chosen_ids:
+            return False
+        if used_chars + size > max_chars:
+            stats["dropped_budget"] += 1
+            return False
+        key = item.file_name or item.doc_id
+        if per_document.get(key, 0) + size > per_document_cap:
+            stats["dropped_document_cap"] += 1
+            return False
+        chosen.append(item)
+        chosen_ids.add(item.source_id)
+        per_document[key] = per_document.get(key, 0) + size
+        used_chars += size
+        covered.update(_facet_hits(item.excerpt, facet_map))
+        if for_coverage:
+            stats["admitted_for_coverage"] += 1
+        return True
+
+    qualifying = [item for item in ranked if float(item.score or 0.0) >= floor]
+    stats["dropped_below_floor"] = len(ranked) - len(qualifying)
+
+    for item in qualifying:
+        admit(item)
+
+    # Facets still unrepresented get their best available passage, floor or not.
+    for facet in facet_map:
+        if facet in covered:
+            continue
+        for item in ranked:
+            if item.source_id in chosen_ids:
+                continue
+            if facet in _facet_hits(item.excerpt, facet_map):
+                if admit(item, for_coverage=True):
+                    break
+
+    stats["selected_passages"] = len(chosen)
+    stats["selected_chars"] = used_chars
+    stats["selected_documents"] = len(per_document)
+    return PackSelection(chosen, stats)
 
 
 def describe_pack(evidence: Sequence[EvidenceItem],

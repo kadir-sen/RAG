@@ -22,6 +22,9 @@ PIPELINE_VERSION = "chronology-v2"
 EVIDENCE_BATCH_CHARS = 80_000
 AGGREGATION_BATCH_CHARS = 180_000
 MAX_SOURCE_DOCUMENTS = 20
+# How many candidate documents the preview lists for the analyst. Presentation
+# only — what the report reads is decided by evidence_pack.select_pack.
+MAX_PREVIEW_DOCUMENTS = 20
 
 COVERAGE_FACETS: Dict[str, Tuple[str, ...]] = {
     "contractual_framework": ("contract", "agreement", "obligation", "clause", "scope"),
@@ -308,25 +311,52 @@ def source_preview(
         coverage = coverage_matrix(evidence)
         missing = [facet for facet, hits in coverage.items() if hits == 0]
 
-    docs: Dict[Tuple[str, str], Dict] = {}
+    # Show the analyst the documents the report would actually read. Two things
+    # were wrong here. Documents were keyed by (doc_id, file_name), but a doc_id
+    # is a fragment — one file averages ~14 of them — so a "document" row was a
+    # fragment row. And the per-document score was a SUM over passages, which
+    # ranked a document by how much of it matched rather than how well, handing
+    # the top places to whatever was longest.
+    from .evidence_pack import select_pack
+
+    selection = select_pack(evidence, facets=COVERAGE_FACETS)
+    selected_ids = {item.source_id for item in selection.evidence}
+
+    docs: Dict[str, Dict] = {}
     for item in evidence:
-        key = (item.doc_id, item.file_name)
+        key = item.file_name or item.doc_id
         row = docs.setdefault(key, {
             "doc_id": item.doc_id, "file_name": item.file_name,
             "score": 0.0, "pages": set(), "source_count": 0,
+            "doc_ids": set(), "selected": False, "selected_chars": 0,
         })
-        row["score"] += max(0.0, float(item.score))
+        # Best passage, not the sum of them.
+        row["score"] = max(row["score"], max(0.0, float(item.score)))
         if item.page:
             row["pages"].add(item.page)
         row["source_count"] += 1
-    documents = sorted(docs.values(), key=lambda row: (-row["score"], row["file_name"]))[:20]
+        if item.doc_id:
+            row["doc_ids"].add(item.doc_id)
+        if item.source_id in selected_ids:
+            row["selected"] = True
+            row["selected_chars"] += len(item.excerpt or "")
+
+    documents = sorted(
+        docs.values(), key=lambda row: (-row["score"], row["file_name"]),
+    )[:MAX_PREVIEW_DOCUMENTS]
     for row in documents:
         row["pages"] = sorted(row["pages"])
-        row["selected"] = len([d for d in documents if d["score"] > row["score"]]) < 12
+        row["doc_ids"] = sorted(row["doc_ids"])
         row["score"] = round(row["score"], 6)
+
+    # Coverage of the pack that would be read, not of everything retrieval saw.
+    pack_coverage = coverage_matrix(selection.evidence)
+    pack_missing = [facet for facet, hits in pack_coverage.items() if hits == 0]
     return {
         "prepared": asdict(prepared), "documents": documents,
-        "coverage": coverage, "coverage_status": "complete" if not missing else "partial",
+        "coverage": pack_coverage,
+        "coverage_status": "complete" if not pack_missing else "partial",
+        "selection": selection.stats,
         "corpus_revision": _corpus_revision(project_id),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

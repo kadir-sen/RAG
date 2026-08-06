@@ -457,3 +457,56 @@ def test_systemic_errors_still_abort_and_are_not_counted_as_batch_failures(monke
     with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
         extract_batches(evidence, prepared, stats=stats)
     assert stats["batches_failed"] == 0
+
+
+def test_preview_groups_by_document_not_by_fragment():
+    """A doc_id is a fragment: one file carries ~14 of them in production.
+
+    Keying preview rows on doc_id showed the analyst fragments and called them
+    documents, and let one file occupy every row.
+    """
+    prepared = PreparedChronologyQuery("delay", "delay", (), (), (), (), (), ("q",))
+    evidence = [
+        EvidenceItem(f"s{i}", f"fragment-{i}", "one-file.pdf", page=i,
+                     excerpt="contract delay notice", score=0.9 - i / 100)
+        for i in range(14)
+    ] + [
+        EvidenceItem("other", "d-other", "second-file.pdf", page=1,
+                     excerpt="programme baseline milestone", score=0.5),
+    ]
+    result = source_preview("p", prepared, lambda project, questions: evidence)
+
+    names = [row["file_name"] for row in result["documents"]]
+    assert names == ["one-file.pdf", "second-file.pdf"]
+    assert result["documents"][0]["source_count"] == 14
+    assert len(result["documents"][0]["doc_ids"]) == 14
+
+
+def test_preview_ranks_by_best_passage_not_by_how_much_matched():
+    """Summing passage scores ranked documents by length, not by relevance."""
+    prepared = PreparedChronologyQuery("delay", "delay", (), (), (), (), (), ("q",))
+    verbose = [
+        EvidenceItem(f"v{i}", f"dv{i}", "long-report.pdf", page=i,
+                     excerpt="delay mentioned in passing", score=0.20)
+        for i in range(30)                      # sum 6.0, best 0.20
+    ]
+    decisive = [
+        EvidenceItem("k1", "dk1", "key-letter.pdf", page=1,
+                     excerpt="notice of delay issued", score=0.98),
+    ]
+    result = source_preview("p", prepared, lambda project, questions: verbose + decisive)
+
+    assert result["documents"][0]["file_name"] == "key-letter.pdf"
+
+
+def test_preview_coverage_describes_the_pack_that_would_be_read():
+    """Coverage used to be measured before selection, so it always said complete."""
+    prepared = PreparedChronologyQuery("delay", "delay", (), (), (), (), (), ("q",))
+    evidence = [
+        EvidenceItem("s1", "d1", "a.pdf", page=1, excerpt="contract clause scope",
+                     score=1.0),
+    ]
+    result = source_preview("p", prepared, lambda project, questions: evidence)
+
+    assert result["coverage_status"] == "partial"
+    assert result["selection"]["selected_passages"] == len(evidence)

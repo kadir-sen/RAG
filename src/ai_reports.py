@@ -10,7 +10,7 @@ from dataclasses import asdict
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .evidence_model import ChronologyEntry, EvidenceItem, VerifiedClaim
-from .evidence_pack import assess_pack
+from .evidence_pack import CANDIDATE_PASSAGES, assess_pack, select_pack
 from .report_docx import FORENSIC_SECTIONS, build_ai_chronology_docx, build_forensic_report_docx
 
 
@@ -200,7 +200,7 @@ def retrieve_evidence(project_id: str, questions: Sequence[str], top_k: int = 12
         current = by_id.get(item.source_id)
         if current is None or item.score > current.score:
             by_id[item.source_id] = item
-    return sorted(by_id.values(), key=lambda x: x.score, reverse=True)[:120]
+    return sorted(by_id.values(), key=lambda x: x.score, reverse=True)[:CANDIDATE_PASSAGES]
 
 
 def _evidence_payload(evidence: Sequence[EvidenceItem]) -> str:
@@ -303,22 +303,33 @@ def _generate_chronology_v2(
         )
 
     chosen = [str(value) for value in source_doc_ids if str(value).strip()]
-    preview = preparation or {}
     if not chosen:
+        # source_preview used to run here purely to turn retrieval into a list
+        # of doc_ids, which the pack builder then re-read from disk. The pack
+        # builder now keeps the passages directly, so calling it would mean
+        # paying for the same retrieval twice. It remains the API's preview
+        # endpoint, where showing the analyst the candidate documents is the
+        # whole point.
         stage("source_selection", .14)
-        preview = source_preview(project_id, prepared, retrieve_evidence)
-        chosen = [str(row.get("doc_id") or "") for row in preview.get("documents", [])
-                  if row.get("selected") and row.get("doc_id")]
     stage("evidence_pack", .2)
-    if chosen:
-        try:
-            evidence = evidence_from_documents(project_id, chosen)
-        except ValueError:
-            if source_doc_ids:
-                raise
-            evidence = retrieve_evidence(project_id, prepared.research_queries)
+    selection_stats: Dict = {}
+    if source_doc_ids:
+        # An explicit selection is the analyst's, not ours: read those documents
+        # whole and do not second-guess the choice.
+        evidence = evidence_from_documents(project_id, chosen)
     else:
-        evidence = retrieve_evidence(project_id, prepared.research_queries)
+        # Otherwise keep the passages retrieval actually scored, and bound the
+        # pack by text. The previous path threw the scored passages away, kept
+        # only their doc_ids and re-read those fragments whole — which is how a
+        # 240 MB corpus produced a 24,000-character pack.
+        from .chronology_v2 import COVERAGE_FACETS
+        selection = select_pack(
+            retrieve_evidence(project_id, prepared.research_queries),
+            facets=COVERAGE_FACETS,
+        )
+        evidence = selection.evidence
+        selection_stats = selection.stats
+        chosen = sorted({item.doc_id for item in evidence if item.doc_id})
     if not evidence:
         raise ValueError("no_evidence")
 
@@ -459,6 +470,7 @@ def _generate_chronology_v2(
         coverage=pack_coverage,
         extraction_stats=extraction_stats,
     )
+    assessment.pack["selection"] = selection_stats
 
     return {
         "entries": [asdict(e) for e in entries],
