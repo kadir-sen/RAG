@@ -304,9 +304,9 @@ jobs:
             }
             write_release_env "$IMAGE"
 
-            # The toolkit's managed AI credential lives here, on the host, in a
-            # file this pipeline creates empty and never overwrites. Put
-            # NVIDIA_API_KEY=... in it and restart the toolkit container to turn
+            # The toolkit's managed Gemini credential lives here, on the host,
+            # in a file this pipeline creates empty and never overwrites. Put
+            # GEMINI_API_KEY=... in it and restart the toolkit container to turn
             # on managed AI; no deploy or code change is involved.
             if [ ! -f "$APP_DIR/.env.toolkit" ]; then
               $SUDO install -m 600 /dev/null "$APP_DIR/.env.toolkit"
@@ -419,7 +419,11 @@ jobs:
                 # is a supported state — the toolkit then asks each analyst for
                 # a key, which is upstream's default.
                 toolkit_secret() {
-                  $SUDO sed -n "s/^$1=//p" "$APP_DIR/.env.toolkit" | tail -1
+                  # The secret file is intentionally root-owned 0600. Docker
+                  # access may not require sudo on this host, so $SUDO can be
+                  # empty; use the already-verified privileged runner instead
+                  # of weakening the file permissions.
+                  $BACKUP_RUNNER sed -n "s/^$1=//p" "$APP_DIR/.env.toolkit" | tail -1
                 }
                 TOOLKIT_GEMINI_KEY="$(toolkit_secret GEMINI_API_KEY)"
                 TOOLKIT_NVIDIA_KEY="$(toolkit_secret NVIDIA_API_KEY)"
