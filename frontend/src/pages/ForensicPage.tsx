@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AIReportPanel from '../components/reports/AIReportPanel';
+import { TOOLKIT_URL } from '../config/modules';
 import {
   createForensicRun,
   createForensicAction,
@@ -699,8 +700,25 @@ export default function ForensicPage() {
   const selectedWorkspace = workspaces.data?.find((item) => item.workspace_id === workspaceId);
   const selectedProgrammes = (programmes.data ?? []).filter((item) => selectedWorkspace?.programme_ids.includes(item.file_id));
 
-  if (status.isLoading) return <div className="flex-1 p-8 text-[12px] text-[var(--text-muted)]">Loading forensic engines…</div>;
-  if (!status.data?.available) return <div className="flex-1 p-8"><div className="border border-[var(--border)] bg-[var(--wash)] p-6"><h1 className="text-lg font-semibold">Native forensic analysis is in validation</h1><p className="mt-2 text-[12px] text-[var(--text-secondary)]">An administrator can validate the pinned engines before enabling <code>FORENSIC_NATIVE_UI_V1</code> for project users.</p></div></div>;
+  if (status.isLoading) return <div className="flex-1 p-8 text-[12px] text-[var(--text-muted)]">Loading…</div>;
+
+  // The Evidence-led Forensic Draft is COAir's own AI report over the project
+  // record. It needs no programme file, no engine and no native workspace, so
+  // it must survive the native module being closed — which is now the normal
+  // state, with programme forensics served by the standalone Delay Analysis
+  // Toolkit. Without this branch the gate below would swallow it.
+  if (slug === 'evidence-report' && !status.data?.available) return (
+    <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+      <div className="border-b border-[var(--border)] bg-[var(--wash)] px-4 py-4 md:px-8">
+        <p className="font-mono text-[9px] uppercase tracking-[.15em] text-[var(--text-muted)]">COAir</p>
+        <h1 className="mt-1 text-[15px] font-semibold text-[var(--text-primary)]">Evidence-led Forensic Draft</h1>
+        <p className="mt-2 max-w-2xl text-[11px] leading-5 text-[var(--text-secondary)]">Drafted from this project's documents. Programme analysis — DCMA, critical path, windows — lives in the <a href={TOOLKIT_URL} className="underline">Delay Analysis Toolkit</a>.</p>
+      </div>
+      <AIReportPanel module="forensic" />
+    </div>
+  );
+
+  if (!status.data?.available) return <div className="flex-1 p-8"><div className="border border-[var(--border)] bg-[var(--wash)] p-6"><h1 className="text-lg font-semibold">Native forensic analysis is in validation</h1><p className="mt-2 text-[12px] text-[var(--text-secondary)]">Programme analysis is served by the <a href={TOOLKIT_URL} className="underline">Delay Analysis Toolkit</a>. An administrator can validate the pinned engines here before enabling <code>FORENSIC_NATIVE_UI_V1</code> for project users.</p></div></div>;
 
   return (
     <div className="flex min-w-0 flex-1 overflow-hidden">

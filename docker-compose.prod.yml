@@ -36,7 +36,14 @@ services:
       - MAX_LLM_CALLS=12
       - LLM_MAX_RETRIES=3
       - CHRONOLOGY_PIPELINE_VERSION=v2
-      - FORENSIC_NATIVE_UI_V1=true
+      # Forensic programme analysis is served by the `toolkit` service below —
+      # the upstream Streamlit app, unchanged. The native React re-rendering of
+      # the same engines stays in the tree but is closed to users: it was a
+      # different product (React charts, different exports, different session
+      # model) and the ask was for the toolkit exactly as its author built it.
+      # Admins can still validate the parity APIs; flipping this back to `true`
+      # is the whole rollback.
+      - FORENSIC_NATIVE_UI_V1=false
     volumes:
       - ./storage:/app/storage
       - ./data:/app/data
@@ -52,6 +59,49 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # The Delay Analysis Toolkit's own Streamlit app, served at /toolkit/ by the
+  # host nginx (deploy/nginx/coair-toolkit.conf). Upstream source, untouched.
+  #
+  # It shares the box but nothing else: no COAir secrets, no COAir data, no
+  # dependency on the API. That is deliberate — the toolkit is reachable
+  # without a COAir session, so anything mounted here would be public too.
+  toolkit:
+    image: ${TOOLKIT_IMAGE:-mvp-toolkit:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.toolkit
+    container_name: mvp-toolkit
+    restart: unless-stopped
+    # Loopback only — nginx fronts it, same as the API.
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      # The single managed credential. When set, every AI panel in the toolkit
+      # uses it and stops asking analysts for a key of their own; the value is
+      # never rendered back to the page (views/_shared.py: managed_ai_key).
+      # Left empty, the toolkit still works — it just asks each analyst for a
+      # key, which is upstream's default behaviour.
+      #
+      # The value lives in $APP_DIR/.env.toolkit on the host. The deploy creates
+      # that file empty if it is missing and never overwrites it, so setting the
+      # key is a one-line edit plus `docker compose up -d toolkit` — no deploy,
+      # no code change, and the secret never passes through Git or CI.
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+    # A parsed XER expands several times over in memory. Cap the toolkit so a
+    # large upload here can never starve the API or Qdrant.
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8501/toolkit/_stcore/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     logging:
       driver: json-file
       options:

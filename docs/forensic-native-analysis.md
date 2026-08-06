@@ -1,8 +1,15 @@
 # Native forensic programme analysis
 
+> **Closed to project users.** Programme forensics are now served by the
+> toolkit's own Streamlit app at `/toolkit/` — see
+> [delay-toolkit.md](delay-toolkit.md). `FORENSIC_NATIVE_UI_V1=false` in
+> production; admins may still validate the parity APIs, and setting the flag
+> back to `true` restores everything below. The document describes the native
+> layer as built.
+
 COAir runs the Delay Analysis Toolkit's deterministic engines directly inside
 the FastAPI process. No Streamlit page, iframe, launch ticket, port 8501 or
-`/toolkit/` reverse proxy participates in the production flow.
+`/toolkit/` reverse proxy participates in this flow.
 
 ## Source boundary
 

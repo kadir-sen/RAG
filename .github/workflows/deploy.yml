@@ -168,6 +168,7 @@ jobs:
       packages: write
     outputs:
       image: ${{ steps.imgref.outputs.image }}
+      toolkit_image: ${{ steps.imgref.outputs.toolkit_image }}
     steps:
       - uses: actions/checkout@v4
 
@@ -197,9 +198,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The Delay Analysis Toolkit's Streamlit app — a second, independent
+      # image. It contains only the vendored upstream tree and that tree's own
+      # requirements, so it changes when the vendor pin changes, not when COAir
+      # does; the layer cache makes it near-free on an ordinary deploy.
+      - name: Build and push toolkit image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.toolkit
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_LOWER }}/toolkit:latest
+            ghcr.io/${{ env.IMAGE_LOWER }}/toolkit:${{ github.sha }}
+          cache-from: type=gha,scope=toolkit
+          cache-to: type=gha,mode=max,scope=toolkit
+
       - name: Export image ref for deploy job
         id: imgref
-        run: echo "image=ghcr.io/${IMAGE_LOWER}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "image=ghcr.io/${IMAGE_LOWER}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "toolkit_image=ghcr.io/${IMAGE_LOWER}/toolkit:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   # ── 5. Deploy to the AWS Lightsail host over SSH ─────────────────────────
   deploy:
@@ -220,13 +239,18 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          source: docker-compose.prod.yml,scripts/create_deploy_backup.sh
+          # deploy/ carries the nginx snippet and its installer. The pipeline
+          # never touches nginx itself — that is a deliberate one-time manual
+          # step — but shipping the files means the operator does not need a
+          # repository checkout on the server to run it.
+          source: docker-compose.prod.yml,scripts/create_deploy_backup.sh,deploy/nginx/coair-toolkit.conf,deploy/install_toolkit_nginx.sh
           target: coair-deploy
 
       - name: Pull new image and restart
         uses: appleboy/ssh-action@v1.0.3
         env:
           IMAGE: ${{ needs.build-and-push.outputs.image }}
+          TOOLKIT_IMAGE: ${{ needs.build-and-push.outputs.toolkit_image }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
           APP_DIR: ${{ secrets.LIGHTSAIL_APP_DIR || '/opt/mvp-api' }}
@@ -237,7 +261,7 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_SSH_PORT || 22 }}
-          envs: IMAGE,GHCR_TOKEN,GHCR_USER,APP_DIR,DEMO_GOOGLE_API_KEY,DEMO_ACCOUNT_PASSWORD
+          envs: IMAGE,TOOLKIT_IMAGE,GHCR_TOKEN,GHCR_USER,APP_DIR,DEMO_GOOGLE_API_KEY,DEMO_ACCOUNT_PASSWORD
           command_timeout: 60m
           script: |
             set -euo pipefail
@@ -269,7 +293,24 @@ jobs:
             # Compose reads API_IMAGE from a .env file in the project dir for the
             # ${API_IMAGE} substitution. This does NOT affect container env, which
             # still comes from env_file: .env.production.
-            printf 'API_IMAGE=%s\n' "$IMAGE" | $SUDO tee "$APP_DIR/.env" >/dev/null
+            #
+            # Both image refs are written together, including on the rollback
+            # paths below: leaving a stale TOOLKIT_IMAGE behind would make the
+            # next manual `docker compose up -d` fall back to the local-build
+            # default, which does not exist on this host.
+            write_release_env() {
+              printf 'API_IMAGE=%s\nTOOLKIT_IMAGE=%s\n' "$1" "$TOOLKIT_IMAGE" \
+                | $SUDO tee "$APP_DIR/.env" >/dev/null
+            }
+            write_release_env "$IMAGE"
+
+            # The toolkit's managed AI credential lives here, on the host, in a
+            # file this pipeline creates empty and never overwrites. Put
+            # NVIDIA_API_KEY=... in it and restart the toolkit container to turn
+            # on managed AI; no deploy or code change is involved.
+            if [ ! -f "$APP_DIR/.env.toolkit" ]; then
+              $SUDO install -m 600 /dev/null "$APP_DIR/.env.toolkit"
+            fi
 
             # Compose interpolation cannot read another service's env_file.
             # Export only the Qdrant key for the qdrant container definition;
@@ -337,7 +378,7 @@ jobs:
               if [ "$status" -ne 0 ] && [ "$DEPLOY_SWITCH_ACTIVE" = true ]; then
                 echo "Deploy interrupted; restoring $PREVIOUS_IMAGE"
                 if [ -n "$PREVIOUS_IMAGE" ]; then
-                  printf 'API_IMAGE=%s\n' "$PREVIOUS_IMAGE" | $SUDO tee "$APP_DIR/.env" >/dev/null
+                  write_release_env "$PREVIOUS_IMAGE"
                   $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d api || true
                 else
                   $SUDO docker start mvp-api >/dev/null 2>&1 || true
@@ -347,7 +388,10 @@ jobs:
             }
             trap restore_previous_release EXIT INT TERM
 
-            $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d
+            # Only the services COAir itself depends on. The toolkit is brought
+            # up after the health gate below, so a problem with that separate
+            # Streamlit app can never roll back a healthy COAir release.
+            $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d api qdrant
 
             # Health gate: fail the deploy (and surface logs) if the API is unhealthy.
             echo "Waiting for API health..."
@@ -366,6 +410,34 @@ jobs:
                   --username demo --key-ref demo --credits 5000 \
                   --storage-limit-bytes 30000000000 \
                   --password-env DEMO_ACCOUNT_PASSWORD
+                # COAir is up. Now the Delay Analysis Toolkit — deliberately
+                # non-fatal: it is a separate app behind /toolkit/, and its
+                # failure is a missing link, not a broken COAir.
+                #
+                # The toolkit's credential is read from the host rather than
+                # shipped from CI: it belongs to the operator. Absent or empty
+                # is a supported state — the toolkit then asks each analyst for
+                # a key, which is upstream's default.
+                TOOLKIT_AI_KEY="$($SUDO sed -n 's/^NVIDIA_API_KEY=//p' "$APP_DIR/.env.toolkit" | tail -1)"
+                # QDRANT_SERVER_API_KEY is required by the compose file itself,
+                # so every compose invocation needs it, and sudo drops the
+                # exported copy — hence the `env` prefix used throughout.
+                COMPOSE="$SUDO env QDRANT_SERVER_API_KEY=$QDRANT_SERVER_API_KEY NVIDIA_API_KEY=$TOOLKIT_AI_KEY docker compose -f docker-compose.prod.yml"
+                if $COMPOSE pull toolkit && $COMPOSE up -d toolkit; then
+                  for t in $(seq 1 24); do
+                    curl -fsS http://127.0.0.1:8501/toolkit/_stcore/health >/dev/null 2>&1 && break
+                    sleep 5
+                  done
+                  if curl -fsS http://127.0.0.1:8501/toolkit/_stcore/health >/dev/null 2>&1; then
+                    echo "Toolkit OK"
+                  else
+                    echo "WARNING: toolkit did not become healthy — /toolkit/ may be down."
+                    $COMPOSE logs --tail=50 toolkit || true
+                  fi
+                else
+                  echo "WARNING: toolkit image could not be started — COAir is unaffected."
+                fi
+
                 # Only unreachable image layers are pruned. Persistent volumes,
                 # bind mounts, Qdrant snapshots and deploy backups are untouched.
                 $SUDO docker image prune -f
@@ -379,7 +451,7 @@ jobs:
             $SUDO docker compose -f docker-compose.prod.yml logs --tail=100 api
             if [ -n "$PREVIOUS_IMAGE" ] && [ "$PREVIOUS_IMAGE" != "$IMAGE" ]; then
               echo "Rolling back to $PREVIOUS_IMAGE"
-              printf 'API_IMAGE=%s\n' "$PREVIOUS_IMAGE" | $SUDO tee "$APP_DIR/.env" >/dev/null
+              write_release_env "$PREVIOUS_IMAGE"
               $SUDO env QDRANT_SERVER_API_KEY="$QDRANT_SERVER_API_KEY" docker compose -f docker-compose.prod.yml up -d api
               for i in $(seq 1 24); do
                 curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1 && break

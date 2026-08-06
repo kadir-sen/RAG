@@ -1,5 +1,8 @@
 # Native COAir forensic parity
 
+> **Closed to project users** — see [delay-toolkit.md](delay-toolkit.md). The
+> toolkit's own Streamlit app now serves programme forensics at `/toolkit/`.
+
 The canonical calculation and reporting reference is the vendored Delay
 Analysis Toolkit at the commit recorded in
 `vendor/delay-analysis-toolkit.upstream.json`. Production does not run its

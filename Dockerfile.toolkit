@@ -1,0 +1,39 @@
+# The Delay Analysis Toolkit, run as its own Streamlit app.
+#
+# Deliberately NOT the COAir image. The production API image strips Streamlit
+# out (Dockerfile:19) because COAir calls the toolkit's engines as a library.
+# This image does the opposite: it runs the upstream Streamlit shell verbatim,
+# so the analyst sees the toolkit the author built — same theme, same 19
+# modules, same Altair charts, same draft panels, same download buttons.
+#
+# Nothing under vendor/delay-analysis-toolkit is modified or wrapped. The only
+# COAir-side choice is the URL it is served under, and that is a Streamlit CLI
+# flag, not a code change.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# curl is here for the compose healthcheck, nothing else.
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# The toolkit's own manifest — pinned by upstream, not by COAir. Installed
+# before the source so a vendor sync that touches only code reuses this layer.
+COPY vendor/delay-analysis-toolkit/requirements.txt /tmp/toolkit-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/toolkit-requirements.txt
+
+# The tree lands at the working directory root so Streamlit finds the upstream
+# .streamlit/config.toml on its own: the light "Drawing Sheet" theme, the
+# 400 MB upload ceiling and XSRF protection all come from that file. Copying it
+# anywhere else would silently substitute Streamlit's defaults.
+COPY vendor/delay-analysis-toolkit/ ./
+
+EXPOSE 8501
+
+# --server.baseUrlPath is what puts the app under /toolkit/ behind the host
+# nginx. It is a runtime flag; upstream app.py has no idea it is being proxied.
+CMD ["streamlit", "run", "app.py", \
+     "--server.port=8501", \
+     "--server.address=0.0.0.0", \
+     "--server.baseUrlPath=toolkit"]

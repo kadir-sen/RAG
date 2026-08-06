@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import ModuleTile from '../components/modules/ModuleTile';
 import { ChatbotMark, ChronologyMark, ReportsMark } from '../components/modules/ModuleMarks';
+import { TOOLKIT_URL } from '../config/modules';
 import { useProjectStore } from '../stores/projectStore';
 
 /**
@@ -97,9 +98,9 @@ export default function ModulePickerPage() {
               index="03"
               name="Forensic Reports"
               role="Delay Analysis Toolkit"
-              blurb="Run native programme forensics — DCMA, critical path, windows, retrospective and prospective delay analysis."
+              blurb="Open the Delay Analysis Toolkit — DCMA, critical path, windows, retrospective and prospective delay analysis on your P6 programmes."
               mark={<ReportsMark className={MARK_CLASS} />}
-              to="/forensic"
+              href={TOOLKIT_URL}
             />
           </li>
         </ul>

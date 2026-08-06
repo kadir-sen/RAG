@@ -38,6 +38,24 @@ main'e merge / push
 - Host nginx zaten `127.0.0.1:8000` (api) önünde proxy yapıyor — bu değişmez.
 - `qdrant` servisi aynı compose içinde ayakta (değişmedi).
 
+### 2b. Delay Analysis Toolkit için tek seferlik nginx adımı
+
+Toolkit ayrı bir container'da (`127.0.0.1:8501`) çalışıyor ve `/toolkit/` altından
+servis ediliyor. Bu location bloğu nginx'e **bir kez elle** eklenmeli — pipeline
+nginx'e dokunmuyor:
+
+Gerekli iki dosya her deploy'da sunucudaki `~/coair-deploy/` altına kopyalanıyor,
+yani sunucuda repo kopyası gerekmiyor:
+
+```bash
+# sunucuda, ilk deploy'dan sonra bir kez
+sudo bash ~/coair-deploy/deploy/install_toolkit_nginx.sh ~/coair-deploy/deploy/nginx
+```
+
+Yapılmazsa `/toolkit/` isteği FastAPI'nin SPA catch-all'ına düşer ve COAir 404
+gösterir. Betik idempotent; `nginx -t` başarısız olursa eski yapılandırmayı geri
+yükler. Ayrıntı: [delay-toolkit.md](delay-toolkit.md).
+
 ### 3. GHCR image erişimi
 
 Image, repo altında **private** bir GHCR paketi olarak yayınlanır. Sunucu her deploy'da workflow'un `GITHUB_TOKEN`'ıyla giriş yapıp çeker.

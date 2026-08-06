@@ -9,6 +9,7 @@ import QueryHistory from '../components/projects/QueryHistory';
 import { useAuthStore } from '../stores/authStore';
 import ModuleTile from '../components/modules/ModuleTile';
 import { ChatbotMark, ChronologyMark, ReportsMark } from '../components/modules/ModuleMarks';
+import { TOOLKIT_URL } from '../config/modules';
 import { isAxiosError } from 'axios';
 
 const PAGE_SIZE = 50;
@@ -87,7 +88,6 @@ export default function ProjectsPage() {
     [jobs],
   );
   const canOpen = Boolean(current?.stats.report_ready) && active.length === 0;
-  const canOpenForensic = Boolean(current) && active.length === 0;
   const canEditFiles = Boolean(current && current.role !== 'viewer');
   const canRename = Boolean(current && ['owner', 'admin'].includes(current.role));
 
@@ -354,7 +354,10 @@ export default function ProjectsPage() {
                     <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3 md:gap-7">
                       <ModuleTile index="01" name="Chatbot" role="Ask and investigate" blurb={`${current.name} · Search documents, correspondence and project data.`} mark={<ChatbotMark className="h-full w-full" />} to={canOpen ? '/chat' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
                       <ModuleTile index="02" name="Chronology" role="Build an evidence timeline" blurb={`${current.name} · Generate a sourced English chronology and Word report.`} mark={<ChronologyMark className="h-full w-full" />} to={canOpen ? '/chronology' : undefined} status={canOpen ? 'live' : 'soon'} statusLabel={canOpen ? 'Ready' : 'Processing'} />
-                      <ModuleTile index="03" name="Forensic Reports" role="Native programme analysis" blurb={`${current.name} · Upload XER programmes and run DCMA, critical-path and delay analyses inside COAir.`} mark={<ReportsMark className="h-full w-full" />} to={canOpenForensic ? '/forensic' : undefined} status={canOpenForensic ? 'live' : 'soon'} statusLabel={canOpenForensic ? 'Ready' : 'Processing'} />
+                      {/* The toolkit is a separate application with its own
+                          uploads — it does not read this project's documents,
+                          so it is never "Processing" and needs no gate. */}
+                      <ModuleTile index="03" name="Forensic Reports" role="Delay Analysis Toolkit" blurb="Open the Delay Analysis Toolkit · Upload P6 programmes there and run DCMA, critical-path and delay analyses." mark={<ReportsMark className="h-full w-full" />} href={TOOLKIT_URL} />
                     </div>
                   </div>
 

@@ -84,3 +84,35 @@ test('pins existing project evidence and exposes the complete native navigation'
   const selection = writes.find((item) => item.method === 'PUT' && item.path.endsWith('/sources'))?.body as { sources: Array<{ source_id: string }> };
   expect(selection.sources.map((item) => item.source_id)).toEqual(['xer-baseline', 'xer-update', 'doc-notice']);
 });
+
+// Programme forensics moved out to the standalone Delay Analysis Toolkit, so
+// FORENSIC_NATIVE_UI_V1 is off for project users and /forensic/status reports
+// available: false. Two things must survive that, and both are one careless
+// edit away from silently disappearing.
+test('keeps the evidence draft and the toolkit link when the native module is closed', async ({ page }) => {
+  const project = makeProject('project-forensic', 'Forensic Project');
+  await seedProjectSession(page, project.project_id);
+  await installProjectsApi(page, makeState([project]));
+
+  await page.route('**/api/forensic/**', async (route) => {
+    const path = new URL(route.request().url()).pathname.replace('/api/forensic', '');
+    if (path === '/status') return route.fulfill({ json: {
+      available: false, enabled: false, parity_available: false, parity_enabled: false,
+      parity_validation: false, pipeline_version: 'forensic-parity-v1',
+      parity_fingerprint: 'f'.repeat(64), coair_sha: 'coair123',
+      upstream_sha: workspace.upstream_sha, streamlit: false,
+      max_workspace_bytes: 75 * 1024 * 1024, modules: [],
+    } });
+    return route.fulfill({ status: 404, json: { detail: 'forensic_native_ui_disabled' } });
+  });
+
+  // COAir's own AI draft over the project record needs no programme file, so
+  // closing the native module must not take it down with it.
+  await page.goto('/forensic/evidence-report');
+  await expect(page.getByRole('heading', { name: 'Evidence-led Forensic Draft' })).toBeVisible();
+  await expect(page.getByText('Native forensic analysis is in validation')).toHaveCount(0);
+
+  // The Forensic Reports tile hands over to the toolkit rather than a COAir route.
+  await page.goto('/');
+  await expect(page.getByRole('link', { name: /Forensic Reports/ })).toHaveAttribute('href', '/toolkit/');
+});
