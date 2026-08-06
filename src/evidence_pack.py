@@ -13,6 +13,7 @@ whether the pack was enough — so v2 and v3 give the same answer to both.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Sequence
 
@@ -44,6 +45,16 @@ MAX_DOCUMENT_SHARE = 0.25
 # broad one fills the budget.
 RELEVANCE_FLOOR = 0.35
 
+# Stop once the evidence stops telling us anything new: if this many
+# consecutive passages bring neither a new facet nor a date the pack has not
+# already seen, the rest is padding. A
+# chronology is a list of dated events, so a passage that repeats dates we hold
+# adds nothing to the record however relevant it looks — and a new *document*
+# is deliberately not enough on its own, or a large diverse corpus would never
+# saturate. The budget is a ceiling, not a target: a topic answered by 70,000
+# characters should cost 70,000 characters.
+SATURATION_WINDOW = 25
+
 # How many scored passages retrieval hands to the selector. This is a candidate
 # pool, not the pack: the selector still has to fit them inside MAX_PACK_CHARS.
 # It was 120, which at a 1,200-character excerpt could not fill the budget even
@@ -68,6 +79,23 @@ def _facet_hits(text: str, facets: Mapping[str, Sequence[str]]) -> List[str]:
     lowered = (text or "").casefold()
     return [name for name, terms in facets.items()
             if any(term.casefold() in lowered for term in terms)]
+
+
+# A chronology is a list of dated events, so "is this passage still adding
+# anything?" is best answered by whether it mentions a date we have not seen.
+# A new document that repeats dates already in the pack contributes nothing to
+# the record, however relevant it looks.
+_DATE_RE = re.compile(
+    r"\b(?:\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}"
+    r"|\d{4}-\d{2}-\d{2}"
+    r"|(?:\d{1,2}\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}"
+    r"|(?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+
+
+def _date_signals(text: str) -> set[str]:
+    return {match.group(0).casefold() for match in _DATE_RE.finditer(text or "")}
 
 
 def select_pack(
@@ -104,7 +132,7 @@ def select_pack(
     stats: Dict = {
         "candidates": len(ranked), "dropped_below_floor": 0,
         "dropped_document_cap": 0, "dropped_budget": 0,
-        "admitted_for_coverage": 0,
+        "admitted_for_coverage": 0, "stopped_early": "",
     }
     if not ranked:
         return PackSelection([], stats)
@@ -146,8 +174,29 @@ def select_pack(
     qualifying = [item for item in ranked if float(item.score or 0.0) >= floor]
     stats["dropped_below_floor"] = len(ranked) - len(qualifying)
 
+    # Fill in relevance order, but stop when the evidence stops saying anything
+    # new. The budget is a ceiling, not a quota: reaching it is a symptom of a
+    # broad topic, not a goal. Padding a pack that was already sufficient buys
+    # nothing and is charged per token on every extraction batch.
+    stale = 0
+    dates_seen: set[str] = set()
     for item in qualifying:
-        admit(item)
+        before_facets = len(covered)
+        before_dates = len(dates_seen)
+        if not admit(item):
+            continue
+        dates_seen |= _date_signals(item.excerpt)
+        gained = (len(covered) > before_facets) or (len(dates_seen) > before_dates)
+        stale = 0 if gained else stale + 1
+        # No "all facets covered" precondition: a facet the corpus simply does
+        # not contain would block this forever and the ceiling would always be
+        # spent. `gained` already counts a new facet as progress, so a long
+        # stale run means coverage has stopped improving too. The rescue pass
+        # below still goes looking for anything still missing.
+        if stale >= SATURATION_WINDOW:
+            stats["stopped_early"] = "saturated"
+            break
+    stats["distinct_dates"] = len(dates_seen)
 
     # Facets still unrepresented get their best available passage, floor or not.
     for facet in facet_map:

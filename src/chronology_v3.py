@@ -291,7 +291,7 @@ def evidence_from_documents(project_id: str, doc_ids: Sequence[str],
     """
     doc_scores = {str(k): float(v) for k, v in (scores or {}).items()}
     chosen = list(dict.fromkeys(str(value).strip() for value in doc_ids if str(value).strip()))
-    if not chosen or len(chosen) > MAX_DOCUMENTS:
+    if not chosen:
         raise ValueError("source_document_selection_invalid")
     from .chunk_store import get_chunk_store
     marks = ",".join("?" for _ in chosen)

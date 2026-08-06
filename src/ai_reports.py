@@ -274,7 +274,7 @@ def _generate_chronology_v2(
     """Generate a checkpointable chronology from a Markdown evidence pack."""
     from .chronology_prompts import chronology_prompt_hash
     from .chronology_v2 import (
-        PIPELINE_VERSION, PreparedChronologyQuery, coverage_matrix,
+        COVERAGE_FACETS, PIPELINE_VERSION, PreparedChronologyQuery, coverage_matrix,
         aggregate_candidates, evidence_from_documents, extract_batches,
         prepare_chronology_query, source_preview, synthesize, verify_claims,
     )
@@ -314,15 +314,24 @@ def _generate_chronology_v2(
     stage("evidence_pack", .2)
     selection_stats: Dict = {}
     if source_doc_ids:
-        # An explicit selection is the analyst's, not ours: read those documents
-        # whole and do not second-guess the choice.
-        evidence = evidence_from_documents(project_id, chosen)
+        # An explicit selection is the analyst's, not ours: read every document
+        # they chose, however many that is. The budget still applies, shared
+        # evenly so a long document cannot consume the pack and leave the rest
+        # of their choice unread — which is the failure a document *count* limit
+        # was pretending to prevent.
+        picked = evidence_from_documents(project_id, chosen)
+        selection = select_pack(
+            picked, facets=COVERAGE_FACETS,
+            max_document_share=1.0 / max(1, len({item.file_name for item in picked})),
+            relevance_floor=0.0,          # the analyst already judged relevance
+        )
+        evidence = selection.evidence
+        selection_stats = selection.stats
     else:
         # Otherwise keep the passages retrieval actually scored, and bound the
         # pack by text. The previous path threw the scored passages away, kept
         # only their doc_ids and re-read those fragments whole — which is how a
         # 240 MB corpus produced a 24,000-character pack.
-        from .chronology_v2 import COVERAGE_FACETS
         selection = select_pack(
             retrieve_evidence(project_id, prepared.research_queries),
             facets=COVERAGE_FACETS,

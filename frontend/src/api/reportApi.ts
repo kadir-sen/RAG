@@ -22,19 +22,30 @@ export interface ReportJob {
 
 export interface ChronologySourceDocument {
   doc_id: string;
+  /** Every stored fragment of this document. A row is one document; the corpus
+      splits one file into ~14 doc_ids, so the fragments are listed rather than
+      each becoming its own row. */
+  doc_ids: string[];
   file_name: string;
+  /** Best matching passage, not the sum over passages — summing ranked long
+      documents above precise ones. */
   score: number;
   pages: number[];
   source_count: number;
   selected: boolean;
+  /** Characters of this document that fit the evidence budget. */
+  selected_chars: number;
 }
 
 export interface ChronologySourcePreview {
   preparation_id: string;
   expires_at: string;
   documents: ChronologySourceDocument[];
+  /** Measured over the pack that would actually be read, not over everything
+      retrieval surfaced. */
   coverage: Record<string, number>;
   coverage_status: 'complete' | 'partial';
+  selection?: Record<string, number>;
 }
 
 export interface ToolkitArtifact {

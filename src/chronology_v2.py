@@ -21,7 +21,6 @@ from .jargon_manager import (
 PIPELINE_VERSION = "chronology-v2"
 EVIDENCE_BATCH_CHARS = 80_000
 AGGREGATION_BATCH_CHARS = 180_000
-MAX_SOURCE_DOCUMENTS = 20
 # How many candidate documents the preview lists for the analyst. Presentation
 # only — what the report reads is decided by evidence_pack.select_pack.
 MAX_PREVIEW_DOCUMENTS = 20
@@ -363,8 +362,16 @@ def source_preview(
 
 
 def evidence_from_documents(project_id: str, doc_ids: Sequence[str]) -> List[EvidenceItem]:
+    """Read the given documents whole.
+
+    There is no cap on how many an analyst may choose. There used to be one —
+    twenty — which was a proxy for cost that did not work: a document here runs
+    from 16 to 290,294 characters, so twenty of them could be anything. Cost is
+    bounded where it belongs, by the character budget in evidence_pack, and the
+    caller applies that after this returns.
+    """
     chosen = [str(value).strip() for value in doc_ids if str(value).strip()]
-    if not chosen or len(chosen) > MAX_SOURCE_DOCUMENTS:
+    if not chosen:
         raise ValueError("source_document_selection_invalid")
     from .chunk_store import get_chunk_store
     marks = ",".join("?" for _ in chosen)

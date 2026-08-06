@@ -212,8 +212,13 @@ def test_a_narrow_topic_costs_less_than_the_ceiling():
 
 
 def test_a_broad_topic_fills_the_budget():
-    evidence = [_scored(f"s{i}", 1.0 - i / 1000, chars=2_000, file_name=f"f{i % 20}.pdf")
-                for i in range(500)]
+    """Distinct dates throughout, so every passage is still adding a candidate
+    event and there is no reason to stop early."""
+    evidence = [
+        _scored(f"s{i}", 1.0 - i / 1000, file_name=f"f{i % 20}.pdf",
+                text=f"issued {1 + i % 28} June {2005 + i % 8} " + "x" * 2_000)
+        for i in range(500)
+    ]
     pack = select_pack(evidence, facets={}, max_chars=100_000)
     assert 90_000 <= pack.stats["selected_chars"] <= 100_000
 
@@ -287,3 +292,85 @@ def test_v3_carries_document_scores_onto_its_passages():
 
     by_doc = {item.doc_id: item.score for item in evidence}
     assert by_doc == {"d1": 9.5, "d2": 1.0}
+
+
+# ── Saturation: the budget is a ceiling, not a target ────────────────────
+
+def test_a_saturated_pack_stops_well_below_the_ceiling():
+    """Once every facet is covered and nothing new arrives, stop paying.
+
+    Filling 240,000 characters when 70,000 already answered the topic buys
+    nothing and is charged per token on every extraction batch.
+    """
+    # Ten documents cover both facets, then 400 more passages repeat one of them.
+    useful = [
+        _scored(f"u{i}", 1.0, chars=2_000, file_name=f"doc-{i}.pdf",
+                text="delay and prolongation; the contended position of the parties")
+        for i in range(10)
+    ]
+    padding = [
+        _scored(f"p{i}", 0.9, chars=2_000, file_name="doc-0.pdf", text="delay again")
+        for i in range(400)
+    ]
+    pack = select_pack(useful + padding, facets=FACETS, max_chars=MAX_PACK_CHARS)
+
+    assert pack.stats["stopped_early"] == "saturated"
+    assert pack.stats["selected_chars"] < MAX_PACK_CHARS / 2
+    assert set(FACETS) <= set(
+        f for item in pack.evidence
+        for f, terms in FACETS.items()
+        if any(t in item.excerpt for t in terms)
+    )
+
+
+def test_a_genuinely_broad_topic_is_not_cut_short_by_saturation():
+    """Each passage carries a date not yet in the pack, so it is still earning
+    its place — a six-year contract history looks like this."""
+    body = "delay and prolongation; the contended position of the parties "
+    evidence = [
+        _scored(f"s{i}", 1.0 - i / 1000, file_name=f"doc-{i}.pdf",
+                text=f"{body} on {1 + i % 28} March {2005 + i % 7} " + "y" * 2_000)
+        for i in range(300)
+    ]
+    pack = select_pack(evidence, facets=FACETS, max_chars=100_000)
+    assert pack.stats["stopped_early"] == ""
+    assert pack.stats["selected_chars"] >= 90_000
+    assert pack.stats["distinct_dates"] > 20
+
+
+def test_a_facet_the_corpus_lacks_does_not_force_the_budget_to_be_spent():
+    """Waiting for a facet nothing can cover would spend the ceiling every time.
+
+    On the real corpus `contradictions_missing` is often uncoverable, and an
+    "all facets covered" precondition meant the pack always ran to 240,000
+    characters no matter how repetitive the evidence was.
+    """
+    repetitive = [
+        _scored(f"s{i}", 1.0, file_name=f"doc-{i}.pdf",
+                text="delay on 3 May 2006; the contended position " + "z" * 1_000)
+        for i in range(400)
+    ]
+    pack = select_pack(repetitive, facets=FACETS, max_chars=MAX_PACK_CHARS)
+
+    assert pack.stats["stopped_early"] == "saturated"
+    assert pack.stats["selected_chars"] < MAX_PACK_CHARS / 3
+
+
+def test_an_explicit_selection_shares_the_budget_across_its_documents():
+    """Removing the twenty-document cap must not let one document eat the pack."""
+    evidence = []
+    for doc in range(40):
+        evidence += [
+            EvidenceItem(f"s{doc}-{i}", f"d{doc}-{i}", f"doc-{doc}.pdf", page=i,
+                         excerpt="x" * 5_000, score=0.0)
+            for i in range(20)
+        ]
+    pack = select_pack(evidence, facets={}, max_chars=200_000,
+                       max_document_share=1.0 / 40, relevance_floor=0.0)
+
+    per_file: dict[str, int] = {}
+    for item in pack.evidence:
+        per_file[item.file_name] = per_file.get(item.file_name, 0) + len(item.excerpt)
+    assert pack.stats["selected_chars"] <= 200_000
+    assert len(per_file) > 20, "every chosen document should be represented"
+    assert max(per_file.values()) <= 200_000 / 40 + 5_000

@@ -26,7 +26,12 @@ class ChronologyGenerateRequest(BaseModel):
     date_to: str = ""
     parties: List[str] = Field(default_factory=list, max_length=30)
     preparation_id: str = Field(default="", max_length=64)
-    source_doc_ids: List[str] = Field(default_factory=list, max_length=20)
+    # No twenty-document ceiling: it was a stand-in for cost control that did
+    # not control cost, since a document here runs from 16 to 290,294
+    # characters. The evidence budget bounds the work; this bound only stops an
+    # absurd request. The analyst's selection is read in full within that budget,
+    # shared evenly across their chosen documents.
+    source_doc_ids: List[str] = Field(default_factory=list, max_length=500)
 
     @field_validator("topic")
     @classmethod
