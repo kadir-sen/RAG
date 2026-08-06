@@ -32,6 +32,7 @@ def test_deploy_requires_verified_backup_and_never_prunes_volumes():
         assert command not in combined
     assert 'sudo -n true' in workflow
     assert '$BACKUP_RUNNER env' in workflow
+    assert workflow.count("environment: production") >= 3
 
 
 def test_unused_image_cleanup_precedes_candidate_pull_and_never_touches_data():

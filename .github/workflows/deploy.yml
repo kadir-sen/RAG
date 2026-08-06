@@ -396,6 +396,7 @@ jobs:
     needs: deploy
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
