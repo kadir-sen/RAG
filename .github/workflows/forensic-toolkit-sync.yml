@@ -54,9 +54,15 @@ jobs:
           if ! python -c "
           import sys; sys.path.insert(0, '.')
           from dcma.narrative import MANAGED_PROVIDER, PROVIDERS
+          g = PROVIDERS['gemini']
           assert MANAGED_PROVIDER == 'gemini', MANAGED_PROVIDER
-          assert PROVIDERS['gemini']['default_model'] == 'gemini-2.5-flash'
           assert list(PROVIDERS)[0] == 'gemini'
+          assert g['default_model'] == 'gemini-flash-latest', g['default_model']
+          assert g['models'][0] == 'gemini-flash-latest', g['models'][0]
+          # Google closed this one to new accounts on 2026-08-06; it must not
+          # come back through a sync.
+          assert 'gemini-2.5-flash' not in g['models']
+          assert 'nvidia' not in PROVIDERS
           "; then
             echo "::error::The upstream sync reverted the COAir managed-Gemini patch."
             echo "Re-apply it with: git apply vendor/patches/0001-coair-managed-gemini.patch"

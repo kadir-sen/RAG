@@ -414,8 +414,8 @@ jobs:
                 # non-fatal: it is a separate app behind /toolkit/, and its
                 # failure is a missing link, not a broken COAir.
                 #
-                # The toolkit's credentials are read from the host rather than
-                # shipped from CI: they belong to the operator. Absent or empty
+                # The toolkit's credential is read from the host rather than
+                # shipped from CI: it belongs to the operator. Absent or empty
                 # is a supported state — the toolkit then asks each analyst for
                 # a key, which is upstream's default.
                 toolkit_secret() {
@@ -426,11 +426,10 @@ jobs:
                   $BACKUP_RUNNER sed -n "s/^$1=//p" "$APP_DIR/.env.toolkit" | tail -1
                 }
                 TOOLKIT_GEMINI_KEY="$(toolkit_secret GEMINI_API_KEY)"
-                TOOLKIT_NVIDIA_KEY="$(toolkit_secret NVIDIA_API_KEY)"
                 # QDRANT_SERVER_API_KEY is required by the compose file itself,
                 # so every compose invocation needs it, and sudo drops the
                 # exported copy — hence the `env` prefix used throughout.
-                COMPOSE="$SUDO env QDRANT_SERVER_API_KEY=$QDRANT_SERVER_API_KEY GEMINI_API_KEY=$TOOLKIT_GEMINI_KEY NVIDIA_API_KEY=$TOOLKIT_NVIDIA_KEY docker compose -f docker-compose.prod.yml"
+                COMPOSE="$SUDO env QDRANT_SERVER_API_KEY=$QDRANT_SERVER_API_KEY GEMINI_API_KEY=$TOOLKIT_GEMINI_KEY docker compose -f docker-compose.prod.yml"
                 if $COMPOSE pull toolkit && $COMPOSE up -d toolkit; then
                   for t in $(seq 1 24); do
                     curl -fsS http://127.0.0.1:8501/toolkit/_stcore/health >/dev/null 2>&1 && break

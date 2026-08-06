@@ -51,8 +51,11 @@ There is no password today — anyone with the URL can use it. Upstream ships a
 gate for this (`APP_PASSWORD` in `app.py`); turning it on is one line in
 `.env.toolkit` and a container restart, with no code change.
 
-The managed AI provider is **Gemini, running `gemini-2.5-flash`** on COAir's own
-Google billing. Set the key on the host, not in Git or CI:
+The managed AI provider is **Gemini, running `gemini-flash-latest`** on COAir's
+own Google billing. The alias is deliberate: a pinned `gemini-2.5-flash` was
+rejected in production on 2026-08-06 — *"no longer available to new users"* —
+and the alias always resolves to the newest Flash the account can actually
+reach. Set the key on the host, not in Git or CI:
 
 ```bash
 # on the server, in $APP_DIR (default /opt/mvp-api)
@@ -62,9 +65,9 @@ sudo docker compose -f docker-compose.prod.yml up -d toolkit
 ```
 
 With that set, every AI panel shows *"AI enabled — managed Google (Gemini)
-endpoint. No key needed."*, preselects `gemini-2.5-flash`, and renders **no key
-field at all**; the value is never shown or exported. Analysts can still switch
-to their own key for any provider.
+endpoint. No key needed."*, preselects `gemini-flash-latest`, and renders **no
+key field at all**; the value is never shown or exported. Analysts can still
+switch to their own key for Gemini, Anthropic or OpenAI.
 
 The deploy creates `.env.toolkit` empty when missing and never overwrites it.
 Left empty, the toolkit still works — the provider picker just defaults to
@@ -76,25 +79,39 @@ upstream accepts it as a fallback for the same provider: that is COAir's own
 variable name, and an operator with it exported would otherwise hand COAir's
 billed key to an app that has no login.
 
-## The one local patch
+## The local patch
 
-This is the single place COAir departs from upstream, and it is recorded in
-three places so it cannot be lost quietly:
+This is the only place COAir departs from upstream, and it is recorded in three
+places so it cannot be lost quietly:
 
 - `vendor/patches/0001-coair-managed-gemini.patch` — the diff, re-appliable.
 - `local_patches` in `vendor/delay-analysis-toolkit.upstream.json`, alongside
   `tree_matches_upstream_commit: false`.
 - A guard step in `forensic-toolkit-sync.yml` that fails the weekly sync loudly
-  if a subtree pull takes the patch back.
+  if a subtree pull takes any of it back — including the dead model name.
 
-It makes Gemini the managed provider instead of NVIDIA, via a single
-`MANAGED_PROVIDER` constant in `dcma/narrative.py` that `views/_shared.py` and
-`test_ui.py` read rather than naming a provider. Everything else — engines,
-charts, draft panels, exports — is untouched upstream code.
+It does three things:
+
+- **Gemini is the managed provider instead of NVIDIA**, via a single
+  `MANAGED_PROVIDER` constant in `dcma/narrative.py` that `views/_shared.py`,
+  `views/_umbrella.py` and `test_ui.py` read rather than naming a provider.
+- **The NVIDIA provider is removed.** COAir holds no NVIDIA key, so leaving it
+  in the dropdown only offered a dead end. It was upstream's only provider with
+  a `base_url`, so `refresh_models`' live-catalogue behaviour is now covered by
+  a synthetic pinfo in `test_qa.py` — same assertions, no dependence on which
+  providers ship.
+- **A "← Back to COAir" link** in the sidebar, gated on `COAIR_URL`. Unset — as
+  on a standalone or Streamlit Cloud deployment — it is not drawn at all.
+
+Everything else — engines, charts, draft panels, exports — is untouched upstream
+code.
 
 The trade this accepts: the vendored tree no longer matches upstream byte for
-byte, so a future upstream edit to these three files will conflict. The cheaper
-long-term fix is for the change to land upstream, since Ozan owns that repo.
+byte, and the patch now spans eight files (`app.py`, `state.py`,
+`dcma/narrative.py`, `views/_shared.py`, `views/_umbrella.py`,
+`views/sequence.py`, `test_qa.py`, `test_ui.py`), so upstream edits to any of
+them will conflict on the next sync. The cheaper long-term fix is for the
+change to land upstream, since Ozan owns that repo.
 
 ## One-time server setup
 

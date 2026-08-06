@@ -82,15 +82,15 @@ services:
     ports:
       - "127.0.0.1:8501:8501"
     environment:
-      # Provider credentials for the toolkit's AI panels. All three live in
-      # $APP_DIR/.env.toolkit on the host — the deploy creates that file empty
-      # if it is missing and never overwrites it, so setting a key is a
-      # one-line edit plus `docker compose up -d toolkit`: no deploy, no code
-      # change, and the secret never passes through Git or CI.
+      # The toolkit's managed AI credential. It lives in $APP_DIR/.env.toolkit
+      # on the host — the deploy creates that file empty if it is missing and
+      # never overwrites it, so setting the key is a one-line edit plus
+      # `docker compose up -d toolkit`: no deploy, no code change, and the
+      # secret never passes through Git or CI.
       #
-      # GEMINI_API_KEY is the one we use. The toolkit pre-fills the key field
-      # from this variable once the analyst selects Google (Gemini), so nobody
-      # types a secret.
+      # Set, it runs every AI panel with no key entry at all and the value is
+      # never rendered back to the page (views/_shared.py: managed_ai_key).
+      # Left empty, the toolkit just asks each analyst for a key of their own.
       #
       # Upstream also falls back to GOOGLE_API_KEY for this provider and we
       # deliberately do NOT forward it: that is the exact variable name COAir
@@ -98,12 +98,10 @@ services:
       # billed key to an app that has no login. GEMINI_API_KEY is checked
       # first and is toolkit-specific, so nothing is lost.
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      # Upstream's managed path is NVIDIA-only: set this and every AI panel
-      # runs with no key entry at all, and the value is never rendered back to
-      # the page (views/_shared.py: managed_ai_key). Left empty — as it is
-      # today — the toolkit asks each analyst to pick a provider, which is its
-      # default behaviour.
-      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      # Renders the "← Back to COAir" link in the toolkit sidebar. Relative
+      # because the toolkit is served from this same origin under /toolkit/;
+      # unset, the link is not drawn at all.
+      - COAIR_URL=/
     # A parsed XER expands several times over in memory. Cap the toolkit so a
     # large upload here can never starve the API or Qdrant.
     mem_limit: 2g

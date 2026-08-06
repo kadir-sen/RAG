@@ -70,7 +70,7 @@ def sequence_tab() -> None:
                     "every activity and proposes corrections; they land "
                     "in the table below marked *AI review* and still "
                     "require your confirmation.")
-        # THE shared provider block — managed NVIDIA default, model
+        # THE shared provider block — managed-provider default, model
         # dropdown, own-key switch. The same function every other AI
         # feature renders; the page-local block it replaces read only
         # environment variables, so the managed key never reached it.

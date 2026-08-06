@@ -2353,28 +2353,39 @@ try:
 except ImportError as _n14exc:
     print(f"  [SKIP] N14e-h figure pipeline ({_n14exc})")
 
-# N14i. The NVIDIA dropdown is a CURATED shortlist; the live catalogue
+# N14i. A provider dropdown is a CURATED shortlist; the live catalogue
 # may only REMOVE from it (a retired model), never bury it under the
 # endpoint's dozens of models.
+#
+# COAir local patch: upstream drove these checks through PROVIDERS["nvidia"],
+# its only entry with a "base_url". COAir removed that provider, so the
+# catalogue behaviour is exercised through a synthetic pinfo instead — same
+# coverage of refresh_models, no dependence on which providers ship.
+from dcma.narrative import MANAGED_PROVIDER as _n14managed
 from dcma.narrative import PROVIDERS as _n14prov
-_n14nv = _n14prov["nvidia"]["models"]
-check("N14i EOL'd qwen3-next-80b no longer offered statically",
-      "qwen/qwen3-next-80b-a3b-instruct" not in _n14nv)
-check("N14k NVIDIA offers a curated three, default among them",
-      len(_n14nv) == 3
-      and _n14prov["nvidia"]["default_model"] in _n14nv)
+_n14nv = ["a/one", "b/two", "c/three"]
+_n14fake = {"models": list(_n14nv), "default_model": _n14nv[0],
+            "base_url": "https://example.invalid/v1"}
+check("N14i the managed provider leads an alias, never a pinned model",
+      _n14prov[_n14managed]["default_model"].endswith("-latest"))
+check("N14k the managed default is offered in its own dropdown",
+      _n14prov[_n14managed]["default_model"]
+      == _n14prov[_n14managed]["models"][0])
 import views._shared as _n14sh
 _n14sh._live_models = lambda base, fp, key: [       # fake catalogue
     _n14nv[0], _n14nv[2], "some/other-model", "and/another"]
-_n14ref = _n14sh.refresh_models(_n14prov["nvidia"], "k")
+_n14ref = _n14sh.refresh_models(_n14fake, "k")
 check("N14l live catalogue REMOVES retired models, never adds",
       _n14ref["models"] == [_n14nv[0], _n14nv[2]]
       and _n14ref["default_model"] == _n14nv[0])
 _n14sh._live_models = lambda base, fp, key: ["nothing/known"]
 check("N14m no overlap with the catalogue keeps the curated list",
-      _n14sh.refresh_models(_n14prov["nvidia"], "k")["models"] == _n14nv)
+      _n14sh.refresh_models(_n14fake, "k")["models"] == _n14nv)
 check("N14n the static list is never mutated in place",
-      _n14prov["nvidia"]["models"] == _n14nv)
+      _n14fake["models"] == _n14nv)
+check("N14o no provider offers a model COAir cannot reach",
+      "gemini-2.5-flash" not in _n14prov[_n14managed]["models"]
+      and "nvidia" not in _n14prov)
 
 # N15. Completion impact attribution — which changes actually moved
 # completion, measured by one-at-a-time reversion + kernel re-schedule.

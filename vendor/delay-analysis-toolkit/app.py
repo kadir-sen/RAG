@@ -157,6 +157,14 @@ def main() -> None:
     }
 
     with st.sidebar:
+        # COAir local patch: a way back to the host app. Gated on COAIR_URL so
+        # a standalone deployment (upstream, Streamlit Cloud) does not grow a
+        # button pointing at an app that is not there. COAir sets it to "/" —
+        # the toolkit is served from the same origin under /toolkit/.
+        coair_url = os.environ.get("COAIR_URL", "").strip()
+        if coair_url:
+            st.link_button("← Back to COAir", coair_url,
+                           use_container_width=True)
         st.caption("Uploaded programmes are shared across every group.")
 
     header = st.container()          # reserve the top slot

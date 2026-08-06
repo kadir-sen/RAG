@@ -17,7 +17,8 @@ import pandas as pd
 import streamlit as st
 
 import state as sk
-from dcma.narrative import NarrativeError, stream_narrative
+from dcma.narrative import (MANAGED_PROVIDER, NarrativeError, PROVIDERS,
+                            stream_narrative)
 from programme import (
     UMBRELLA_SYSTEM_PROMPT, build_rollup, critique_grouping,
     merge_grouping, refine_grouping,
@@ -86,10 +87,14 @@ def umbrella_editor(rows: list[dict], path_codes: set[str],
                     st.warning("No usable groups were returned — try "
                                "again, or type groups in the table.")
             except NarrativeError as exc:
+                # COAir local patch: name the managed provider's own env var
+                # rather than NVIDIA's — telling an operator to rotate a
+                # credential this deployment does not use sends them nowhere.
+                _managed_var = PROVIDERS[MANAGED_PROVIDER]["env_var"]
                 st.error(
                     f"{exc.message}\n\nIf this is the managed endpoint "
                     "returning 403, its key has likely been rotated — "
-                    "update NVIDIA_API_KEY in the secrets, or open the "
+                    f"update {_managed_var} in the secrets, or open the "
                     "AI settings above and use your own key. Grouping "
                     "by hand in the table below works regardless.")
 

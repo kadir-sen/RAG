@@ -37,39 +37,30 @@ PROVIDERS: dict[str, dict] = {
     # Gemini first: it is the DEFAULT and managed provider for COAir. When a
     # managed key is configured (st.secrets / env) the app uses it silently
     # and never renders it — see ai_credentials_panel / ai_provider_block.
-    # models[0] is what the model dropdown preselects, so 2.5 Flash leads.
+    #
+    # models[0] is what the dropdown preselects and default_model is what
+    # resolve_ai_credentials returns; they must agree, or the panel shows one
+    # model and runs another.
+    #
+    # A pinned "gemini-2.5-flash" was rejected on 2026-08-06 —"no longer
+    # available to new users" — so the alias leads instead: it always
+    # resolves to the newest Flash the account can actually reach, which is
+    # the failure this list should never repeat.
     "gemini": {
         "label": "Google (Gemini)",
-        "default_model": "gemini-2.5-flash",
-        "models": ["gemini-2.5-flash", "gemini-flash-latest",
-                   "gemini-flash-lite-latest", "gemini-pro-latest",
-                   "gemini-3-flash-preview", "gemini-3-pro-preview"],
+        "default_model": "gemini-flash-latest",
+        "models": ["gemini-flash-latest", "gemini-flash-lite-latest",
+                   "gemini-pro-latest", "gemini-3-flash-preview",
+                   "gemini-3-pro-preview"],
         "env_var": "GEMINI_API_KEY",
         "key_hint": "aistudio.google.com",
         "managed": True,
     },
-    # Its endpoint speaks the OpenAI protocol, so it reuses that streamer
-    # with a base_url.
-    "nvidia": {
-        # COAir local patch: the "(managed — no key needed)" suffix moved to
-        # the Gemini label's role; NVIDIA now needs a key like the others.
-        "label": "NVIDIA",
-        "default_model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-        # A CURATED three, one per profile: NVIDIA's tuned default, a
-        # large general model, a fast one. The endpoint's catalogue runs
-        # to dozens of models — most of them irrelevant to drafting a
-        # forensic narrative — so the dropdown offers these, validated
-        # against the live catalogue (a retired model drops off by
-        # itself; qwen3-next-80b died mid-engagement on 2026-07-27 and
-        # took every AI panel with it). Anything else: Custom….
-        "models": ["nvidia/llama-3.3-nemotron-super-49b-v1.5",
-                   "openai/gpt-oss-120b",
-                   "deepseek-ai/deepseek-v4-flash"],
-        "env_var": "NVIDIA_API_KEY",
-        "key_hint": "build.nvidia.com/settings/api-keys",
-        "base_url": "https://integrate.api.nvidia.com/v1",
-        # COAir local patch: `"managed": True` moved to the gemini entry.
-    },
+    # COAir local patch: upstream's "nvidia" entry is removed entirely. We
+    # hold no NVIDIA credential, so leaving it in the dropdown only offered a
+    # dead end to whoever picked it. It was also upstream's only provider with
+    # a "base_url", which is why refresh_models' live-catalogue path is now
+    # exercised by a synthetic pinfo in test_qa.py rather than by a real one.
     "anthropic": {
         "label": "Anthropic (Claude)",
         "default_model": "claude-opus-4-8",

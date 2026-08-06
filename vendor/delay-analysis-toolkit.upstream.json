@@ -2,17 +2,22 @@
   "repository": "https://github.com/altunozan/delay-analysis-toolkit.git",
   "branch": "main",
   "commit": "bb52fa0a5e41fc2040979b226911b192463701d5",
-  "tree_sha256": "c29114401c18903b9756fd62d9838fccc6dce38c3d3dca699392cf331111081e",
-  "interface_sha256": "e4904c0873878248e0852a1b0507071e8898148ca5e8f1df23deea8b43175aa6",
-  "synced_at": "2026-08-06T09:25:01.561496+00:00",
+  "tree_sha256": "6a1bf171737321b848e1787e5bb3ec3a466a553ba0ad53dd2882fcfc22c138f3",
+  "interface_sha256": "45743ade3e237d2bfbe7d2f220774f962e5991ed496b7d98dc240268c24ee57f",
+  "synced_at": "2026-08-06T11:55:29.745496+00:00",
   "integration": "git-subtree-squash",
   "local_patches": [
     {
       "file": "vendor/patches/0001-coair-managed-gemini.patch",
-      "why": "COAir runs the toolkit on its own Google billing. Makes Gemini the managed provider (MANAGED_PROVIDER in dcma/narrative.py) with gemini-2.5-flash as the default model, so analysts never enter a key. Upstream ships NVIDIA as the managed default.",
+      "why": "COAir runs the toolkit on its own Google billing. Makes Gemini the managed provider (MANAGED_PROVIDER in dcma/narrative.py) defaulting to gemini-flash-latest, removes the NVIDIA provider COAir holds no key for, and adds a COAIR_URL-gated 'Back to COAir' link. Upstream ships NVIDIA as the managed default and has no link back.",
       "touches": [
+        "app.py",
+        "state.py",
         "dcma/narrative.py",
         "views/_shared.py",
+        "views/_umbrella.py",
+        "views/sequence.py",
+        "test_qa.py",
         "test_ui.py"
       ]
     }
