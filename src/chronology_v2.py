@@ -209,6 +209,26 @@ def _fallback_queries(topic: str) -> List[str]:
     ]
 
 
+def _project_domain_hint(project_id: str) -> str:
+    """The project's name, used to pick between senses of an ambiguous term.
+
+    On the Edinburgh Tram corpus "SDS" must read as System Design Services,
+    not the HSE's Safety Data Sheet; the glossary tags each sense with the
+    domain it came from, so the project name is the disambiguator. Failure to
+    resolve is not an error — the glossary then falls back to the generic
+    sense, which is what it did before this existed.
+    """
+    pid = str(project_id or "").strip()
+    if not pid:
+        return ""
+    try:
+        from .project_store import get_project_store
+        project = get_project_store().get_project(pid)
+    except Exception:  # noqa: BLE001 - the hint is an optimisation, never a gate
+        return ""
+    return str((project or {}).get("name") or "").strip()
+
+
 def prepare_chronology_query(
     topic: str, *, date_from: str = "", date_to: str = "",
     parties: Sequence[str] = (), project_id: str = "",
@@ -216,7 +236,8 @@ def prepare_chronology_query(
     clean_topic = str(topic or "").strip()
     if len(clean_topic) < 3:
         raise ValueError("chronology_topic_required")
-    jargon = prepare_query(clean_topic)
+    domain_hint = _project_domain_hint(project_id)
+    jargon = prepare_query(clean_topic, domain_hint=domain_hint)
     set_current_prepared_query(jargon)
     prompts = load_chronology_prompts()
     prompt = (
@@ -247,7 +268,7 @@ def prepare_chronology_query(
         )
     queries: List[str] = []
     for query in plan.queries:
-        expanded = prepare_query(query)
+        expanded = prepare_query(query, domain_hint=domain_hint)
         for variant in expanded.retrieval_queries[:2]:
             if variant.strip() and variant not in queries:
                 queries.append(variant.strip())

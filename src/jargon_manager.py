@@ -31,6 +31,11 @@ JARGON_DIR.mkdir(parents=True, exist_ok=True)
 JARGON_CACHE_FILE = JARGON_DIR / "jargon_cache.json"
 JARGON_TERMS_FILE = BASE_DIR / "config" / "jargon_terms.json"
 
+# Glossary meanings carry their domain in a trailing bracket — "[generic]",
+# "[Edinburgh Tram Inquiry]", "[HSE]", "[P6]". Useful for choosing between the
+# senses of an ambiguous term; noise inside a retrieval query.
+_TAG_RE = re.compile(r"\[[^\[\]]{1,60}\]")
+
 
 def jargon_dictionary_version() -> str:
     """Stable content version used by query/report cache keys."""
@@ -212,8 +217,56 @@ class JargonManager:
             re.IGNORECASE,
         )
 
+    @staticmethod
+    def retrieval_sense(meaning: str, domain_hint: str = "") -> str:
+        """The ONE sense of a term that belongs in a retrieval query.
+
+        104 of the ~2,700 glossary entries are ambiguous and store every sense
+        in one pipe-joined string, each tagged with its domain:
+
+            SDS -> "Safety Data Sheet. [HSE] | System Design Services
+                    contract. [Edinburgh Tram Inquiry] | ..."
+
+        Substituting that whole string for the token (which is what used to
+        happen) puts an unrelated domain into the search text. On the Edinburgh
+        Tram corpus it spent half the retrieval budget looking for HSE safety
+        data sheets, and the chronology came back about safety regulations
+        instead of the design contract.
+
+        So: split on the pipe, prefer the sense whose [tag] matches the caller's
+        domain, fall back to [generic], then to the first sense — and drop the
+        bracketed tag itself, which is metadata and only adds noise to a vector
+        query. The full multi-sense string still goes to the LLM context block,
+        where having every reading is genuinely useful.
+        """
+        text = str(meaning or "").strip()
+        if "|" not in text:
+            return _TAG_RE.sub("", text).strip(" .;,")
+        senses = [part.strip() for part in text.split("|") if part.strip()]
+        if not senses:
+            return ""
+
+        def tag_of(sense: str) -> str:
+            found = _TAG_RE.findall(sense)
+            return found[-1].strip().lower() if found else ""
+
+        hint = str(domain_hint or "").strip().lower()
+        chosen = ""
+        if hint:
+            for sense in senses:
+                tag = tag_of(sense)
+                # Either direction: hint "Edinburgh Tram Inquiry" matches tag
+                # "edinburgh tram inquiry"; hint "P6 schedule" matches tag "p6".
+                if tag and (tag in hint or hint in tag):
+                    chosen = sense
+                    break
+        if not chosen:
+            chosen = next((s for s in senses if tag_of(s) == "generic"), senses[0])
+        return _TAG_RE.sub("", chosen).strip(" .;,")
+
     def prepare_query(
         self, query: str, *, max_terms: int = 12, max_context_chars: int = 2000,
+        domain_hint: str = "",
     ) -> PreparedQuery:
         """Prepare a query once without destroying the user's original wording.
 
@@ -246,10 +299,12 @@ class JargonManager:
         semantic = original
         parenthetical = original
         for canonical, meaning, start, end in reversed(accepted):
-            semantic = semantic[:start] + meaning + semantic[end:]
+            # One sense only in the retrieval lanes — see retrieval_sense.
+            sense = self.retrieval_sense(meaning, domain_hint) or meaning
+            semantic = semantic[:start] + sense + semantic[end:]
             parenthetical = (
                 parenthetical[:start]
-                + f"{parenthetical[start:end]} ({meaning})"
+                + f"{parenthetical[start:end]} ({sense})"
                 + parenthetical[end:]
             )
         variants: List[str] = []
@@ -874,10 +929,16 @@ def get_jargon_manager() -> JargonManager:
 
 def prepare_query(
     query: str, *, max_terms: int = 12, max_context_chars: int = 2000,
+    domain_hint: str = "",
 ) -> PreparedQuery:
-    """Prepare a query with the shared application glossary."""
+    """Prepare a query with the shared application glossary.
+
+    domain_hint (typically the project name) picks between the senses of an
+    ambiguous term — see JargonManager.retrieval_sense.
+    """
     return get_jargon_manager().prepare_query(
         query, max_terms=max_terms, max_context_chars=max_context_chars,
+        domain_hint=domain_hint,
     )
 
 
