@@ -105,3 +105,70 @@ def test_metadata_filter_ignores_forged_project_id_and_keeps_server_scope():
 def test_global_collection_clear_is_disabled():
     with pytest.raises(PermissionError):
         _rag().clear_index()
+
+
+# ── The notices index is global; the search over it must not be ──────────
+#
+# LightGraph builds `notices` from graph nodes, which carry no project at all.
+# An unscoped search therefore returned other tenants' file names, senders,
+# dates and subjects, and those reached the user as the response's
+# `related_docs` — observed in production on 2026-08-06, where a project
+# holding exactly one uploaded PDF was shown two documents belonging to a
+# different corpus.
+
+class _StubGraph:
+    """LightGraph with its DuckDB and chunk-store lookups faked out."""
+
+    def __init__(self, rows, scope):
+        self._rows = rows
+        self._scope = scope
+        self._notices_table_ready = True
+        self._db = self
+
+    def execute(self, sql, params):  # noqa: D401 - DuckDB stand-in
+        return SimpleNamespace(fetchall=lambda: self._rows)
+
+    @staticmethod
+    def _project_file_names_factory(scope):
+        return staticmethod(lambda project_id: scope.get(project_id))
+
+
+def _make_graph(rows, scope):
+    from src.light_graph import LightGraph
+
+    graph = _StubGraph(rows, scope)
+    graph._project_file_names = lambda project_id: scope.get(project_id)
+    graph.search_by_topic = LightGraph.search_by_topic.__get__(graph, _StubGraph)
+    return graph
+
+
+_MINE = ("d1", "mine.pdf", "2023-01-01", "s", "r", "subject", "letter", "topics", 2)
+_THEIRS = ("d2", "theirs.pdf", "2023-01-02", "s", "r", "subject", "letter", "topics", 2)
+
+
+def test_notice_search_returns_only_the_active_projects_documents():
+    graph = _make_graph([_MINE, _THEIRS], {"p1": {"mine.pdf"}})
+    names = [row["file_name"] for row in graph.search_by_topic("subject", project_id="p1")]
+    assert names == ["mine.pdf"], "another project's document leaked into related_docs"
+
+
+def test_notice_search_returns_nothing_without_a_project_scope():
+    graph = _make_graph([_MINE, _THEIRS], {})
+    set_current_project("")
+    assert graph.search_by_topic("subject") == []
+
+
+def test_notice_search_fails_closed_when_the_scope_lookup_breaks():
+    graph = _make_graph([_MINE, _THEIRS], {})
+    graph._project_file_names = lambda project_id: None  # lookup failure
+    assert graph.search_by_topic("subject", project_id="p1") == []
+
+
+def test_notice_search_uses_the_request_scoped_project_by_default():
+    graph = _make_graph([_MINE, _THEIRS], {"p1": {"mine.pdf"}})
+    set_current_project("p1")
+    try:
+        names = [row["file_name"] for row in graph.search_by_topic("subject")]
+        assert names == ["mine.pdf"]
+    finally:
+        set_current_project("")

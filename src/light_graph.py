@@ -1407,11 +1407,57 @@ class LightGraph:
             lines.append(f"- **{name}** — {len(nodes)} dokuman{date_range}")
         return "\n".join(lines)
 
-    def search_by_topic(self, topic: str, limit: int = 20) -> List[Dict]:
+    @staticmethod
+    def _project_file_names(project_id: str) -> Optional[Set[str]]:
+        """Every file_name the given project owns, from the chunk store.
+
+        The notices index is global — it is built from graph nodes, which carry
+        no project at all — so it cannot scope itself. The chunk store can: its
+        rows are project-tagged and that tagging is what file deletion already
+        relies on. Returns None only if the lookup itself fails, which callers
+        must treat as "no allowlist available", never as "allow everything".
+        """
+        try:
+            from .chunk_store import get_chunk_store
+            con = get_chunk_store().connection()
+            rows = con.execute(
+                "SELECT DISTINCT file_name FROM chunks WHERE project_id = ?",
+                [project_id],
+            ).fetchall()
+            return {str(row[0]) for row in rows if row and row[0]}
+        except Exception as exc:  # noqa: BLE001 - callers fail closed on None
+            logger.warning(f"[LightGraph] project scope lookup failed: {exc}")
+            return None
+
+    def search_by_topic(self, topic: str, limit: int = 20,
+                        project_id: str = "") -> List[Dict]:
         """Search documents by topic, subject, sender, recipient, or filename.
         Tokenizes query into words and scores results by number of matching tokens.
+
+        The project defaults to the request-scoped one that the vector layer
+        already uses, so callers need not pass it and cannot forget to. The
+        notices table indexes every document on the host regardless of project,
+        so an unscoped search hands one tenant's file names, senders, dates and
+        subjects to another — which is exactly what it did until this filter
+        existed. With no project in scope the search returns nothing rather
+        than everything.
         """
         if not self._notices_table_ready:
+            return []
+        if not project_id:
+            try:
+                from .project_context import get_current_project_id
+                project_id = get_current_project_id()
+            except Exception:  # noqa: BLE001 - absent context means no scope
+                project_id = ""
+        scope = self._project_file_names(project_id) if project_id else None
+        if scope is None:
+            logger.warning(
+                "[LightGraph] search_by_topic refused: no project scope "
+                f"(project_id={project_id!r})"
+            )
+            return []
+        if not scope:
             return []
         try:
             # Tokenize: split into meaningful words (3+ chars)
@@ -1451,10 +1497,22 @@ class LightGraph:
                 ORDER BY match_score DESC, date DESC
                 LIMIT ?
             """
-            rows = self._db.execute(sql, params + where_params + [limit]).fetchall()
+            # Over-fetch: the project filter below removes rows, and dropping
+            # them after LIMIT would silently shrink an in-project result set.
+            rows = self._db.execute(
+                sql, params + where_params + [max(limit * 20, 200)]
+            ).fetchall()
             cols = ["doc_id", "file_name", "date", "sender", "recipient",
                     "subject", "doc_type", "topics", "match_score"]
-            return [dict(zip(cols, row)) for row in rows]
+            out = []
+            for row in rows:
+                record = dict(zip(cols, row))
+                if str(record.get("file_name") or "") not in scope:
+                    continue          # another project's document — never leak it
+                out.append(record)
+                if len(out) >= limit:
+                    break
+            return out
         except Exception as e:
             logger.warning(f"[LightGraph] search_by_topic error: {e}")
             return []
