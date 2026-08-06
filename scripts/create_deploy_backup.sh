@@ -45,17 +45,50 @@ restart_previous_api() {
 }
 trap restart_previous_api EXIT INT TERM
 
-# Refuse to start unless there is enough free space for a conservative full
-# application archive plus one Qdrant collection snapshot. This is deliberately
-# pessimistic: safety is preferable to a partial backup followed by deployment.
-application_kib="$(du -sk "$APP_DIR/storage" "$APP_DIR/data" \
-  | awk '{total += $1} END {print total + 0}')"
+# Prefer an incremental application archive when a prior verified full backup
+# exists. Original source files under data/ are immutable after upload, while
+# storage/ contains mutable databases and artifacts and is therefore archived
+# in full on every deploy. No prior backup is removed or rewritten.
+backup_mode="full"
+base_backup=""
+if [ -d "$BACKUP_ROOT" ]; then
+  while IFS= read -r candidate; do
+    if [ -s "$candidate/application-data.tar" ] \
+      && [ -s "$candidate/SHA256SUMS" ] \
+      && [ -s "$candidate/manifest.txt" ] \
+      && ! grep -qx 'backup_mode=incremental' "$candidate/manifest.txt"; then
+      base_backup="$candidate"
+      backup_mode="incremental"
+      break
+    fi
+  done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print | sort -r)
+fi
+
+storage_kib="$(du -sk "$APP_DIR/storage" | awk '{print $1 + 0}')"
+data_delta_kib=0
+data_delta_files=0
+if [ "$backup_mode" = "incremental" ]; then
+  data_delta_bytes="$(find "$APP_DIR/data" -type f -newer "$base_backup/manifest.txt" \
+    -printf '%s\n' | awk '{total += $1} END {printf "%.0f", total + 0}')"
+  data_delta_kib="$(((data_delta_bytes + 1023) / 1024))"
+  data_delta_files="$(find "$APP_DIR/data" -type f -newer "$base_backup/manifest.txt" \
+    | wc -l | tr -d ' ')"
+  application_kib="$((storage_kib + data_delta_kib))"
+else
+  application_kib="$(du -sk "$APP_DIR/storage" "$APP_DIR/data" \
+    | awk '{total += $1} END {print total + 0}')"
+fi
 qdrant_kib="$(du -sk "$APP_DIR/qdrant_storage" \
   | awk '{total += $1} END {print total + 0}')"
 available_kib="$(df -Pk "$BACKUP_ROOT" | awk 'NR == 2 {print $4}')"
-# Qdrant may require space for both its native snapshot and the protected copy
-# outside the live snapshot mount. Add a further 20% margin and 256 MiB.
-source_kib="$((application_kib + qdrant_kib * 2))"
+# The snapshot directory and backup root normally share a filesystem, allowing
+# the protected backup entry to be a hard link. Keep the two-copy estimate when
+# they do not, because the fallback below performs a verified copy.
+qdrant_multiplier=2
+if [ "$(stat -c %d "$APP_DIR/qdrant_snapshots")" = "$(stat -c %d "$BACKUP_ROOT")" ]; then
+  qdrant_multiplier=1
+fi
+source_kib="$((application_kib + qdrant_kib * qdrant_multiplier))"
 required_kib="$((source_kib + source_kib / 5 + 262144))"
 if [ "$available_kib" -lt "$required_kib" ]; then
   echo "Insufficient backup space: need ${required_kib} KiB, have ${available_kib} KiB." >&2
@@ -94,17 +127,31 @@ PY
     echo "Qdrant snapshot was reported but not found on the persistent mount: $snapshot_name" >&2
     exit 6
   fi
-  cp --preserve=mode,timestamps "$snapshot_path" "$backup_dir/$snapshot_name"
+  # A same-filesystem hard link protects the immutable snapshot without
+  # spending another snapshot's worth of disk. Fall back to a normal copy on
+  # filesystems that do not support hard links.
+  if ! ln "$snapshot_path" "$backup_dir/$snapshot_name" 2>/dev/null; then
+    cp --preserve=mode,timestamps "$snapshot_path" "$backup_dir/$snapshot_name"
+  fi
 else
   echo "Qdrant container is not running; refusing an incomplete deploy backup." >&2
   exit 7
 fi
 
 # storage contains user/project/billing/report databases and derived artifacts;
-# data contains original uploaded source files. Tar preserves permissions and
-# relative paths, and writing to a new timestamped directory never overwrites a
-# previous backup.
-tar -C "$APP_DIR" -cf "$backup_dir/application-data.tar" storage data
+# data contains immutable original uploaded source files. A full backup keeps
+# both trees. An incremental backup keeps all mutable storage plus every source
+# file created or replaced since the referenced full backup.
+if [ "$backup_mode" = "incremental" ]; then
+  application_file_list="$backup_dir/application-files.list"
+  printf 'storage\0' > "$application_file_list"
+  find "$APP_DIR/data" -type f -newer "$base_backup/manifest.txt" \
+    -printf 'data/%P\0' >> "$application_file_list"
+  tar --null -C "$APP_DIR" -cf "$backup_dir/application-data.tar" \
+    -T "$application_file_list"
+else
+  tar -C "$APP_DIR" -cf "$backup_dir/application-data.tar" storage data
+fi
 
 (
   cd "$backup_dir"
@@ -118,6 +165,9 @@ cat > "$backup_dir/manifest.txt" <<EOF
 created_at=$timestamp
 app_dir=$APP_DIR
 api_container=$API_CONTAINER
+backup_mode=$backup_mode
+base_backup=$base_backup
+data_delta_files=$data_delta_files
 qdrant_collection=$QDRANT_COLLECTION
 qdrant_snapshot=$snapshot_name
 storage_files=$storage_files
