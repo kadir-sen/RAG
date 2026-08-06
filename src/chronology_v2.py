@@ -129,6 +129,35 @@ def _claims_are_source_valid(value: Dict, evidence: Sequence[EvidenceItem]) -> b
     return True
 
 
+def _prune_source_invalid_claims(value: Dict, evidence: Sequence[EvidenceItem]) -> Dict:
+    """Keep supported claims instead of rejecting an otherwise usable draft.
+
+    Structured generation can produce one over-specific number or quotation in
+    an otherwise source-grounded chronology.  Rejecting the complete response
+    makes retries reproduce the same defect.  This deterministic pass removes
+    only the offending claim (or its now-empty event); the independent verifier
+    still audits every retained claim before rendering.
+    """
+    validated = ChronologyModel.model_validate(value).model_dump()
+    overview = [
+        claim for claim in validated.get("overview_claims", [])
+        if _claims_are_source_valid({"overview_claims": [claim], "entries": []}, evidence)
+    ]
+    entries: List[Dict] = []
+    for event in validated.get("entries", []):
+        claims = [
+            claim for claim in event.get("claims", [])
+            if _claims_are_source_valid({"entries": [{"claims": [claim]}]}, evidence)
+        ]
+        if claims:
+            entries.append({**event, "claims": claims})
+    if not overview:
+        raise ValueError("source_verification_failed")
+    if not entries:
+        raise ValueError("insufficient_evidence")
+    return {"overview_claims": overview, "entries": entries}
+
+
 def _corpus_revision(project_id: str, doc_ids: Sequence[str] = ()) -> str:
     try:
         from .chunk_store import get_chunk_store
@@ -534,9 +563,8 @@ def synthesize(
         validation_model=ChronologyModel,
         thinking_level="medium", max_tokens=32_768, prompt_version=prompts["version"],
         cache_key="chronology-synthesis", cache_context=cache_context, ttl_s=0,
-        semantic_validator=lambda value: _claims_are_source_valid(value, selected),
     )
-    return ChronologyModel.model_validate(response.raw).model_dump()
+    return _prune_source_invalid_claims(response.raw, selected)
 
 
 def verify_claims(

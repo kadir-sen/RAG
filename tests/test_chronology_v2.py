@@ -10,7 +10,7 @@ from backend.tasks.report_jobs import ReportJobStore
 from src import llm_client
 from src.chronology_v2 import (
     PIPELINE_VERSION, ExtractionModel, PreparedChronologyQuery, _claims_are_source_valid,
-    coverage_matrix, evidence_batches, evidence_markdown, extract_batches,
+    _prune_source_invalid_claims, coverage_matrix, evidence_batches, evidence_markdown, extract_batches,
     prepare_chronology_query, source_preview,
 )
 from src.chronology_prompts import load_chronology_prompts
@@ -295,6 +295,32 @@ def test_nested_array_bounds_are_removed_only_from_provider_schema():
     assert "maxItems" not in encoded_provider
     assert "minItems" in encoded_validation
     assert "maxItems" in encoded_validation
+
+
+def test_synthesis_prunes_only_invalid_claims_before_independent_verification():
+    evidence = [EvidenceItem(
+        "s1", "d1", "notice.pdf", page=1,
+        excerpt="On 14 March 2025 the Engineer issued Notice 17.",
+    )]
+    value = {
+        "overview_claims": [{
+            "text": "The Engineer issued Notice 17.", "source_ids": ["s1"],
+        }],
+        "entries": [{
+            "event_date": "2025-03-14", "date_precision": "exact",
+            "claims": [
+                {"text": "The Engineer issued Notice 17.", "source_ids": ["s1"]},
+                {"text": "The notice imposed a 99-day delay.", "source_ids": ["s1"]},
+            ],
+        }],
+    }
+
+    pruned = _prune_source_invalid_claims(value, evidence)
+
+    assert len(pruned["overview_claims"]) == 1
+    assert [claim["text"] for claim in pruned["entries"][0]["claims"]] == [
+        "The Engineer issued Notice 17."
+    ]
 
 
 def test_network_errors_receive_three_jittered_retries(monkeypatch):
