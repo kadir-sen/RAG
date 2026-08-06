@@ -97,6 +97,16 @@ def _hash(value: object) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _is_structured_output_error(exc: Exception) -> bool:
+    """Only truncated, malformed or oversized output is safe to batch-split."""
+    return exc.__class__.__name__ in {
+        "LLMIncompleteResponseError", "LLMInvalidStructuredOutputError",
+        "LLMInputBudgetExceededError",
+    } or any(marker in str(exc).casefold() for marker in (
+        "model_output_incomplete", "model_output_invalid", "input_budget_exceeded",
+    ))
+
+
 def _claims_are_source_valid(value: Dict, evidence: Sequence[EvidenceItem]) -> bool:
     """Reject invented source IDs, numbers and quotations before caching."""
     by_id = {item.source_id: item.excerpt.casefold() for item in evidence}
@@ -367,14 +377,20 @@ def extract_batches(
                 save_step(key, input_hash, "ready", {"entries": entries}, "")
             results.extend(entries)
         except Exception as exc:
-            if len(batch) > 1 and depth < 8:
+            structured_error = _is_structured_output_error(exc)
+            if structured_error and len(batch) > 1 and depth < 8:
                 middle = len(batch) // 2
                 run(batch[:middle], key + "a", depth + 1)
                 run(batch[middle:], key + "b", depth + 1)
                 return
             if save_step:
-                save_step(key, input_hash, "failed", None, "model_output_incomplete")
-            raise RuntimeError("model_output_incomplete") from exc
+                save_step(
+                    key, input_hash, "failed", None,
+                    "model_output_incomplete" if structured_error else "",
+                )
+            if structured_error:
+                raise RuntimeError("model_output_incomplete") from exc
+            raise
 
     for index, batch in enumerate(evidence_batches(evidence), 1):
         run(list(batch), f"extract:{index}")

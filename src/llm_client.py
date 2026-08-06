@@ -421,7 +421,9 @@ def _gemini_generate_native(
     if json_mode or response_schema:
         config_kwargs["response_mime_type"] = "application/json"
     if response_schema:
-        config_kwargs["response_json_schema"] = response_schema
+        config_kwargs["response_json_schema"] = _gemini_compatible_response_schema(
+            response_schema
+        )
     resp = client.models.generate_content(
         model=model,
         contents=prompt,
@@ -439,6 +441,26 @@ def _gemini_generate_native(
         thoughts_tok = getattr(um, "thoughts_token_count", 0) or 0
         cached_tok = getattr(um, "cached_content_token_count", 0) or 0
     return text, prompt_tok, comp_tok, thoughts_tok, cached_tok, resp
+
+
+def _gemini_compatible_response_schema(value: Any) -> Any:
+    """Return the schema subset accepted by Gemini structured output.
+
+    Gemini accepts array cardinality constraints in shallow schemas, but its
+    grammar compiler rejects otherwise valid Pydantic schemas when nested
+    object arrays carry ``minItems``/``maxItems``.  The complete schema is
+    still enforced by ``validation_model`` after generation, so removing only
+    those provider-side grammar hints does not weaken COAir validation.
+    """
+    if isinstance(value, list):
+        return [_gemini_compatible_response_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _gemini_compatible_response_schema(item)
+        for key, item in value.items()
+        if key not in {"minItems", "maxItems"}
+    }
 
 
 def create_llm(provider: str, temperature: float = 0.1, max_tokens: int = 2048,

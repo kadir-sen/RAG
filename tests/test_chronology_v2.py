@@ -9,7 +9,7 @@ import pytest
 from backend.tasks.report_jobs import ReportJobStore
 from src import llm_client
 from src.chronology_v2 import (
-    PIPELINE_VERSION, PreparedChronologyQuery, _claims_are_source_valid,
+    PIPELINE_VERSION, ExtractionModel, PreparedChronologyQuery, _claims_are_source_valid,
     coverage_matrix, evidence_batches, evidence_markdown, extract_batches,
     prepare_chronology_query, source_preview,
 )
@@ -265,6 +265,36 @@ def test_broken_extraction_batch_is_recursively_split(monkeypatch):
 
     monkeypatch.setattr("src.chronology_v2.extract_batch", extract)
     assert len(extract_batches(evidence, prepared)) == 4
+
+
+def test_provider_configuration_error_does_not_trigger_batch_split(monkeypatch):
+    evidence = [
+        EvidenceItem(f"s{i}", "d", "a.pdf", page=i, excerpt="event")
+        for i in range(4)
+    ]
+    prepared = PreparedChronologyQuery("q", "q", (), (), (), (), (), ("q",))
+    calls = []
+
+    def extract(**_kwargs):
+        calls.append(1)
+        raise RuntimeError("400 INVALID_ARGUMENT")
+
+    monkeypatch.setattr("src.chronology_v2.extract_batch", extract)
+    with pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
+        extract_batches(evidence, prepared)
+    assert len(calls) == 1
+
+
+def test_nested_array_bounds_are_removed_only_from_provider_schema():
+    schema = ExtractionModel.model_json_schema()
+    provider_schema = llm_client._gemini_compatible_response_schema(schema)
+
+    encoded_provider = json.dumps(provider_schema)
+    encoded_validation = json.dumps(schema)
+    assert "minItems" not in encoded_provider
+    assert "maxItems" not in encoded_provider
+    assert "minItems" in encoded_validation
+    assert "maxItems" in encoded_validation
 
 
 def test_network_errors_receive_three_jittered_retries(monkeypatch):
