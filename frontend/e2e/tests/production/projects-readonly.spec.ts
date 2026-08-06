@@ -84,7 +84,10 @@ test('production Projects and module routes are healthy without mutating project
   await page.goto('/toolkit/');
   await expect(page).toHaveURL(/\/toolkit\/$/);
   await expect(page).toHaveTitle(/Forensic Programme Analysis/i);
-  await expect(page.getByText('Data Intake & Inventory', { exact: true }).first()).toBeVisible();
+  // Streamlit also keeps a hidden copy of the navigation label in its mobile
+  // sidebar. Target the page heading so the assertion proves the websocket-
+  // rendered application body, not a hidden navigation template.
+  await expect(page.getByRole('heading', { name: 'Data Intake & Inventory' })).toBeVisible();
 
   expect(forbiddenRequests, 'Production smoke must remain read-only after login').toEqual([]);
 });
