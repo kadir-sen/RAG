@@ -52,7 +52,7 @@ export default function ViewerToolbar({
                 onClick={onPrev}
                 disabled={page <= 1}
                 aria-label="Previous page"
-                className="w-7 h-7 rounded flex items-center justify-center text-xs bg-[var(--bg-hover)] text-[var(--text-primary)] disabled:opacity-30"
+                className="flex h-11 w-11 items-center justify-center rounded text-xs bg-[var(--bg-hover)] text-[var(--text-primary)] disabled:opacity-30 lg:h-8 lg:w-8"
               >
                 <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M7 2L3 6l4 4" /></svg>
               </button>
@@ -63,7 +63,7 @@ export default function ViewerToolbar({
                 onClick={onNext}
                 disabled={page >= totalPages}
                 aria-label="Next page"
-                className="w-7 h-7 rounded flex items-center justify-center text-xs bg-[var(--bg-hover)] text-[var(--text-primary)] disabled:opacity-30"
+                className="flex h-11 w-11 items-center justify-center rounded text-xs bg-[var(--bg-hover)] text-[var(--text-primary)] disabled:opacity-30 lg:h-8 lg:w-8"
               >
                 <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M5 2l4 4-4 4" /></svg>
               </button>
@@ -80,7 +80,8 @@ export default function ViewerToolbar({
           <button
             onClick={onClose}
             aria-label="Close viewer"
-            className="w-7 h-7 rounded-lg flex items-center justify-center bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--danger)] hover:text-[var(--accent-ink)] transition-colors"
+            data-viewer-close
+            className="flex h-11 w-11 items-center justify-center rounded-lg bg-[var(--bg-hover)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--danger)] hover:text-[var(--accent-ink)] lg:h-8 lg:w-8"
           >
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="4" y1="4" x2="12" y2="12" />

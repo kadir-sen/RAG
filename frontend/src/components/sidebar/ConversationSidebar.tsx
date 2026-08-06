@@ -358,8 +358,8 @@ export default function ConversationSidebar({ onSend }: SidebarProps) {
       <aside
         aria-label="Sidebar"
         aria-hidden={!sidebarOpen}
-        className={`h-full md:h-full h-dvh bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0 overflow-hidden transition-all duration-300 ease-in-out md:relative fixed md:z-auto z-40 top-0 left-0 ${
-          sidebarOpen ? 'w-72' : 'w-0 border-r-0'
+        className={`fixed left-0 top-0 z-40 flex h-dvh max-w-full shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--bg-secondary)] transition-all duration-300 ease-in-out md:relative md:z-auto md:h-full ${
+          sidebarOpen ? 'w-[min(18rem,100vw)]' : 'w-0 border-r-0'
         }`}
       >
         {/* ── KNOWLEDGE BASE ─────────────────────────────────────── */}

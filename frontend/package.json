@@ -14,6 +14,7 @@
     "e2e:smoke": "playwright test --config=e2e/playwright.config.ts tests/smoke/",
     "e2e:projects": "playwright test --config=e2e/projects.playwright.config.ts",
     "e2e:forensic": "playwright test --config=e2e/forensic.playwright.config.ts",
+    "e2e:mobile": "playwright test --config=e2e/mobile.playwright.config.ts",
     "e2e:projects:production": "playwright test --config=e2e/projects.production.playwright.config.ts",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\""

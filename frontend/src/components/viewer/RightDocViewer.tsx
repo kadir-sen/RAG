@@ -44,7 +44,7 @@ export default function RightDocViewer() {
   const badge = resolveFileTypeFromName(doc.fileName, content?.type);
 
   return (
-    <div className="flex flex-col h-full border-l border-[var(--border)] bg-[var(--bg-secondary)]">
+    <div className="flex h-full min-w-0 flex-col border-l border-[var(--border)] bg-[var(--bg-secondary)]">
       <TypeStripe color={badge.dot} />
       <ViewerToolbar
         fileName={doc.fileName}

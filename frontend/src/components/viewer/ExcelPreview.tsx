@@ -30,7 +30,7 @@ function SchemaPanel({ content }: { content: DocContent }) {
           {content.description ? (
             <p className="mb-2 text-[11px] text-[var(--text-muted)]">{content.description}</p>
           ) : null}
-          <table className="min-w-full font-mono text-[11px] border-collapse">
+          <table className="min-w-max font-mono text-[11px] border-collapse">
             <thead>
               <tr className="text-left text-[var(--text-muted)]">
                 <th className="px-2 py-1 font-semibold">Column</th>
@@ -60,7 +60,7 @@ function SchemaPanel({ content }: { content: DocContent }) {
 export default function ExcelPreview({ content }: Props) {
   if (!content.rows.length) {
     return (
-      <div className="flex-1 overflow-auto">
+      <div data-testid="document-table-scroll" className="min-w-0 flex-1 overflow-auto overscroll-contain">
         <SchemaPanel content={content} />
         <div className="p-6 text-center text-sm text-[var(--text-secondary)] font-mono">
           No data available
@@ -74,16 +74,16 @@ export default function ExcelPreview({ content }: Props) {
     : Object.keys(content.rows[0] as Record<string, unknown>);
 
   return (
-    <div className="flex-1 overflow-auto">
+    <div data-testid="document-table-scroll" className="min-w-0 flex-1 overflow-auto overscroll-contain">
       <SchemaPanel content={content} />
-      <table className="min-w-full font-mono text-[11px] tabular-nums border-collapse">
+      <table className="min-w-max font-mono text-[11px] tabular-nums border-collapse">
         <thead>
           <tr>
             {columns.map((col) => (
               <th
                 key={col}
                 scope="col"
-                className="text-left px-3 py-2 font-semibold text-[var(--text-primary)] bg-[var(--bg-surface)] border-b-2 border-r border-[var(--border)] last:border-r-0 sticky top-0 whitespace-nowrap min-w-[72px]"
+                className={`text-left px-3 py-2 font-semibold text-[var(--text-primary)] bg-[var(--bg-surface)] border-b-2 border-r border-[var(--border)] last:border-r-0 sticky top-0 whitespace-nowrap min-w-[72px] ${columns[0] === col ? 'left-0 z-20' : 'z-10'}`}
               >
                 {col}
               </th>
@@ -103,7 +103,7 @@ export default function ExcelPreview({ content }: Props) {
               {columns.map((col) => (
                 <td
                   key={col}
-                  className="px-3 py-1.5 text-[var(--text-secondary)] border-b border-dashed border-[var(--border)]/60 border-r border-r-[var(--border)]/40 last:border-r-0 whitespace-nowrap min-w-[72px]"
+                  className={`px-3 py-1.5 text-[var(--text-secondary)] border-b border-dashed border-[var(--border)]/60 border-r border-r-[var(--border)]/40 last:border-r-0 whitespace-nowrap min-w-[72px] ${columns[0] === col ? `${i % 2 ? 'bg-[var(--wash)]' : 'bg-[var(--bg-secondary)]'} sticky left-0 z-10` : ''}`}
                 >
                   {String((row as Record<string, unknown>)[col] ?? '')}
                 </td>

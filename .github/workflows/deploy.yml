@@ -38,13 +38,17 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright Chromium and WebKit
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium webkit
 
       - name: Run isolated Projects and module tests
         working-directory: frontend
         run: npm run e2e:projects
+
+      - name: Run authenticated responsive workflow matrix
+        working-directory: frontend
+        run: npm run e2e:mobile
 
       - name: Run isolated native forensic parity tests
         working-directory: frontend
@@ -58,6 +62,7 @@ jobs:
           path: |
             frontend/playwright-report-projects
             frontend/playwright-report-forensic
+            frontend/playwright-report-mobile
             frontend/test-results
           if-no-files-found: ignore
           retention-days: 14
@@ -117,6 +122,7 @@ jobs:
             tests/test_billing_store.py \
             tests/test_provider_credentials.py \
             tests/test_configure_demo_account.py \
+            tests/test_provision_mobile_smoke_workspace.py \
             tests/test_demo_model_policy.py \
             tests/test_ingestion_model_routing.py \
             tests/test_vector_runtime.py \
@@ -130,10 +136,31 @@ jobs:
             tests/test_forensic_actions.py \
             tests/test_run_store.py
 
-  # ── 3. Build the Docker image and push it to GHCR ────────────────────────
+  # ── 3. Require the read-only production smoke configuration up front ────
+  production-smoke-preflight:
+    name: Production UI smoke preflight
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Verify required read-only smoke configuration
+        env:
+          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          PROD_E2E_USERNAME: ${{ secrets.PROD_E2E_USERNAME }}
+          PROD_E2E_PASSWORD: ${{ secrets.PROD_E2E_PASSWORD }}
+          PROD_E2E_PROJECT_ID: ${{ secrets.PROD_E2E_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$PROD_BASE_URL"
+          test -n "$PROD_E2E_USERNAME"
+          test -n "$PROD_E2E_PASSWORD"
+          test -n "$PROD_E2E_PROJECT_ID"
+
+  # ── 4. Build the Docker image and push it to GHCR ────────────────────────
   build-and-push:
     name: Build & push image
-    needs: test
+    needs: [test, production-smoke-preflight]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -174,7 +201,7 @@ jobs:
         id: imgref
         run: echo "image=ghcr.io/${IMAGE_LOWER}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-  # ── 4. Deploy to the AWS Lightsail host over SSH ─────────────────────────
+  # ── 5. Deploy to the AWS Lightsail host over SSH ─────────────────────────
   deploy:
     name: Deploy to Lightsail
     needs: build-and-push
@@ -363,7 +390,7 @@ jobs:
             trap - EXIT INT TERM
             exit 1
 
-  # ── 5. Public, read-only Projects/mobile smoke ───────────────────────────
+  # ── 6. Public, read-only Projects/mobile smoke ───────────────────────────
   production-ui-smoke:
     name: Production read-only UI smoke
     needs: deploy
@@ -378,30 +405,13 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Detect production smoke configuration
-        id: smoke-config
-        env:
-          PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
-          PROD_E2E_USERNAME: ${{ secrets.PROD_E2E_USERNAME }}
-          PROD_E2E_PASSWORD: ${{ secrets.PROD_E2E_PASSWORD }}
-          PROD_E2E_PROJECT_ID: ${{ secrets.PROD_E2E_PROJECT_ID }}
-        run: |
-          if [ -n "$PROD_BASE_URL" ] && [ -n "$PROD_E2E_USERNAME" ] && [ -n "$PROD_E2E_PASSWORD" ] && [ -n "$PROD_E2E_PROJECT_ID" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Production UI smoke skipped until PROD_BASE_URL, PROD_E2E_USERNAME, PROD_E2E_PASSWORD and PROD_E2E_PROJECT_ID are configured."
-          fi
-
       - name: Install production smoke dependencies
-        if: steps.smoke-config.outputs.enabled == 'true'
         working-directory: frontend
         run: |
           npm ci
           npx playwright install --with-deps chromium
 
       - name: Run read-only production smoke
-        if: steps.smoke-config.outputs.enabled == 'true'
         working-directory: frontend
         env:
           PROD_BASE_URL: ${{ secrets.PROD_BASE_URL }}
@@ -411,7 +421,7 @@ jobs:
         run: npm run e2e:projects:production
 
       - name: Upload production smoke diagnostics
-        if: failure() && steps.smoke-config.outputs.enabled == 'true'
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: production-projects-playwright-diagnostics

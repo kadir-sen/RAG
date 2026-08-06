@@ -142,7 +142,7 @@
   /* ── Layout tokens (chat shell) ── */
   --bubble-radius: 2px;    /* drawings have no rounded corners */
   --avatar-size: 30px;
-  --topnav-height: 56px;
+  --topnav-height: 96px;
   --grid-size: 24px;
 
   /* ── File-type indicator dots ──
@@ -258,6 +258,18 @@ pre {
 #root {
   height: 100%;
   overflow: clip;
+}
+
+@media (min-width: 768px) {
+  :root { --topnav-height: 56px; }
+}
+
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
 }
 
 /* ── The drafting grid ──
@@ -437,7 +449,7 @@ pre {
   display: block;
 }
 
-@media (min-width: 640px) {
+@media (min-width: 768px) {
   .sheet-toggle-label { display: inline; }
   .sheet-toggle-icon { display: none; }
 }

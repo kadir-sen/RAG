@@ -16,11 +16,11 @@ export default function TopNav() {
   return (
     <header
       data-testid="topnav"
-      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 px-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:px-3 md:px-4 border-b border-[var(--border)] flex-shrink-0 bg-[var(--bg-primary)]"
+      className="grid grid-cols-[minmax(0,1fr)_auto] grid-rows-2 items-center gap-x-1 px-2 py-1 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:grid-rows-1 md:px-4 md:py-0 border-b border-[var(--border)] flex-shrink-0 bg-[var(--bg-primary)]"
       style={{ height: 'var(--topnav-height)' }}
     >
       {/* Left — the selected project is the persistent workspace context. */}
-      <nav aria-label="Workspace navigation" className="flex min-w-0 items-center gap-1.5 justify-self-start">
+      <nav aria-label="Workspace navigation" className="col-span-2 row-start-1 flex w-full min-w-0 items-center gap-1.5 justify-self-start md:col-span-1 md:w-auto">
         {location.pathname !== '/' && (
           <button
             type="button"
@@ -39,7 +39,7 @@ export default function TopNav() {
           onClick={toggleSidebar}
           aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
           aria-expanded={sidebarOpen}
-          className="hidden md:flex w-8 h-8 shrink-0 items-center justify-center rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
         >
           {sidebarOpen ? (
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -58,13 +58,13 @@ export default function TopNav() {
       </nav>
 
       {/* Center — wordmark + workspace label */}
-      <div className="hidden sm:flex items-center gap-2 justify-self-center">
+      <div className="hidden md:flex items-center gap-2 justify-self-center">
         <BrandMark size="sm" />
       </div>
 
       {/* Right — usage badge + sheet toggle + settings + avatar */}
-      <div data-testid="topnav-actions" className="flex items-center gap-1 justify-self-end text-[var(--text-secondary)] sm:gap-2">
-        {!sidebarOpen && <UsageRing size={16} showLabel />}
+      <div data-testid="topnav-actions" className="col-start-2 row-start-2 flex items-center gap-1 justify-self-end text-[var(--text-secondary)] md:col-start-3 md:row-start-1 md:gap-2">
+        <UsageRing size={16} showLabel />
         <SheetToggle />
         <button
           onClick={toggleSettings}

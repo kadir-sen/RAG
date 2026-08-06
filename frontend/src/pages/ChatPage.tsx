@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useCallback, useRef, useState } from 'react';
+import { useEffect, useCallback, useRef, useState } from 'react';
 import { useChat } from '../hooks/useChat';
 import { useConversations } from '../hooks/useConversations';
 import { useUIStore } from '../stores/uiStore';
@@ -10,14 +10,10 @@ import ChatInput from '../components/chat/ChatInput';
 import WelcomeScreen from '../components/chat/WelcomeScreen';
 import SelectedContextBar from '../components/chat/SelectedContextBar';
 
-const RightDocViewer = lazy(
-  () => import('../components/viewer/RightDocViewer'),
-);
-
 export default function ChatPage() {
   const { messages, isLoading, isPending, sendMessage, activeRequestId } = useChat();
   const { createConversation } = useConversations();
-  const { rightPanelOpen, openDocument } = useUIStore();
+  const { openDocument } = useUIStore();
   const { activeConversationId, setConversation } = useChatStore();
   const pendingMessageRef = useRef<string | null>(null);
   const restoredRef = useRef(false);
@@ -149,14 +145,6 @@ export default function ChatPage() {
         </div>
       </div>
 
-      {/* Right viewer */}
-      {rightPanelOpen && (
-        <div className="w-[340px] lg:w-[420px] flex-shrink-0 h-full">
-          <Suspense fallback={null}>
-            <RightDocViewer />
-          </Suspense>
-        </div>
-      )}
     </div>
   );
 }

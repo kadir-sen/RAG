@@ -50,7 +50,7 @@ export default function SettingsModal() {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay)]"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--overlay)] sm:items-center"
       onClick={toggleSettings}
       role="presentation"
     >
@@ -59,7 +59,7 @@ export default function SettingsModal() {
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"
-        className="bg-[var(--bg-secondary)] rounded-xl border border-[var(--border)] w-full max-w-lg mx-4 max-h-[90dvh] sm:max-h-[80vh] flex flex-col animate-fade-in"
+        className="flex max-h-[92dvh] w-full flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] animate-fade-in sm:mx-4 sm:max-w-lg sm:max-h-[80vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -68,7 +68,7 @@ export default function SettingsModal() {
           <button
             onClick={toggleSettings}
             aria-label="Close settings"
-            className="p-1 rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+            className="flex h-11 w-11 items-center justify-center rounded-md hover:bg-[var(--bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
           >
             <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
               <line x1="3" y1="3" x2="11" y2="11" />

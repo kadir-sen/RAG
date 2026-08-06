@@ -96,7 +96,7 @@ export default function KnowledgeModal({
   return (
     <>
       <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay)]"
+        className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--overlay)] md:items-center"
         onClick={onClose}
       >
         <div
@@ -104,7 +104,7 @@ export default function KnowledgeModal({
           role="dialog"
           aria-modal="true"
           aria-labelledby="knowledge-modal-title"
-          className="bg-[var(--bg-secondary)] rounded-lg border border-[var(--border)] w-full max-w-3xl h-[80vh] flex flex-col"
+          className="flex h-[92dvh] w-full flex-col rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] md:mx-4 md:h-[80vh] md:max-w-3xl"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
@@ -118,16 +118,16 @@ export default function KnowledgeModal({
             </div>
             <button
               onClick={onClose}
-              className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-lg"
+              className="flex h-11 w-11 items-center justify-center text-lg text-[var(--text-muted)] hover:text-[var(--text-primary)]"
               aria-label="Close"
             >
               &times;
             </button>
           </div>
 
-          <div className="flex flex-1 overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
             {/* Left: collection list */}
-            <div className="w-1/3 border-r border-[var(--border)] flex flex-col">
+            <div className="flex max-h-[42%] w-full flex-col border-b border-[var(--border)] md:max-h-none md:w-1/3 md:border-b-0 md:border-r">
               <div className="p-3 border-b border-[var(--border)]">
                 {creating ? (
                   <div className="space-y-2">

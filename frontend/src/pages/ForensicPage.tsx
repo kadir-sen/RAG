@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import AIReportPanel from '../components/reports/AIReportPanel';
@@ -92,14 +92,14 @@ function ResultTableView({ table }: { table: ResultTable }) {
         <h3 className="font-mono text-[10px] uppercase tracking-[.13em] text-[var(--text-muted)]">{table.name.replace('result.', '')}</h3>
         <span className="font-mono text-[9px] text-[var(--text-muted)]">{table.total_rows.toLocaleString()} rows{table.truncated ? ' · preview' : ''}</span>
       </div>
-      <div className="max-h-[460px] overflow-auto">
+      <div data-testid="forensic-table-scroll" className="max-h-[460px] max-w-full overflow-auto overscroll-contain">
         <table className="w-full min-w-[760px] border-collapse text-left text-[11px]">
           <thead className="sticky top-0 bg-[var(--wash)]">
-            <tr>{columns.map((column) => <th key={column} className="border-b border-r border-[var(--border)] px-3 py-2 font-mono text-[9px] uppercase text-[var(--text-muted)]">{column.replaceAll('_', ' ')}</th>)}</tr>
+            <tr>{columns.map((column, columnIndex) => <th key={column} className={`border-b border-r border-[var(--border)] bg-[var(--wash)] px-3 py-2 font-mono text-[9px] uppercase text-[var(--text-muted)] ${columnIndex === 0 ? 'sticky left-0 z-20' : ''}`}>{column.replaceAll('_', ' ')}</th>)}</tr>
           </thead>
           <tbody>{table.rows.map((row, index) => (
             <tr key={index} className="odd:bg-[var(--wash)]/40">
-              {columns.map((column) => <td key={column} className="max-w-[360px] border-b border-r border-[var(--border)] px-3 py-2 align-top text-[var(--text-secondary)]"><span className="line-clamp-5">{readable(row[column])}</span></td>)}
+              {columns.map((column, columnIndex) => <td key={column} className={`max-w-[360px] border-b border-r border-[var(--border)] px-3 py-2 align-top text-[var(--text-secondary)] ${columnIndex === 0 ? 'sticky left-0 z-10 bg-[var(--bg-primary)]' : ''}`}><span className="line-clamp-5">{readable(row[column])}</span></td>)}
             </tr>
           ))}</tbody>
         </table>
@@ -108,8 +108,95 @@ function ResultTableView({ table }: { table: ResultTable }) {
   );
 }
 
+function ExpandableVisual({ title, expanded, onExpanded, children }: {
+  title: string;
+  expanded: boolean;
+  onExpanded: (value: boolean) => void;
+  children: ReactNode;
+}) {
+  const panelRef = useRef<HTMLElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!expanded) return;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const focusTimer = window.setTimeout(() => {
+      panelRef.current?.querySelector<HTMLElement>('[data-visual-close]')?.focus();
+    }, 0);
+    const handleKeys = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onExpanded(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !panelRef.current) return;
+      const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], iframe, [tabindex]:not([tabindex="-1"])',
+      ));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeys);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener('keydown', handleKeys);
+      document.body.style.overflow = previous;
+      window.setTimeout(() => returnFocusRef.current?.focus(), 0);
+    };
+  }, [expanded, onExpanded]);
+
+  return (
+    <section
+      ref={panelRef}
+      data-testid="forensic-visual"
+      role={expanded ? 'dialog' : undefined}
+      aria-modal={expanded ? 'true' : undefined}
+      aria-label={expanded ? title : undefined}
+      className={expanded
+        ? 'fixed inset-0 z-[80] flex h-dvh min-w-0 flex-col bg-[var(--bg-primary)] p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:p-6'
+        : 'min-w-0 border border-[var(--border)] bg-[var(--bg-primary)]'}
+    >
+      <div className="flex min-h-11 shrink-0 items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2">
+        <h3 className="min-w-0 truncate font-mono text-[10px] uppercase tracking-[.12em] text-[var(--text-muted)]">{title}</h3>
+        <button
+          type="button"
+          onClick={() => onExpanded(!expanded)}
+          data-visual-close={expanded ? '' : undefined}
+          className="flex min-h-11 shrink-0 items-center border border-[var(--border)] px-3 font-mono text-[9px] uppercase text-[var(--text-primary)]"
+          aria-label={expanded ? `Close expanded ${title}` : `Expand ${title}`}
+        >
+          {expanded ? 'Close' : 'Expand'}
+        </button>
+      </div>
+      <div className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</div>
+    </section>
+  );
+}
+
 function VegaLitePanel({ spec }: { spec: Record<string, unknown> }) {
   const target = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const responsiveSpec = useMemo(() => {
+    const next: Record<string, unknown> = {
+      ...spec,
+      autosize: { type: 'fit', contains: 'padding', resize: true },
+    };
+    if (!('hconcat' in spec) && !('vconcat' in spec) && !('concat' in spec)) {
+      next.width = 'container';
+    }
+    return next;
+  }, [spec]);
   useEffect(() => {
     let finalizer: (() => void) | undefined;
     let live = true;
@@ -117,18 +204,19 @@ function VegaLitePanel({ spec }: { spec: Record<string, unknown> }) {
       if (!live || !target.current) return;
       const result = await embed(
         target.current,
-        spec as Parameters<typeof embed>[1],
+        responsiveSpec as Parameters<typeof embed>[1],
         { actions: false, renderer: 'canvas' },
       );
       finalizer = () => result.finalize();
     });
     return () => { live = false; finalizer?.(); };
-  }, [spec]);
-  return <div className="overflow-hidden border border-[var(--border)] bg-[var(--bg-primary)] p-4"><div ref={target} className="w-full" aria-label="Analysis chart" /></div>;
+  }, [responsiveSpec, expanded]);
+  return <ExpandableVisual title="Analysis chart" expanded={expanded} onExpanded={setExpanded}><div className="h-full min-w-0 overflow-auto p-2 md:p-4"><div ref={target} className="min-h-[280px] w-full" aria-label="Analysis chart" /></div></ExpandableVisual>;
 }
 
 function SandboxedHtmlPanel({ artifactId, title }: { artifactId: string; title: string }) {
   const [url, setUrl] = useState('');
+  const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     let live = true;
     let objectUrl = '';
@@ -140,7 +228,7 @@ function SandboxedHtmlPanel({ artifactId, title }: { artifactId: string; title: 
     return () => { live = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [artifactId]);
   if (!url) return <div className="h-40 border border-[var(--border)] p-4 text-[10px] text-[var(--text-muted)]">Loading visual…</div>;
-  return <iframe title={title} src={url} sandbox="allow-scripts" className="h-[620px] w-full border border-[var(--border)] bg-white" />;
+  return <ExpandableVisual title={title} expanded={expanded} onExpanded={setExpanded}><iframe title={title} src={url} sandbox="allow-scripts" className={`${expanded ? 'h-full' : 'h-[55dvh] min-h-[360px] md:h-[620px]'} w-full border-0 bg-white`} /></ExpandableVisual>;
 }
 
 type ModuleFormState = {
@@ -229,7 +317,7 @@ function ModuleForm({ slug, programmes, form, setForm }: {
   form: ModuleFormState;
   setForm: React.Dispatch<React.SetStateAction<ModuleFormState>>;
 }) {
-  const input = 'w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[12px] text-[var(--text-primary)]';
+  const input = 'min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-base text-[var(--text-primary)] md:text-[12px]';
   const set = (key: keyof ModuleFormState, value: string | number | boolean) => setForm((old) => ({ ...old, [key]: value }));
   const needsEvent = slug === 'time-impact-analysis' || slug === 'impacted-as-planned';
   return (
@@ -287,7 +375,7 @@ function ProjectSourcesPanel({
     const haystack = `${source.file_name} ${source.metadata.title ?? ''} ${source.metadata.reference ?? ''}`.toLocaleLowerCase();
     return matchesKind && haystack.includes(query.trim().toLocaleLowerCase());
   }), [sources, query, kind]);
-  const input = 'min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-[12px] text-[var(--text-primary)]';
+  const input = 'min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-base text-[var(--text-primary)] md:text-[12px]';
   return (
     <section className="border border-[var(--border)] bg-[var(--bg-primary)]">
       <div className="border-b border-[var(--border)] p-4">
@@ -560,10 +648,10 @@ function RunPanel({ slug, workspaceId, programmes, canEdit, parityAvailable, evi
         {actionMessage && <p role="status" className="mt-4 border border-[var(--accent)] p-3 text-[11px] text-[var(--text-secondary)]">{actionMessage}</p>}
         {parityAvailable && slug === 'time-impact-analysis' && <div className="mt-5 space-y-4 border border-[var(--border)] bg-[var(--bg-primary)] p-4"><div><p className="font-mono text-[9px] uppercase text-[var(--text-muted)]">Steps 2–5 · Evidence, event, fragnet and logic</p><p className="mt-2 text-[10px] leading-4 text-[var(--text-secondary)]">Gemini proposals are written to versioned workspace state only after the toolkit’s strict parsers verify quotations, activity IDs, stages and network links. They still require analyst confirmation.</p></div><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"><button type="button" disabled={!canEdit || submitting || !state.data || !evidenceSourceIds.length} onClick={() => void extractEvents()} className="min-h-11 border border-[var(--border)] px-3 text-[10px] disabled:opacity-40">Extract event candidates</button><button type="button" disabled={!canEdit || submitting || !state.data || !evidenceSourceIds.length} onClick={() => void extractClauses()} className="min-h-11 border border-[var(--border)] px-3 text-[10px] disabled:opacity-40">Map contract clauses</button><button type="button" disabled={!canEdit || submitting || !state.data || !currentProgrammeId || !form.eventTitle.trim()} onClick={() => void recommendFragnet()} className="min-h-11 border border-[var(--border)] px-3 text-[10px] disabled:opacity-40">Recommend fragnet</button><button type="button" disabled={!canEdit || submitting || !state.data || !fragnetDraft.length} onClick={() => void recommendLogic()} className="min-h-11 border border-[var(--border)] px-3 text-[10px] disabled:opacity-40">Recommend logic</button></div>{fragnetDraft.length > 0 && <details className="border-t border-[var(--border)] pt-3"><summary className="cursor-pointer font-mono text-[9px] uppercase text-[var(--text-muted)]">Review proposed fragnet ({fragnetDraft.length})</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap text-[9px] text-[var(--text-secondary)]">{JSON.stringify(fragnetDraft, null, 2)}</pre></details>}</div>}
         {slug !== 'intake' && <label className="mt-5 flex items-start gap-2 text-[10px] leading-4 text-[var(--text-secondary)]"><input type="checkbox" checked={aiNarrative} onChange={(e) => setAiNarrative(e.target.checked)} /><span>Add a Gemini 3.6 Flash expert narrative. Deterministic calculations remain free; only this optional narrative uses project credits.</span></label>}
-        <button disabled={!canEdit || submitting || !workspaceId} onClick={() => void submit()} className="mt-4 border border-[var(--accent)] bg-[var(--accent)] px-5 py-2.5 text-[11px] font-medium text-[var(--accent-ink)] disabled:opacity-40">{submitting ? 'Queuing…' : 'Run analysis'}</button>
+        <button disabled={!canEdit || submitting || !workspaceId} onClick={() => void submit()} className="mt-4 min-h-11 border border-[var(--accent)] bg-[var(--accent)] px-5 py-2.5 text-[11px] font-medium text-[var(--accent-ink)] disabled:opacity-40">{submitting ? 'Queuing…' : 'Run analysis'}</button>
         {!canEdit && <p className="mt-2 text-[10px] text-[var(--text-muted)]">Viewer access is read-only.</p>}
       </section>
-      {relevant.length > 0 && <section className="border border-[var(--border)] bg-[var(--bg-primary)] p-4"><p className="font-mono text-[9px] uppercase tracking-[.14em] text-[var(--text-muted)]">Run history</p><div className="mt-3 flex flex-wrap gap-2">{relevant.map((item) => <button key={item.run_id} onClick={() => setSelectedRunId(item.run_id)} className={`border px-3 py-2 text-[10px] ${selectedRunId === item.run_id ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`}>{new Date(item.created_at).toLocaleString()} · {item.status}</button>)}</div></section>}
+      {relevant.length > 0 && <section className="border border-[var(--border)] bg-[var(--bg-primary)] p-4"><p className="font-mono text-[9px] uppercase tracking-[.14em] text-[var(--text-muted)]">Run history</p><div className="mt-3 flex flex-wrap gap-2">{relevant.map((item) => <button key={item.run_id} onClick={() => setSelectedRunId(item.run_id)} className={`min-h-11 border px-3 py-2 text-[10px] ${selectedRunId === item.run_id ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`}>{new Date(item.created_at).toLocaleString()} · {item.status}</button>)}</div></section>}
       {run && <section className="space-y-5">
         <div className="border border-[var(--border)] bg-[var(--wash)] p-4">
           <div className="flex items-center justify-between gap-4"><div><p className="font-mono text-[9px] uppercase text-[var(--text-muted)]">{run.stage.replaceAll('_', ' ')}</p><p className="mt-1 text-[12px] font-medium text-[var(--text-primary)]">{run.status === 'ready' ? 'Analysis complete' : run.status === 'failed' ? 'Analysis stopped' : 'Engine is running'}</p></div><span className="font-mono text-[11px] text-[var(--text-secondary)]">{Math.round(run.progress * 100)}%</span></div>
@@ -580,7 +668,7 @@ function RunPanel({ slug, workspaceId, programmes, canEdit, parityAvailable, evi
           {run.result.chart && <VegaLitePanel spec={run.result.chart} />}
           {run.artifacts.filter((artifact) => artifact.kind === 'html').map((artifact) => <SandboxedHtmlPanel key={artifact.artifact_id} artifactId={artifact.artifact_id} title={artifact.name} />)}
           {run.result.tables.map((table) => <ResultTableView key={table.name} table={table} />)}
-          <div className="flex flex-wrap gap-2">{run.artifacts.map((artifact) => <button key={artifact.artifact_id} onClick={() => void downloadForensicArtifact(artifact)} className="border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[10px] text-[var(--text-primary)]">Download {artifact.kind.toUpperCase()} · {bytes(artifact.size_bytes)}</button>)}</div>
+          <div className="flex flex-wrap gap-2">{run.artifacts.map((artifact) => <button key={artifact.artifact_id} onClick={() => void downloadForensicArtifact(artifact)} className="min-h-11 border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[10px] text-[var(--text-primary)]">Download {artifact.kind.toUpperCase()} · {bytes(artifact.size_bytes)}</button>)}</div>
           <details className="border border-[var(--border)] p-4"><summary className="cursor-pointer font-mono text-[9px] uppercase text-[var(--text-muted)]">Method caveats ({run.result.caveats.length})</summary><ul className="mt-3 space-y-2 text-[11px] leading-5 text-[var(--text-secondary)]">{run.result.caveats.map((value, index) => <li key={index}>• {value}</li>)}</ul></details>
         </>}
       </section>}
@@ -621,10 +709,10 @@ export default function ForensicPage() {
         <nav aria-label="Forensic analysis modules" className="p-3">{NAVIGATION.map((group) => <div key={group.label} className="mb-5"><p className="px-2 font-mono text-[8px] uppercase tracking-[.14em] text-[var(--text-muted)]">{group.label}</p><div className="mt-2 space-y-0.5">{group.items.map(([itemSlug, label]) => <Link key={itemSlug} to={`/forensic/${itemSlug}${workspaceId ? `?workspace=${workspaceId}` : ''}`} className={`block border-l-2 px-3 py-2 text-[10px] no-underline ${slug === itemSlug ? 'border-[var(--accent)] bg-[var(--bg-primary)] text-[var(--text-primary)]' : 'border-transparent text-[var(--text-secondary)] hover:border-[var(--border)]'}`}>{label}</Link>)}</div></div>)}<div className="border-t border-[var(--border)] pt-3"><Link to={`/forensic/evidence-report${workspaceId ? `?workspace=${workspaceId}` : ''}`} className={`block border-l-2 px-3 py-2 text-[10px] no-underline ${slug === 'evidence-report' ? 'border-[var(--accent)] bg-[var(--bg-primary)] text-[var(--text-primary)]' : 'border-transparent text-[var(--text-secondary)]'}`}>Evidence-led Forensic Draft</Link></div></nav>
       </aside>
       <div className="min-w-0 flex-1 overflow-y-auto">
-        {slug === 'evidence-report' && <label className="m-4 block font-mono text-[9px] uppercase tracking-[.12em] text-[var(--text-muted)] lg:hidden">Analysis module<select value={slug} onChange={(e) => navigate(`/forensic/${e.target.value}${workspaceId ? `?workspace=${workspaceId}` : ''}`)} className="mt-1 block w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[11px] normal-case text-[var(--text-primary)]">{MODULE_OPTIONS.map((item) => <option key={item.slug} value={item.slug}>{item.label}</option>)}<option value="evidence-report">Evidence-led Forensic Draft</option></select></label>}
+        {slug === 'evidence-report' && <label className="m-4 block font-mono text-[9px] uppercase tracking-[.12em] text-[var(--text-muted)] lg:hidden">Analysis module<select value={slug} onChange={(e) => navigate(`/forensic/${e.target.value}${workspaceId ? `?workspace=${workspaceId}` : ''}`)} className="mt-1 block min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-base normal-case text-[var(--text-primary)] md:text-[11px]">{MODULE_OPTIONS.map((item) => <option key={item.slug} value={item.slug}>{item.label}</option>)}<option value="evidence-report">Evidence-led Forensic Draft</option></select></label>}
         {slug === 'evidence-report' ? <AIReportPanel module="forensic" /> : <div className="mx-auto max-w-6xl px-4 py-6 md:px-8 md:py-8">
-          <label className="mb-5 block font-mono text-[9px] uppercase tracking-[.12em] text-[var(--text-muted)] lg:hidden">Analysis module<select value={slug} onChange={(e) => navigate(`/forensic/${e.target.value}${workspaceId ? `?workspace=${workspaceId}` : ''}`)} className="mt-1 block w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[11px] normal-case text-[var(--text-primary)]">{MODULE_OPTIONS.map((item) => <option key={item.slug} value={item.slug}>{item.label}</option>)}<option value="evidence-report">Evidence-led Forensic Draft</option></select></label>
-          <header className="mb-6 flex flex-col gap-4 border-b border-[var(--border)] pb-5 md:flex-row md:items-end md:justify-between"><div><p className="font-mono text-[9px] uppercase tracking-[.15em] text-[var(--text-muted)]">{definition?.group ?? 'Programme'} · deterministic engine</p><h1 className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">{definition?.title ?? 'Forensic Programme Analysis'}</h1><p className="mt-2 text-[11px] text-[var(--text-muted)]">Results are tied to source revision {selectedWorkspace?.source_revision.slice(0, 12) ?? '—'}.</p></div><label className="text-[9px] uppercase tracking-[.12em] text-[var(--text-muted)]">Workspace<select value={workspaceId} onChange={(e) => setSearchParams(e.target.value ? { workspace: e.target.value } : {})} className="mt-1 block min-w-[260px] border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-[11px] normal-case text-[var(--text-primary)]"><option value="">No workspace selected</option>{(workspaces.data ?? []).map((workspace) => <option key={workspace.workspace_id} value={workspace.workspace_id}>{workspace.name}</option>)}</select></label></header>
+          <label className="mb-5 block font-mono text-[9px] uppercase tracking-[.12em] text-[var(--text-muted)] lg:hidden">Analysis module<select value={slug} onChange={(e) => navigate(`/forensic/${e.target.value}${workspaceId ? `?workspace=${workspaceId}` : ''}`)} className="mt-1 block min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-base normal-case text-[var(--text-primary)] md:text-[11px]">{MODULE_OPTIONS.map((item) => <option key={item.slug} value={item.slug}>{item.label}</option>)}<option value="evidence-report">Evidence-led Forensic Draft</option></select></label>
+          <header className="mb-6 flex min-w-0 flex-col gap-4 border-b border-[var(--border)] pb-5 md:flex-row md:items-end md:justify-between"><div className="min-w-0"><p className="font-mono text-[9px] uppercase tracking-[.15em] text-[var(--text-muted)]">{definition?.group ?? 'Programme'} · deterministic engine</p><h1 className="mt-2 break-words text-2xl font-semibold text-[var(--text-primary)]">{definition?.title ?? 'Forensic Programme Analysis'}</h1><p className="mt-2 break-all text-[11px] text-[var(--text-muted)]">Results are tied to source revision {selectedWorkspace?.source_revision.slice(0, 12) ?? '—'}.</p></div><label className="w-full text-[9px] uppercase tracking-[.12em] text-[var(--text-muted)] md:w-auto">Workspace<select value={workspaceId} onChange={(e) => setSearchParams(e.target.value ? { workspace: e.target.value } : {})} className="mt-1 block min-h-11 w-full border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-base normal-case text-[var(--text-primary)] md:w-auto md:min-w-[260px] md:text-[11px]"><option value="">No workspace selected</option>{(workspaces.data ?? []).map((workspace) => <option key={workspace.workspace_id} value={workspace.workspace_id}>{workspace.name}</option>)}</select></label></header>
           {definition?.parity.steps?.length ? <ol aria-label="Module workflow" className="mb-6 grid gap-px border border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 lg:grid-cols-4">{definition.parity.steps.map((step, index) => <li key={step} className="min-h-14 bg-[var(--wash)] p-3 text-[10px] leading-4 text-[var(--text-secondary)]"><span className="mr-2 font-mono text-[9px] text-[var(--accent)]">{String(index + 1).padStart(2, '0')}</span>{step.replace(/^[①②③④⑤⑥⑦]\s*/, '')}</li>)}</ol> : null}
           {slug === 'intake' ? <IntakePanel canEdit={canEdit} parityAvailable={Boolean(status.data.parity_available)} workspaceId={workspaceId} onWorkspace={(id) => setSearchParams({ workspace: id })} /> : !selectedWorkspace ? <div className="border border-[var(--border)] bg-[var(--wash)] p-6"><p className="text-[12px] text-[var(--text-secondary)]">Create or select a programme workspace before running this module.</p><Link to="/forensic/intake" className="mt-4 inline-block border border-[var(--border)] px-3 py-2 text-[10px]">Open Intake</Link></div> : <RunPanel slug={slug} workspaceId={workspaceId} programmes={selectedProgrammes} canEdit={canEdit} parityAvailable={Boolean(status.data.parity_available)} evidenceSourceIds={selectedWorkspace.evidence_source_ids ?? []} />}
         </div>}

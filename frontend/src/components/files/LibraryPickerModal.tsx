@@ -93,18 +93,18 @@ export default function LibraryPickerModal({ open, onClose, existingDocIds, onAd
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay)]" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--overlay)] sm:items-center" onClick={onClose}>
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="library-picker-title"
-        className="bg-[var(--bg-secondary)] rounded-lg border border-[var(--border)] w-full max-w-lg max-h-[85dvh] sm:max-h-[70vh] flex flex-col"
+        className="flex max-h-[92dvh] w-full flex-col rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] sm:mx-4 sm:max-w-lg sm:max-h-[70vh]"
         onClick={e => e.stopPropagation()}
       >
         <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
           <h3 id="library-picker-title" className="text-[var(--text-primary)] font-medium">Add Documents</h3>
-          <button onClick={onClose} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+          <button onClick={onClose} aria-label="Close document picker" className="flex h-11 w-11 items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]">
             &times;
           </button>
         </div>
@@ -121,7 +121,7 @@ export default function LibraryPickerModal({ open, onClose, existingDocIds, onAd
               return (
                 <label
                   key={doc.doc_id}
-                  className={`flex items-center gap-3 p-2 rounded cursor-pointer hover:bg-[var(--bg-primary)] ${
+                  className={`flex min-h-11 items-center gap-3 p-2 rounded cursor-pointer hover:bg-[var(--bg-primary)] ${
                     alreadyAdded ? 'opacity-50 cursor-not-allowed' : ''
                   }`}
                 >
@@ -161,14 +161,14 @@ export default function LibraryPickerModal({ open, onClose, existingDocIds, onAd
         <div className="px-4 py-3 border-t border-[var(--border)] flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="px-3 py-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            className="min-h-11 px-3 py-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]"
           >
             Cancel
           </button>
           <button
             onClick={handleAdd}
             disabled={selected.size === 0}
-            className="px-3 py-1.5 text-sm bg-[var(--accent)] text-[var(--accent-ink)] rounded disabled:opacity-40"
+            className="min-h-11 px-3 py-1.5 text-sm bg-[var(--accent)] text-[var(--accent-ink)] rounded disabled:opacity-40"
           >
             Add {selected.size > 0 ? `(${selected.size})` : ''}
           </button>

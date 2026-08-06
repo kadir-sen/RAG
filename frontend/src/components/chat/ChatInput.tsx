@@ -66,7 +66,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
   };
 
   return (
-    <div className="px-4 md:px-6 pt-3 pb-6 md:pb-8 flex-shrink-0">
+    <div className="flex-shrink-0 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pt-3 md:pb-8">
       {(quotaExhausted || quotaLow) && (
         <div
           role={quotaExhausted ? 'alert' : 'status'}
@@ -103,7 +103,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
         </div>
       )}
       <div className="max-w-3xl mx-auto rounded-[2px] border border-[var(--border)] bg-[var(--bg-surface)] focus-within:border-[var(--ink)] transition-colors">
-        <div className="flex items-end gap-2 px-4 md:px-5 py-4">
+        <div className="flex items-end gap-2 px-3 py-3 md:px-5 md:py-4">
           <label htmlFor="chat-input" className="sr-only">Chat message</label>
           <textarea
             id="chat-input"
@@ -114,7 +114,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
             onInput={handleInput}
             disabled={disabled || quotaExhausted}
             style={{ resize: 'none', overflow: 'hidden' }}
-            className="flex-1 bg-transparent text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none text-[15px] leading-7 disabled:opacity-60"
+            className="min-w-0 flex-1 bg-transparent text-base text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none leading-7 disabled:opacity-60 md:text-[15px]"
             autoFocus
           />
           <button
@@ -122,7 +122,7 @@ export default function ChatInput({ onSend, disabled }: Props) {
             disabled={disabled || !hasText || quotaExhausted}
             aria-label="Send message"
             tabIndex={hasText ? 0 : -1}
-            className={`shrink-0 w-9 h-9 mb-0.5 flex items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] transition-opacity duration-150 ${hasText && !disabled && !quotaExhausted ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+            className={`mb-0.5 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] transition-opacity duration-150 ${hasText && !disabled && !quotaExhausted ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           >
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="5" y1="12" x2="19" y2="12" />

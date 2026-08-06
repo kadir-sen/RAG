@@ -220,9 +220,15 @@ test.describe('Projects responsive acceptance', () => {
     const topnavActions = await page.getByTestId('topnav-actions').boundingBox();
     expect(projectContext).not.toBeNull();
     expect(topnavActions).not.toBeNull();
-    expect((projectContext?.x ?? 0) + (projectContext?.width ?? 0)).toBeLessThanOrEqual(
-      (topnavActions?.x ?? 0) + 1,
-    );
+    if ((viewport?.width ?? 0) < 768) {
+      expect((projectContext?.y ?? 0) + (projectContext?.height ?? 0)).toBeLessThanOrEqual(
+        (topnavActions?.y ?? 0) + 1,
+      );
+    } else {
+      expect((projectContext?.x ?? 0) + (projectContext?.width ?? 0)).toBeLessThanOrEqual(
+        (topnavActions?.x ?? 0) + 1,
+      );
+    }
 
     const moduleLinks = page.locator('[data-testid="project-modules"] a[data-module]');
     await expect(moduleLinks).toHaveCount(3);
@@ -237,7 +243,7 @@ test.describe('Projects responsive acceptance', () => {
       }),
     );
 
-    if ((viewport?.width ?? 0) < 640) {
+    if ((viewport?.width ?? 0) < 768) {
       for (const box of boxes) expect(box.height).toBeLessThanOrEqual(160);
       expect(boxes[0].top).toBeLessThan(900);
       expect(boxes[2].bottom - boxes[0].top).toBeLessThanOrEqual(520);
