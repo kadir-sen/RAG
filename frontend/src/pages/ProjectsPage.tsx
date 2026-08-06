@@ -215,11 +215,11 @@ export default function ProjectsPage() {
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-7xl mx-auto px-3 py-2 sm:px-4 md:px-6 md:py-10">
-        <header className="mb-3 flex flex-col gap-4 md:mb-7 md:flex-row md:items-end md:justify-between">
+        <header className="mb-2 flex flex-col gap-3 sm:mb-3 md:mb-7 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="font-mono text-[10px] tracking-[0.18em] uppercase text-[var(--text-muted)]">Project management</p>
-            <h1 className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">Projects and source records</h1>
-            <p className="mt-2 text-[13px] text-[var(--text-secondary)]">Each module can only see the documents in the active project shown in the top-left selector.</p>
+            <h1 className="mt-1 text-xl font-semibold text-[var(--text-primary)] sm:mt-2 sm:text-2xl">Projects and source records</h1>
+            <p className="hidden text-[var(--text-secondary)] sm:mt-2 sm:block sm:text-[13px]">Each module can only see the documents in the active project shown in the top-left selector.</p>
           </div>
         </header>
 
@@ -309,7 +309,7 @@ export default function ProjectsPage() {
             ) : (
               <>
                 <section className="flex flex-col border border-[var(--border)] bg-[var(--wash)]">
-                  <div className="p-4 border-b border-[var(--border)] flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div className="flex flex-col gap-3 border-b border-[var(--border)] p-3 sm:gap-4 sm:p-4 md:flex-row md:items-center md:justify-between">
                     <div>
                       <p className="font-mono text-[9px] uppercase tracking-[.15em] text-[var(--text-muted)]">Selected project</p>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
