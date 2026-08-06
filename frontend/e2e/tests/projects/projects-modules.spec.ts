@@ -59,7 +59,7 @@ test.describe('Projects and module controls', () => {
       .toBe(true);
   });
 
-  test('shows ready modules and opens all three native routes', async ({ page }, testInfo) => {
+  test('shows ready modules and opens the COAir routes plus the upstream toolkit', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop');
     const project = makeProject('project-ready', 'Ready Project');
     const state = makeState([project]);
@@ -72,7 +72,7 @@ test.describe('Projects and module controls', () => {
     const forensic = page.getByRole('link', { name: /Forensic Reports/ });
     await expect(chatbot).toHaveAttribute('href', '/chat');
     await expect(chronology).toHaveAttribute('href', '/chronology');
-    await expect(forensic).toHaveAttribute('href', '/forensic');
+    await expect(forensic).toHaveAttribute('href', '/toolkit/');
 
     await chatbot.click();
     await expect(page).toHaveURL(/\/chat$/);
@@ -80,11 +80,12 @@ test.describe('Projects and module controls', () => {
     await chronology.click();
     await expect(page).toHaveURL(/\/chronology$/);
     await page.goto('/projects');
-    await forensic.click();
-    await expect(page).toHaveURL(/\/forensic\/intake$/);
+    // The exact upstream Streamlit application is mounted at /toolkit/.
+    // It is deliberately not another native React route.
+    await expect(forensic).toHaveAttribute('data-module', 'Forensic Reports');
   });
 
-  test('disables every module while ingestion is active and exposes the ETA', async ({
+  test('disables document modules during ingestion but keeps the independent toolkit available', async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop');
@@ -109,7 +110,11 @@ test.describe('Projects and module controls', () => {
 
     await expect(
       page.locator('[data-testid="project-modules"] [aria-disabled="true"]'),
-    ).toHaveCount(3);
+    ).toHaveCount(2);
+    await expect(page.getByRole('link', { name: /Forensic Reports/ })).toHaveAttribute(
+      'href',
+      '/toolkit/',
+    );
     await expect(page.locator('[data-testid="project-modules"]')).toContainText('1 remaining');
     await expect(page.locator('[data-testid="project-modules"]')).toContainText('ETA 2m');
   });

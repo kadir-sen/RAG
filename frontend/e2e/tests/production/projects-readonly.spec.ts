@@ -78,11 +78,13 @@ test('production Projects and module routes are healthy without mutating project
   await expect(page).toHaveURL(/\/chronology$/);
   await expect(page.getByRole('heading', { name: 'Build a new chronology' })).toBeVisible();
   await expectNoPageOverflow(page);
-  await page.goto('/forensic/intake');
-  await expect(page).toHaveURL(/\/forensic\/intake$/);
-  await expect(page.getByRole('combobox', { name: 'Analysis module' })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Analysis module' }).locator('option')).toHaveCount(20);
-  await expectNoPageOverflow(page);
+  // Forensic Reports is the upstream Streamlit product, mounted on the same
+  // host. Loading the real route here also exercises nginx and Streamlit's
+  // websocket bootstrap; the native parity UI remains an admin rollback path.
+  await page.goto('/toolkit/');
+  await expect(page).toHaveURL(/\/toolkit\/$/);
+  await expect(page).toHaveTitle(/Forensic Programme Analysis/i);
+  await expect(page.getByText('Data Intake & Inventory', { exact: true }).first()).toBeVisible();
 
   expect(forbiddenRequests, 'Production smoke must remain read-only after login').toEqual([]);
 });
