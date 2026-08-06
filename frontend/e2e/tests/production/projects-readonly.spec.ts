@@ -50,7 +50,12 @@ test('production Projects and module routes are healthy without mutating project
   await expect(page.locator('#chat-input')).toBeVisible();
   await expectNoPageOverflow(page);
 
-  const sidebar = page.getByRole('complementary', { name: 'Sidebar' });
+  // The closed mobile drawer is intentionally aria-hidden, so role-based
+  // locators exclude it from the accessibility tree until it is opened.
+  // Locate the stable shell first, then assert its interactive contents only
+  // after opening it.
+  const sidebar = page.locator('aside[aria-label="Sidebar"]');
+  await expect(sidebar).toHaveCount(1);
   if ((await sidebar.getAttribute('aria-hidden')) === 'true') {
     await page.getByRole('button', { name: 'Open sidebar' }).click();
   }
