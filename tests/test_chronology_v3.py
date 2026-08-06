@@ -138,9 +138,10 @@ def test_map_identifier_harvest_forces_a_second_document_search(monkeypatch):
 
     index = Index()
     monkeypatch.setattr("src.chronology_v3.get_document_index", lambda: index)
-    monkeypatch.setattr("src.chronology_v3.evidence_from_documents", lambda _p, ids: [
+    monkeypatch.setattr("src.chronology_v3.evidence_from_documents", lambda _p, ids, scores=None: [
         EvidenceItem(source_id=f"src-{doc_id}", doc_id=doc_id, file_name=f"{doc_id}.pdf",
-                     excerpt="14 March 2025 Notice 417") for doc_id in ids
+                     excerpt="14 March 2025 Notice 417",
+                     score=(scores or {}).get(doc_id, 0.0)) for doc_id in ids
     ])
     monkeypatch.setattr("src.chronology_v3._map_extract", lambda *_args, **_kwargs: {
         "skeleton": ["notice"],

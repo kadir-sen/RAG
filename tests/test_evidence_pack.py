@@ -248,3 +248,42 @@ def test_a_passage_is_never_selected_twice():
     duplicate = _scored("same", 1.0, chars=100, text="delay")
     pack = select_pack([duplicate, duplicate], facets=FACETS, max_chars=10_000)
     assert len(pack.evidence) == 1
+
+
+def test_v3_carries_document_scores_onto_its_passages():
+    """Without this every v3 passage arrives at 0.0 and cannot be ranked.
+
+    v3 picks documents well — length-normalised BM25, roles, a relevance
+    threshold — then read them whole with no score, so the budget had nothing
+    to order by and would keep whichever passages happened to come first.
+    """
+    from src import chronology_v3
+
+    class _Con:
+        def execute(self, *_a):
+            return self
+
+        def fetchall(self):
+            return [("d1", "a.pdf", 1, "strong evidence"),
+                    ("d2", "b.pdf", 1, "weaker evidence")]
+
+    class _Store:
+        def connection(self):
+            return _Con()
+
+    import src.chunk_store as chunk_store
+    original_store = chunk_store.get_chunk_store
+    original_index = chronology_v3.get_document_index
+    chunk_store.get_chunk_store = lambda: _Store()
+    chronology_v3.get_document_index = lambda: type(
+        "I", (), {"list_project": lambda _s, _p: []})()
+    try:
+        evidence = chronology_v3.evidence_from_documents(
+            "p", ["d1", "d2"], {"d1": 9.5, "d2": 1.0},
+        )
+    finally:
+        chunk_store.get_chunk_store = original_store
+        chronology_v3.get_document_index = original_index
+
+    by_doc = {item.doc_id: item.score for item in evidence}
+    assert by_doc == {"d1": 9.5, "d2": 1.0}

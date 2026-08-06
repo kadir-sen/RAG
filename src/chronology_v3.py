@@ -7,12 +7,14 @@ import json
 import re
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
+from typing import (Callable, Dict, Iterable, List, Literal, Mapping, Optional,
+                    Sequence, Tuple)
 
 from pydantic import BaseModel, Field
 
 from .chronology_prompts import chronology_v3_prompt_hash, load_chronology_v3_prompts
 from .chronology_v2 import COVERAGE_FACETS, PreparedChronologyQuery, coverage_matrix
+from .evidence_pack import select_pack
 from .document_index import CandidateDocument, get_document_index
 from .evidence_model import ChronologyEntry, EvidenceItem, VerifiedClaim
 from .jargon_manager import jargon_dictionary_version, prepare_query, set_current_prepared_query
@@ -278,7 +280,16 @@ def _table_evidence(
     return evidence, found
 
 
-def evidence_from_documents(project_id: str, doc_ids: Sequence[str]) -> List[EvidenceItem]:
+def evidence_from_documents(project_id: str, doc_ids: Sequence[str],
+                            scores: Mapping[str, float] | None = None) -> List[EvidenceItem]:
+    """Read the selected documents.
+
+    `scores` carries each document's selection score onto its passages. Without
+    it every passage arrives at 0.0 and any downstream ranking — including the
+    pack budget — has nothing to order by, so a document that only just cleared
+    selection contributes as much as the strongest one.
+    """
+    doc_scores = {str(k): float(v) for k, v in (scores or {}).items()}
     chosen = list(dict.fromkeys(str(value).strip() for value in doc_ids if str(value).strip()))
     if not chosen or len(chosen) > MAX_DOCUMENTS:
         raise ValueError("source_document_selection_invalid")
@@ -310,6 +321,7 @@ def evidence_from_documents(project_id: str, doc_ids: Sequence[str]) -> List[Evi
                 title=(record.title if record else str(file_name)),
                 document_date=(record.metadata_date if record else ""),
                 page=int(page or 1), kind=kind, excerpt=excerpt,
+                score=doc_scores.get(str(doc_id), 0.0),
             ))
     evidence.extend(table_evidence)
     return evidence
@@ -465,7 +477,10 @@ def research_documents(
 
     # Two deterministic coverage gap rounds.  New documents extend the source
     # set up to the hard maximum; they never displace a stronger map/primary.
-    evidence = evidence_from_documents(project_id, [item.doc_id for item in selected])
+    evidence = evidence_from_documents(
+        project_id, [item.doc_id for item in selected],
+        {item.doc_id: item.score for item in selected},
+    )
     coverage = coverage_matrix(evidence)
     for _ in range(2):
         missing = [facet for facet, value in coverage.items() if value == 0]
@@ -507,6 +522,20 @@ def research_documents(
         "coverage": coverage, "warnings": warnings,
         "unreadable_lead_doc_ids": unreadable,
     }
+    # The gap rounds above needed the full text of every selected document to
+    # judge coverage. Extraction does not: bound what is actually read, so the
+    # cost of a report follows the evidence it needs rather than the length of
+    # whatever documents happened to win selection. Coverage is then restated
+    # over the pack that will be read, not over the superset used to choose it.
+    selection = select_pack(evidence, facets=COVERAGE_FACETS)
+    evidence = selection.evidence
+    coverage = coverage_matrix(evidence)
+    audit["coverage"] = coverage
+    audit["selection"] = selection.stats
+    missing_after_budget = [facet for facet, value in coverage.items() if value == 0]
+    if missing_after_budget:
+        warnings.append("coverage_lost_to_budget")
+
     lead_hash = _hash({"leads": lead_queries, "selected": audit["selected"]})
     if save_step:
         save_step("lead_search", lead_hash, "ready", audit, "")
