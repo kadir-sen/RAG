@@ -24,11 +24,20 @@ test('production Projects and module routes are healthy without mutating project
   expect(projectId, 'PROD_E2E_PROJECT_ID must be configured').not.toBe('');
 
   const forbiddenRequests: string[] = [];
+  let streamlitPhase = false;
   page.on('request', (request) => {
     const method = request.method();
     const path = new URL(request.url()).pathname;
     const isLogin = method === 'POST' && path === '/api/auth/login';
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && !isLogin) {
+    // Streamlit uses an internal, UUID-scoped POST transport while rendering
+    // the toolkit. It does not write to COAir's API or project data. Keep this
+    // exception deliberately narrow so every API/upload mutation still fails
+    // the production smoke test.
+    const isStreamlitTransport =
+      streamlitPhase &&
+      method === 'POST' &&
+      /^\/webhooks\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(path);
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && !isLogin && !isStreamlitTransport) {
       forbiddenRequests.push(`${method} ${path}`);
     }
   });
@@ -81,6 +90,7 @@ test('production Projects and module routes are healthy without mutating project
   // Forensic Reports is the upstream Streamlit product, mounted on the same
   // host. Loading the real route here also exercises nginx and Streamlit's
   // websocket bootstrap; the native parity UI remains an admin rollback path.
+  streamlitPhase = true;
   await page.goto('/toolkit/');
   await expect(page).toHaveURL(/\/toolkit\/$/);
   await expect(page).toHaveTitle(/Forensic Programme Analysis/i);
