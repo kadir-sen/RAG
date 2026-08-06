@@ -158,6 +158,20 @@ def _prune_source_invalid_claims(value: Dict, evidence: Sequence[EvidenceItem]) 
     return {"overview_claims": overview, "entries": entries}
 
 
+def _prune_source_invalid_events(value: Dict, evidence: Sequence[EvidenceItem]) -> List[Dict]:
+    """Apply the same claim-level safety rule to extraction/aggregation output."""
+    validated = ExtractionModel.model_validate(value).model_dump()
+    entries: List[Dict] = []
+    for event in validated.get("entries", []):
+        claims = [
+            claim for claim in event.get("claims", [])
+            if _claims_are_source_valid({"entries": [{"claims": [claim]}]}, evidence)
+        ]
+        if claims:
+            entries.append({**event, "claims": claims})
+    return entries
+
+
 def _corpus_revision(project_id: str, doc_ids: Sequence[str] = ()) -> str:
     try:
         from .chunk_store import get_chunk_store
@@ -374,9 +388,8 @@ def extract_batch(
         validation_model=ExtractionModel,
         thinking_level="low", max_tokens=16_384, prompt_version=prompts["version"],
         cache_key="chronology-extract", cache_context=cache_context, ttl_s=0,
-        semantic_validator=lambda value: _claims_are_source_valid(value, batch),
     )
-    return response.raw.get("entries", [])
+    return _prune_source_invalid_events(response.raw, batch)
 
 
 def extract_batches(
@@ -516,13 +529,12 @@ def aggregate_candidates(
                     thinking_level="low", max_tokens=16_384, ttl_s=0,
                     prompt_version=prompts["version"], cache_key="chronology-aggregation",
                     cache_context=input_hash,
-                    semantic_validator=lambda value, src=sources: _claims_are_source_valid(value, src),
                 )
             except Exception:
                 if save_step:
                     save_step(step_key, input_hash, "failed", None, "model_output_incomplete")
                 raise
-            entries = response.raw.get("entries", [])
+            entries = _prune_source_invalid_events(response.raw, sources)
             if save_step:
                 save_step(step_key, input_hash, "ready", {"entries": entries}, "")
             reduced.extend(entries)
