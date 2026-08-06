@@ -100,6 +100,32 @@ def _to_evidence(project_id: str, source: Dict) -> EvidenceItem | None:
     )
 
 
+def _rank_normalised(rows: Sequence[Dict]) -> List[Dict]:
+    """Put one lane's results on a 0..1 scale so lanes can be compared.
+
+    The lanes return incompatible quantities: RRF fusion scores (~0.03), raw
+    cosine (0..1) and raw BM25 (unbounded, commonly 1..15). Merging them by
+    `max` let BM25 win every contest by magnitude alone, and summing them per
+    document — which chronology selection did — ranked documents by how
+    lexically verbose they were.
+
+    Each lane already returns its own results best-first, so position is the one
+    signal that means the same thing everywhere. Normalising by rank discards
+    magnitude deliberately: the magnitudes were not comparable, and a made-up
+    common scale would be worse than an honest ordinal one.
+    """
+    total = len(rows)
+    if not total:
+        return []
+    out: List[Dict] = []
+    for position, row in enumerate(rows):
+        item = dict(row)
+        item["lane_score"] = row.get("score", row.get("lex_score"))
+        item["score"] = (total - position) / total
+        out.append(item)
+    return out
+
+
 def retrieve_evidence(project_id: str, questions: Sequence[str], top_k: int = 12) -> List[EvidenceItem]:
     """Run dense/hybrid and lexical lanes concurrently per research question."""
     from .document_rag import get_document_rag
@@ -134,9 +160,13 @@ def retrieve_evidence(project_id: str, questions: Sequence[str], top_k: int = 12
                 futures.extend((pool.submit(dense, variant), pool.submit(bm25, variant)))
         for future in futures:
             try:
-                collected.extend(future.result())
+                collected.extend(_rank_normalised(future.result()))
             except Exception:
                 pass
+    # Relevance order, not submission order: the neighbour lane below reads the
+    # first 60, and those used to be whatever the first two or three research
+    # questions happened to return.
+    collected.sort(key=lambda row: float(row.get("score") or 0.0), reverse=True)
 
     # Add adjacent pages from the scoped chunk mirror. A top-ranked sentence
     # often depends on the paragraph immediately before or after it; this lane

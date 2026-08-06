@@ -78,3 +78,68 @@ def test_reasons_accumulate_rather_than_shadow_each_other():
     assert set(assessment.reasons) == {
         "uncovered_facets", "evidence_extraction_incomplete", "thin_record",
     }
+
+
+# ── Lane score normalisation (src/ai_reports._rank_normalised) ───────────
+#
+# The retrieval lanes return incompatible quantities — RRF (~0.03), cosine
+# (0..1) and raw BM25 (unbounded). They were merged by max and then summed per
+# document, so BM25-verbose documents won on magnitude alone and anything the
+# lexical lane found on its own arrived as 0.0.
+
+def test_lanes_with_wildly_different_scales_become_comparable():
+    from src.ai_reports import _rank_normalised
+
+    cosine = _rank_normalised([{"score": 0.81}, {"score": 0.62}, {"score": 0.44}])
+    bm25 = _rank_normalised([{"lex_score": 14.2}, {"lex_score": 9.1}, {"lex_score": 2.0}])
+
+    assert [row["score"] for row in cosine] == [row["score"] for row in bm25]
+    assert all(0 < row["score"] <= 1 for row in cosine + bm25)
+    # The lane's own number is kept for diagnostics, not for ranking.
+    assert cosine[0]["lane_score"] == 0.81
+    assert bm25[0]["lane_score"] == 14.2
+
+
+def test_normalisation_preserves_each_lanes_own_order():
+    from src.ai_reports import _rank_normalised
+
+    rows = _rank_normalised([{"id": "a"}, {"id": "b"}, {"id": "c"}])
+    assert [r["id"] for r in rows] == ["a", "b", "c"]
+    assert rows[0]["score"] > rows[1]["score"] > rows[2]["score"]
+
+
+def test_a_lexical_only_hit_is_never_scored_zero():
+    """The live bug: no dense_score meant score None, coerced to 0.0."""
+    from src.ai_reports import _rank_normalised
+
+    rows = _rank_normalised([{"lex_score": 7.5, "score": None}])
+    assert rows[0]["score"] > 0
+
+
+def test_normalisation_of_an_empty_lane_is_empty():
+    from src.ai_reports import _rank_normalised
+
+    assert _rank_normalised([]) == []
+
+
+def test_fused_score_reaches_the_source_instead_of_being_dropped():
+    """_node_to_source returned dense_score, discarding the RRF it ranked by."""
+    from src.document_rag import DocumentRAG
+
+    node = {"file_name": "a.pdf", "page_number": 2, "doc_id": "d1",
+            "text": "some evidence text", "rrf": 0.031, "lex_score": 8.0}
+    source = DocumentRAG._node_to_source(object.__new__(DocumentRAG), node)
+
+    assert source["score"] == 0.031
+    assert source["rrf_score"] == 0.031
+    assert source["lex_score"] == 8.0
+
+
+def test_a_lexical_only_node_no_longer_yields_a_none_score():
+    from src.document_rag import DocumentRAG
+
+    node = {"file_name": "a.pdf", "page_number": 1, "doc_id": "d1",
+            "text": "t", "lex_score": 5.0}          # no dense_score, no rrf
+    source = DocumentRAG._node_to_source(object.__new__(DocumentRAG), node)
+    assert source["score"] == 5.0
+    assert source["score"] is not None

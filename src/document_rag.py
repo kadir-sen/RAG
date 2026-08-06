@@ -1612,13 +1612,24 @@ class DocumentRAG:
         doc_id = nd.get("doc_id") or (
             generate_doc_id(nd.get("file_path")) if nd.get("file_path") else ""
         )
+        # `score` used to be `nd.get("dense_score")`, which threw away the RRF
+        # fusion this node was ranked by and returned None for anything the
+        # lexical lane found on its own — the top fused hit could arrive with no
+        # score at all, and downstream coerced that to 0.0. Report the score the
+        # ranking actually used, and carry both lane scores for diagnostics.
+        rrf = nd.get("rrf")
+        dense_score = nd.get("dense_score")
+        lex_score = nd.get("lex_score")
         return {
             "doc_id": doc_id,
             "file_name": nd.get("file_name", "Unknown"),
             "file_path": nd.get("file_path", ""),
             "page_number": nd.get("page_number", 1),
             "total_pages": nd.get("total_pages", 1),
-            "score": nd.get("dense_score"),
+            "score": rrf if rrf is not None else (dense_score or lex_score or 0.0),
+            "rrf_score": rrf,
+            "dense_score": dense_score,
+            "lex_score": lex_score,
             "text_snippet": text[:500] + "..." if len(text) > 500 else text,
             "highlight_text": highlight[:300],
         }
