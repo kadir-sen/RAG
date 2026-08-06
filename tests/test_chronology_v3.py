@@ -295,13 +295,23 @@ def test_normal_report_contract_redacts_research_and_cost_diagnostics():
         "result": {
             "entries": [{"event_date": "2025-03-14"}],
             "evidence": [{"source_id": "src-1", "doc_id": "doc-1"}],
+            "coverage_status": "partial", "partial_reasons": ["thin_record"],
             "research_audit": {"queries": ["secret"]},
             "verification_audit": {"decisions": []},
             "render_audit": {"paragraphs": 2}, "model": "gemini-3.6-flash",
             "prompt_version": "chronology-v3", "provider_cost_usd": 1.2,
+            "pack": {"chars": 24500, "batches_failed": 2},
         },
     })
 
-    assert set(public["result"]) == {"entries", "evidence"}
+    # coverage_status and partial_reasons are deliberately part of the user
+    # contract: a report that read only part of its evidence must be able to
+    # say so. Everything else — research plans, verification internals, pack
+    # sizes, model names, cost — stays redacted.
+    assert set(public["result"]) == {
+        "entries", "evidence", "coverage_status", "partial_reasons",
+    }
+    assert public["result"]["coverage_status"] == "partial"
+    assert "pack" not in public["result"]
     # Unknown monetary fields must not leak even if a future pipeline adds one.
-    assert "coverage_status" not in public
+    assert "provider_cost_usd" not in public["result"]

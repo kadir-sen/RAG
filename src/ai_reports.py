@@ -10,6 +10,7 @@ from dataclasses import asdict
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .evidence_model import ChronologyEntry, EvidenceItem, VerifiedClaim
+from .evidence_pack import assess_pack
 from .report_docx import FORENSIC_SECTIONS, build_ai_chronology_docx, build_forensic_report_docx
 
 
@@ -296,9 +297,10 @@ def _generate_chronology_v2(
     # call counts.
 
     stage("evidence_extraction", .3)
+    extraction_stats: Dict = {}
     candidates = extract_batches(
         evidence, prepared, load_step=load_step, save_step=save_step,
-        job_scope=job_id or f"project:{project_id}",
+        job_scope=job_id or f"project:{project_id}", stats=extraction_stats,
     )
     if not candidates:
         raise ValueError("insufficient_evidence")
@@ -415,6 +417,19 @@ def _generate_chronology_v2(
     )
     if audit.unresolved_source_ids:
         raise ValueError("Report contains unresolved source references")
+
+    # Coverage of the pack that was actually read, not of everything retrieval
+    # happened to surface. `preview` measures the pre-selection superset, so a
+    # facet covered only by a document that was never selected still counted as
+    # covered — which is how a three-entry report came back "complete".
+    pack_coverage = coverage_matrix(evidence)
+    assessment = assess_pack(
+        evidence=evidence,
+        event_count=len(entries) - 1,       # entries[0] is the synthetic overview
+        coverage=pack_coverage,
+        extraction_stats=extraction_stats,
+    )
+
     return {
         "entries": [asdict(e) for e in entries],
         "evidence": [asdict(e) for e in evidence],
@@ -422,9 +437,13 @@ def _generate_chronology_v2(
         "removed_claims": removed, "audit": asdict(audit), "docx": blob,
         "model": "gemini-3.6-flash", "pipeline_version": PIPELINE_VERSION,
         "prompt_version": PROMPT_VERSION,
-        "coverage": coverage_matrix(evidence),
-        "coverage_status": preview.get("coverage_status", "complete"),
+        "coverage": pack_coverage,
+        "coverage_status": assessment.status,
+        "partial_reasons": assessment.reasons,
         "selected_doc_ids": chosen,
+        # What the model was actually given. None of this was recorded before,
+        # which is why a thin report could not be told from a broken one.
+        "pack": assessment.pack,
     }
 
 

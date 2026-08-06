@@ -395,3 +395,65 @@ def test_auth_and_schema_provider_failures_are_not_retryable(tmp_path: Path):
         failed = store.get(job["job_id"], "p")
         assert failed and failed["retryable"] is False
         assert store.retry(job["job_id"], "p") is None
+
+
+def test_a_failing_half_does_not_discard_the_other_half(monkeypatch):
+    """The split must try both halves.
+
+    Production step tables never contained a key ending in "b": the first half's
+    exception left the frame before the second half was attempted, so half the
+    evidence was dropped without a trace whenever a batch had to be split.
+    """
+    evidence = [EvidenceItem(f"s{i}", "d", "a.pdf", page=i, excerpt="event") for i in range(4)]
+    prepared = PreparedChronologyQuery("q", "q", (), (), (), (), (), ("q",))
+    seen = []
+
+    def extract(**kwargs):
+        batch = kwargs["batch"]
+        if len(batch) > 1:
+            raise llm_client.LLMInvalidStructuredOutputError("model_output_invalid")
+        seen.append(batch[0].page)
+        if batch[0].page < 2:                      # the whole "a" side fails
+            raise llm_client.LLMIncompleteResponseError("model_output_incomplete")
+        return [{"event_date": f"2025-01-0{batch[0].page}", "claims": []}]
+
+    monkeypatch.setattr("src.chronology_v2.extract_batch", extract)
+    stats = {}
+    entries = extract_batches(evidence, prepared, stats=stats)
+
+    assert sorted(seen) == [0, 1, 2, 3], "the 'b' half was never attempted"
+    assert len(entries) == 2, "surviving half must still be returned"
+    assert stats["batches_failed"] == 2
+    assert stats["passages_dropped"] == 2
+
+
+def test_failed_batches_record_the_real_exception_not_a_constant(monkeypatch):
+    """Three different failures used to be flattened to one label."""
+    evidence = [EvidenceItem("s0", "d", "a.pdf", page=1, excerpt="event")]
+    prepared = PreparedChronologyQuery("q", "q", (), (), (), (), (), ("q",))
+    saved = {}
+
+    def save(key, input_hash, status, output, error):
+        saved[key] = (status, error)
+
+    monkeypatch.setattr("src.chronology_v2.extract_batch", lambda **_k: (_ for _ in ()).throw(
+        llm_client.LLMInvalidStructuredOutputError("entries: too many items")))
+    stats = {}
+    extract_batches(evidence, prepared, save_step=save, stats=stats)
+
+    status, error = saved["extract:1"]
+    assert status == "failed"
+    assert "LLMInvalidStructuredOutputError" in error
+    assert "too many items" in error
+    assert error != "model_output_incomplete"
+
+
+def test_systemic_errors_still_abort_and_are_not_counted_as_batch_failures(monkeypatch):
+    evidence = [EvidenceItem(f"s{i}", "d", "a.pdf", page=i, excerpt="e") for i in range(4)]
+    prepared = PreparedChronologyQuery("q", "q", (), (), (), (), (), ("q",))
+    monkeypatch.setattr("src.chronology_v2.extract_batch", lambda **_k: (_ for _ in ()).throw(
+        RuntimeError("403 PERMISSION_DENIED")))
+    stats = {}
+    with pytest.raises(RuntimeError, match="PERMISSION_DENIED"):
+        extract_batches(evidence, prepared, stats=stats)
+    assert stats["batches_failed"] == 0

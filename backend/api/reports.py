@@ -134,8 +134,15 @@ def _public(job: dict) -> dict:
         if value.get("module") == "chronology" or "entries" in result:
             # Deliberate allow-list: future diagnostics, token or monetary fields
             # cannot accidentally become part of the normal chronology contract.
+            #
+            # coverage_status and partial_reasons are on it on purpose. A report
+            # that read only part of its evidence has to be able to say so; the
+            # alternative is what production did — present a three-event record
+            # with no indication that anything was missing.
             value["result"] = {
-                key: result[key] for key in ("entries", "evidence") if key in result
+                key: result[key] for key in
+                ("entries", "evidence", "coverage_status", "partial_reasons")
+                if key in result
             }
         else:
             value["result"] = {key: item for key, item in result.items() if key not in {

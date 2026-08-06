@@ -417,9 +417,37 @@ def extract_batches(
     evidence: Sequence[EvidenceItem], prepared: PreparedChronologyQuery,
     *, load_step: Callable[[str, str], Dict | None] | None = None,
     save_step: Callable[[str, str, str, Dict | None, str], None] | None = None,
-    job_scope: str = "",
+    job_scope: str = "", stats: Dict | None = None,
 ) -> List[Dict]:
+    """Extract candidate events from every evidence batch.
+
+    A batch that the model cannot answer is split in half and both halves are
+    retried. Losing one half of the evidence is not a reason to lose the other:
+    what survives is returned, and what did not is counted in `stats` so the
+    report can say so instead of presenting a thin record as a complete one.
+    Only a non-structured failure (auth, network, budget) aborts the run — those
+    are systemic and retrying smaller pieces cannot help.
+    """
     results: List[Dict] = []
+    counters = stats if stats is not None else {}
+    counters.setdefault("batches_total", 0)
+    counters.setdefault("batches_failed", 0)
+    counters.setdefault("passages_dropped", 0)
+    counters.setdefault("batch_errors", [])
+
+    def fail(batch: List[EvidenceItem], key: str, input_hash: str,
+             exc: Exception) -> None:
+        # Record what actually went wrong. Upstream this was flattened to the
+        # constant "model_output_incomplete" for truncation, malformed JSON and
+        # oversized input alike, which made the three indistinguishable in the
+        # step table — and truncation was usually the wrong guess.
+        reason = f"{type(exc).__name__}: {str(exc)[:160]}".strip()
+        counters["batches_failed"] += 1
+        counters["passages_dropped"] += len(batch)
+        if len(counters["batch_errors"]) < 10:
+            counters["batch_errors"].append({"step": key, "reason": reason})
+        if save_step:
+            save_step(key, input_hash, "failed", None, reason)
 
     def run(batch: List[EvidenceItem], key: str, depth: int = 0) -> None:
         input_hash = _hash([asdict(item) for item in batch])
@@ -440,22 +468,24 @@ def extract_batches(
                 save_step(key, input_hash, "ready", {"entries": entries}, "")
             results.extend(entries)
         except Exception as exc:
-            structured_error = _is_structured_output_error(exc)
-            if structured_error and len(batch) > 1 and depth < 8:
+            if not _is_structured_output_error(exc):
+                raise
+            if len(batch) > 1 and depth < 8:
                 middle = len(batch) // 2
+                # Both halves, independently. Previously the first half's
+                # failure propagated out of this frame and the second half was
+                # never attempted at all, silently discarding it — which is why
+                # no step key ending in "b" has ever been recorded in
+                # production. run() now only raises for systemic errors, which
+                # should abort the whole run anyway.
                 run(batch[:middle], key + "a", depth + 1)
                 run(batch[middle:], key + "b", depth + 1)
                 return
-            if save_step:
-                save_step(
-                    key, input_hash, "failed", None,
-                    "model_output_incomplete" if structured_error else "",
-                )
-            if structured_error:
-                raise RuntimeError("model_output_incomplete") from exc
-            raise
+            fail(batch, key, input_hash, exc)
 
-    for index, batch in enumerate(evidence_batches(evidence), 1):
+    batches = evidence_batches(evidence)
+    counters["batches_total"] = len(batches)
+    for index, batch in enumerate(batches, 1):
         run(list(batch), f"extract:{index}")
     return results
 
