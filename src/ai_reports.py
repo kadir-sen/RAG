@@ -244,11 +244,10 @@ def _generate_chronology_v2(
     from .chronology_prompts import chronology_prompt_hash
     from .chronology_v2 import (
         PIPELINE_VERSION, PreparedChronologyQuery, coverage_matrix,
-        aggregate_candidates, evidence_batches, evidence_from_documents, extract_batches,
+        aggregate_candidates, evidence_from_documents, extract_batches,
         prepare_chronology_query, source_preview, synthesize, verify_claims,
     )
     from .jargon_manager import jargon_dictionary_version
-    from .llm_client import set_chronology_call_budget
 
     def stage(name: str, progress: float) -> None:
         if stage_callback:
@@ -292,10 +291,9 @@ def _generate_chronology_v2(
     if not evidence:
         raise ValueError("no_evidence")
 
-    # Research/planning has a fixed allowance; each evidence batch receives
-    # room for extraction, a split/retry and aggregation, with an absolute cap.
-    batch_count = max(1, len(evidence_batches(evidence)))
-    set_chronology_call_budget(min(40, 8 + batch_count * 3))
+    # Provider calls are governed by credits, bounded research rounds and
+    # request timeouts. Do not make completion depend on corpus/cache-specific
+    # call counts.
 
     stage("evidence_extraction", .3)
     candidates = extract_batches(
@@ -433,7 +431,7 @@ def _generate_chronology_v2(
 def generate_chronology(**kwargs) -> Dict:
     """Run the job-pinned chronology pipeline inside an isolated call budget."""
     from .llm_client import begin_chronology_call_budget, end_chronology_call_budget
-    begin_chronology_call_budget(40)
+    begin_chronology_call_budget()
     try:
         pipeline_version = str(kwargs.pop("pipeline_version", "chronology-v2") or "chronology-v2")
         if pipeline_version == "chronology-v3":

@@ -143,7 +143,7 @@ def test_semantically_invalid_structured_output_is_not_cached(monkeypatch):
     assert list(cache.values.values()) == ['{"value":"supported"}']
 
 
-def test_chronology_budget_counts_real_calls_and_never_degrades(monkeypatch):
+def test_chronology_has_no_artificial_call_cap_and_never_degrades(monkeypatch):
     cache = MemoryCache(); monkeypatch.setattr(llm_client, "_cache", cache)
     models = []
     monkeypatch.setattr(llm_client, "_gemini_generate_native", lambda **kwargs: (
@@ -151,19 +151,14 @@ def test_chronology_budget_counts_real_calls_and_never_degrades(monkeypatch):
     ))
     llm_client.begin_chronology_call_budget(2)
     try:
-        for index in range(2):
+        for index in range(3):
             llm_client.generate_json(
                 f"prompt {index}", system="system", task_type="chronology_extract",
                 cache_key="chronology-extract", ttl_s=0,
             )
-        with pytest.raises(llm_client.LLMResearchBudgetExceededError):
-            llm_client.generate_json(
-                "prompt 3", system="system", task_type="chronology_extract",
-                cache_key="chronology-extract", ttl_s=0,
-            )
     finally:
         llm_client.end_chronology_call_budget()
-    assert models == ["gemini-3.6-flash", "gemini-3.6-flash"]
+    assert models == ["gemini-3.6-flash"] * 3
 
 
 def test_claim_semantics_reject_unknown_sources_numbers_and_quotes():

@@ -158,7 +158,7 @@ def preview_chronology_sources(
     from src.ai_reports import retrieve_evidence
     from src.chronology_v2 import prepare_chronology_query, source_preview
     from src.llm_client import begin_chronology_call_budget, end_chronology_call_budget
-    begin_chronology_call_budget(40)
+    begin_chronology_call_budget()
     try:
         prepared = prepare_chronology_query(
             body.topic, date_from=body.date_from, date_to=body.date_to,

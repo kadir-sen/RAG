@@ -846,7 +846,6 @@ def generate_chronology_v3(
     save_step: Optional[Callable[[str, str, str, Dict | None, str], None]] = None,
     **_ignored,
 ) -> Dict:
-    from .llm_client import set_chronology_call_budget
     from .report_docx import build_ai_chronology_docx, validate_ai_chronology_docx
 
     def stage(name: str, progress: float) -> None:
@@ -891,8 +890,6 @@ def generate_chronology_v3(
             "source_count": len(evidence), "batch_count": len(_batches(evidence)),
             "selected_doc_ids": [item.doc_id for item in selected],
         }, "")
-    batch_count = max(1, len(_batches(evidence)))
-    set_chronology_call_budget(min(40, 8 + batch_count * 3))
     stage("evidence_pack", .25)
     stage("extraction", .36)
     events = extract_events(

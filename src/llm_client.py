@@ -59,7 +59,7 @@ class LLMResearchBudgetExceededError(RuntimeError):
 
 
 chronology_call_limit_var: ContextVar[int] = ContextVar(
-    "chronology_call_limit", default=40,
+    "chronology_call_limit", default=0,
 )
 chronology_call_count_var: ContextVar[int] = ContextVar(
     "chronology_call_count", default=0,
@@ -74,14 +74,23 @@ def _google_api_key() -> str:
     return get_google_api_key()
 
 
-def begin_chronology_call_budget(limit: int = 40) -> None:
+def begin_chronology_call_budget(limit: int = 0) -> None:
+    """Mark a chronology run without imposing an artificial provider-call cap.
+
+    The argument remains for compatibility with older workers.  Credits,
+    provider quotas, bounded gap-search rounds and request timeouts are the
+    operational safeguards; a fixed call count made large corpora fail based
+    on cache state rather than evidence quality.
+    """
     chronology_call_count_var.set(0)
-    chronology_call_limit_var.set(max(1, min(40, int(limit))))
+    chronology_call_limit_var.set(0)
     chronology_budget_active_var.set(True)
 
 
 def set_chronology_call_budget(limit: int) -> None:
-    chronology_call_limit_var.set(max(1, min(40, int(limit))))
+    # Deprecated compatibility hook. Chronology calls are credit/provider
+    # bounded, not stopped at an arbitrary per-job call count.
+    chronology_call_limit_var.set(0)
 
 
 def end_chronology_call_budget() -> None:
@@ -835,7 +844,8 @@ def generate_text(
         try:
             if chronology_budget_active_var.get():
                 call_count = chronology_call_count_var.get()
-                if call_count >= chronology_call_limit_var.get():
+                call_limit = chronology_call_limit_var.get()
+                if call_limit > 0 and call_count >= call_limit:
                     raise LLMResearchBudgetExceededError("research_budget_exhausted")
                 chronology_call_count_var.set(call_count + 1)
             start = time.time()
