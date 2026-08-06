@@ -1,0 +1,274 @@
+diff --git a/vendor/delay-analysis-toolkit/dcma/narrative.py b/vendor/delay-analysis-toolkit/dcma/narrative.py
+index 37bde8d..11953aa 100644
+--- a/vendor/delay-analysis-toolkit/dcma/narrative.py
++++ b/vendor/delay-analysis-toolkit/dcma/narrative.py
+@@ -18,14 +18,42 @@ from .checks import CheckResult
+ from .rationale import CHECK_RATIONALE
+ from .xer_parser import XerData
+ 
++# ===== COAir local patch — NOT upstream =======================================
++# COAir runs this app on its own Google billing, so Gemini is the managed
++# provider here and NVIDIA is demoted to an option. Upstream ships NVIDIA as
++# the managed default; if you are reading this after a `git subtree pull`,
++# this hunk is the thing to re-apply. The rest of the file is untouched.
++#
++# MANAGED_PROVIDER is the single source of truth — views/_shared.py reads it
++# rather than naming a provider, so the managed path cannot drift out of step
++# with this dict. See docs/delay-toolkit.md.
++MANAGED_PROVIDER = "gemini"
++# ==============================================================================
++
+ # Provider registry: display name, default model, env var for the key.
++# Insertion order matters: the first entry is what the provider dropdown
++# offers before the analyst chooses (views/_shared.py: next(iter(PROVIDERS))).
+ PROVIDERS: dict[str, dict] = {
+-    # NVIDIA first: it is the DEFAULT provider. Its endpoint speaks the
+-    # OpenAI protocol, so it reuses that streamer with a base_url. When a
+-    # managed key is configured (st.secrets / env) the app uses it
+-    # silently and never renders it — see app.ai_credentials_panel.
++    # Gemini first: it is the DEFAULT and managed provider for COAir. When a
++    # managed key is configured (st.secrets / env) the app uses it silently
++    # and never renders it — see ai_credentials_panel / ai_provider_block.
++    # models[0] is what the model dropdown preselects, so 2.5 Flash leads.
++    "gemini": {
++        "label": "Google (Gemini)",
++        "default_model": "gemini-2.5-flash",
++        "models": ["gemini-2.5-flash", "gemini-flash-latest",
++                   "gemini-flash-lite-latest", "gemini-pro-latest",
++                   "gemini-3-flash-preview", "gemini-3-pro-preview"],
++        "env_var": "GEMINI_API_KEY",
++        "key_hint": "aistudio.google.com",
++        "managed": True,
++    },
++    # Its endpoint speaks the OpenAI protocol, so it reuses that streamer
++    # with a base_url.
+     "nvidia": {
+-        "label": "NVIDIA (managed — no key needed)",
++        # COAir local patch: the "(managed — no key needed)" suffix moved to
++        # the Gemini label's role; NVIDIA now needs a key like the others.
++        "label": "NVIDIA",
+         "default_model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+         # A CURATED three, one per profile: NVIDIA's tuned default, a
+         # large general model, a fast one. The endpoint's catalogue runs
+@@ -40,7 +68,7 @@ PROVIDERS: dict[str, dict] = {
+         "env_var": "NVIDIA_API_KEY",
+         "key_hint": "build.nvidia.com/settings/api-keys",
+         "base_url": "https://integrate.api.nvidia.com/v1",
+-        "managed": True,
++        # COAir local patch: `"managed": True` moved to the gemini entry.
+     },
+     "anthropic": {
+         "label": "Anthropic (Claude)",
+@@ -58,15 +86,6 @@ PROVIDERS: dict[str, dict] = {
+         "env_var": "OPENAI_API_KEY",
+         "key_hint": "platform.openai.com",
+     },
+-    "gemini": {
+-        "label": "Google (Gemini)",
+-        "default_model": "gemini-flash-latest",
+-        "models": ["gemini-flash-latest", "gemini-flash-lite-latest",
+-                   "gemini-pro-latest", "gemini-3-flash-preview",
+-                   "gemini-3-pro-preview"],
+-        "env_var": "GEMINI_API_KEY",
+-        "key_hint": "aistudio.google.com",
+-    },
+ }
+ 
+ SYSTEM_PROMPT = """\
+diff --git a/vendor/delay-analysis-toolkit/test_ui.py b/vendor/delay-analysis-toolkit/test_ui.py
+index 70d706c..437fb4a 100644
+--- a/vendor/delay-analysis-toolkit/test_ui.py
++++ b/vendor/delay-analysis-toolkit/test_ui.py
+@@ -20,6 +20,14 @@ import subprocess
+ import sys
+ import time
+ 
++# COAir local patch: the managed provider is configurable (see
++# dcma/narrative.py), so the credential-UI assertions read it rather than
++# hard-coding NVIDIA.
++sys.path.insert(0, ".")
++from dcma.narrative import MANAGED_PROVIDER, PROVIDERS  # noqa: E402
++
++MANAGED_ENV_VAR = PROVIDERS[MANAGED_PROVIDER]["env_var"]
++
+ PORT = 8599
+ PASS, FAIL = [], []
+ 
+@@ -41,22 +49,25 @@ ALL_PAGES = TOOLS + RETRO + PROSPECTIVE
+ 
+ 
+ def managed_key_configured() -> bool:
+-    """Whether the app under test has a managed NVIDIA key — resolved
+-    the same two ways the app resolves it (secrets file, then env).
++    """Whether the app under test has a managed key — resolved the same
++    two ways the app resolves it (secrets file, then env).
+     The credential-UI assertions are parameterised on this (audit
+     F-08): with a managed key the panels show the own-key SWITCH;
+     without one they ask for a key DIRECTLY, and asserting the switch
+-    unconditionally reported a false failure on unmanaged hosts."""
++    unconditionally reported a false failure on unmanaged hosts.
++
++    COAir local patch: follows MANAGED_PROVIDER rather than naming
++    NVIDIA, so the assertions track whichever provider is managed."""
+     import os
+     import re
+     try:
+         with open(".streamlit/secrets.toml", encoding="utf-8") as fh:
+-            if re.search(r'^\s*NVIDIA_API_KEY\s*=\s*"[^"]+"',
++            if re.search(rf'^\s*{MANAGED_ENV_VAR}\s*=\s*"[^"]+"',
+                          fh.read(), re.M):
+                 return True
+     except OSError:
+         pass
+-    return bool(os.environ.get("NVIDIA_API_KEY", "").strip())
++    return bool(os.environ.get(MANAGED_ENV_VAR, "").strip())
+ 
+ 
+ MANAGED = managed_key_configured()
+@@ -215,7 +226,8 @@ def main() -> int:
+             if MANAGED:
+                 check("umbrella propose has the model selector (managed)",
+                       page.locator(
+-                          '.st-key-ab_umb_ai_nvidia_modelsel').count() == 1)
++                          f'.st-key-ab_umb_ai_{MANAGED_PROVIDER}_modelsel'
++                      ).count() == 1)
+                 check("umbrella propose has the own-key switch (managed)",
+                       page.locator('.st-key-ab_umb_ai_own').count() == 1)
+             else:
+diff --git a/vendor/delay-analysis-toolkit/views/_shared.py b/vendor/delay-analysis-toolkit/views/_shared.py
+index 46a4014..52fe4a2 100644
+--- a/vendor/delay-analysis-toolkit/views/_shared.py
++++ b/vendor/delay-analysis-toolkit/views/_shared.py
+@@ -10,7 +10,8 @@ import streamlit as st
+ import state as sk
+ from dcma import annotate_path_position, build_dcma_trace, run_all_checks
+ from dcma.checks import CheckStatus
+-from dcma.narrative import NarrativeError, PROVIDERS, stream_narrative
++from dcma.narrative import (MANAGED_PROVIDER, NarrativeError, PROVIDERS,
++                            stream_narrative)
+ from programme import (
+     analyse_windows, build_appendix_xlsx, build_narrative_docx,
+     build_repair_plan,
+@@ -169,45 +170,53 @@ def cached_float_path(key: str, label: str, tol: float, near: float, _data):
+ 
+ 
+ def managed_ai_key() -> str:
+-    """The deployment's own NVIDIA key, if one is configured.
++    """The deployment's own key for the managed provider, if configured.
+ 
+     Resolution: Streamlit secrets, then environment. It is NEVER written
+     into the repository and NEVER rendered — callers only ever learn
+     whether one exists, not what it is. Absent = the app simply asks the
+     analyst for their own key, exactly as before.
++
++    COAir local patch: upstream reads NVIDIA_API_KEY here. COAir runs on its
++    own Google billing, so this follows MANAGED_PROVIDER's env var instead —
++    GEMINI_API_KEY. GOOGLE_API_KEY is deliberately NOT accepted as a
++    fallback: that is COAir's own variable name, and this app has no login.
+     """
++    env_var = PROVIDERS[MANAGED_PROVIDER]["env_var"]
+     try:
+-        v = st.secrets.get("NVIDIA_API_KEY", "")
++        v = st.secrets.get(env_var, "")
+     except Exception:                      # no secrets.toml present
+         v = ""
+-    return (v or os.environ.get("NVIDIA_API_KEY", "")).strip()
++    return (v or os.environ.get(env_var, "")).strip()
+ 
+ 
+ def ai_credentials_panel(page: str) -> None:
+     """THE one AI-credentials component.
+ 
+-    Default path: the managed NVIDIA key runs everything with no setup and
+-    is never displayed. The analyst may instead supply their own key for
+-    Anthropic / OpenAI / Gemini / NVIDIA, which takes precedence for the
+-    rest of the session. Widgets are page-local (widget-backed state dies
+-    when its page is not rendered); values are copied into the plain
+-    shared keys so the choice survives navigation.
++    Default path: the managed key (MANAGED_PROVIDER — Gemini in COAir,
++    NVIDIA upstream) runs everything with no setup and is never displayed.
++    The analyst may instead supply their own key for any provider, which
++    takes precedence for the rest of the session. Widgets are page-local
++    (widget-backed state dies when its page is not rendered); values are
++    copied into the plain shared keys so the choice survives navigation.
+     """
+     managed = managed_ai_key()
++    managed_label = PROVIDERS[MANAGED_PROVIDER]["label"]
+ 
+     if managed and st.session_state.get(sk.AI_MANAGED, True):
+         # ---- managed default: no key input rendered at all ----------
+-        st.session_state[sk.AI_PROVIDER] = "nvidia"
++        st.session_state[sk.AI_PROVIDER] = MANAGED_PROVIDER
+         st.session_state[sk.AI_KEY] = managed
+         st.session_state[sk.AI_MANAGED] = True
+-        pinfo = PROVIDERS["nvidia"]
++        pinfo = PROVIDERS[MANAGED_PROVIDER]
+         c1, c2 = st.columns([1, 1])
+-        c1.success("AI enabled — managed NVIDIA endpoint. No key needed.")
++        c1.success(f"AI enabled — managed {managed_label} endpoint. "
++                   "No key needed.")
+         st.session_state[sk.AI_MODEL] = model_selector(
+-            c2, pinfo, f"aic_model_{page}_nvidia")
++            c2, pinfo, f"aic_model_{page}_{MANAGED_PROVIDER}")
+         st.caption(
+-            "Narratives run on a managed NVIDIA endpoint provided with "
+-            "this deployment; the credential is held server-side and is "
++            f"Narratives run on a managed {managed_label} endpoint provided "
++            "with this deployment; the credential is held server-side and is "
+             "not shown or exported. Prompts carry the figures and "
+             "activity names of the programmes you load — if the matter "
+             "forbids third-party processing, switch to your own key or "
+@@ -219,8 +228,8 @@ def ai_credentials_panel(page: str) -> None:
+ 
+     # ---- analyst-supplied credentials ------------------------------
+     if managed:
+-        st.caption("Using your own key. The managed NVIDIA endpoint "
+-                   "remains available.")
++        st.caption(f"Using your own key. The managed {managed_label} "
++                   "endpoint remains available.")
+     a1, a2 = st.columns(2)
+     pkey = f"aic_prov_{page}"
+     if pkey not in st.session_state:
+@@ -265,12 +274,12 @@ def resolve_ai_credentials() -> tuple[str, str, str]:
+     """
+     managed = managed_ai_key()
+     if managed and st.session_state.get(sk.AI_MANAGED, True):
+-        nv = PROVIDERS["nvidia"]
++        nv = PROVIDERS[MANAGED_PROVIDER]
+         model = st.session_state.get(sk.AI_MODEL)
+         if model not in nv.get("models", [nv["default_model"]]):
+             model = nv["default_model"]   # never a cross-provider model
+-        return ("nvidia", model, managed)
+-    return (st.session_state.get(sk.AI_PROVIDER, "nvidia"),
++        return (MANAGED_PROVIDER, model, managed)
++    return (st.session_state.get(sk.AI_PROVIDER, MANAGED_PROVIDER),
+             st.session_state.get(sk.AI_MODEL, ""),
+             st.session_state.get(sk.AI_KEY, ""))
+ 
+@@ -394,10 +403,11 @@ def ai_provider_block(state_key: str) -> tuple[str, str | None, str]:
+         # every panel, not routed through one page. The switch is one
+         # app-wide state: flipping it anywhere flips it everywhere.
+         pcol1, pcol2 = st.columns([1, 1])
+-        pcol1.caption("Managed NVIDIA endpoint — no key required.")
+-        provider = "nvidia"
++        provider = MANAGED_PROVIDER
++        pcol1.caption(f"Managed {PROVIDERS[provider]['label']} endpoint — "
++                      "no key required.")
+         pinfo = refresh_models(PROVIDERS[provider], _managed)
+-        model = model_selector(pcol2, pinfo, f"{state_key}_nvidia")
++        model = model_selector(pcol2, pinfo, f"{state_key}_{provider}")
+         api_key = _managed
+         if st.button("Use my own API key instead",
+                      key=f"{state_key}_own"):
+@@ -433,8 +443,9 @@ def ai_provider_block(state_key: str) -> tuple[str, str | None, str]:
+                  "this request; never stored.",
+             key=f"{state_key}_key",
+         )
+-        if _managed and st.button("Back to the managed NVIDIA "
+-                                  "endpoint", key=f"{state_key}_bk"):
++        if _managed and st.button(
++                f"Back to the managed {PROVIDERS[MANAGED_PROVIDER]['label']} "
++                "endpoint", key=f"{state_key}_bk"):
+             st.session_state[sk.AI_MANAGED] = True
+             st.rerun()
+     return provider, model, api_key

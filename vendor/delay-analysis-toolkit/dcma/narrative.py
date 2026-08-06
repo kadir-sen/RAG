@@ -18,14 +18,42 @@ from .checks import CheckResult
 from .rationale import CHECK_RATIONALE
 from .xer_parser import XerData
 
+# ===== COAir local patch — NOT upstream =======================================
+# COAir runs this app on its own Google billing, so Gemini is the managed
+# provider here and NVIDIA is demoted to an option. Upstream ships NVIDIA as
+# the managed default; if you are reading this after a `git subtree pull`,
+# this hunk is the thing to re-apply. The rest of the file is untouched.
+#
+# MANAGED_PROVIDER is the single source of truth — views/_shared.py reads it
+# rather than naming a provider, so the managed path cannot drift out of step
+# with this dict. See docs/delay-toolkit.md.
+MANAGED_PROVIDER = "gemini"
+# ==============================================================================
+
 # Provider registry: display name, default model, env var for the key.
+# Insertion order matters: the first entry is what the provider dropdown
+# offers before the analyst chooses (views/_shared.py: next(iter(PROVIDERS))).
 PROVIDERS: dict[str, dict] = {
-    # NVIDIA first: it is the DEFAULT provider. Its endpoint speaks the
-    # OpenAI protocol, so it reuses that streamer with a base_url. When a
-    # managed key is configured (st.secrets / env) the app uses it
-    # silently and never renders it — see app.ai_credentials_panel.
+    # Gemini first: it is the DEFAULT and managed provider for COAir. When a
+    # managed key is configured (st.secrets / env) the app uses it silently
+    # and never renders it — see ai_credentials_panel / ai_provider_block.
+    # models[0] is what the model dropdown preselects, so 2.5 Flash leads.
+    "gemini": {
+        "label": "Google (Gemini)",
+        "default_model": "gemini-2.5-flash",
+        "models": ["gemini-2.5-flash", "gemini-flash-latest",
+                   "gemini-flash-lite-latest", "gemini-pro-latest",
+                   "gemini-3-flash-preview", "gemini-3-pro-preview"],
+        "env_var": "GEMINI_API_KEY",
+        "key_hint": "aistudio.google.com",
+        "managed": True,
+    },
+    # Its endpoint speaks the OpenAI protocol, so it reuses that streamer
+    # with a base_url.
     "nvidia": {
-        "label": "NVIDIA (managed — no key needed)",
+        # COAir local patch: the "(managed — no key needed)" suffix moved to
+        # the Gemini label's role; NVIDIA now needs a key like the others.
+        "label": "NVIDIA",
         "default_model": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
         # A CURATED three, one per profile: NVIDIA's tuned default, a
         # large general model, a fast one. The endpoint's catalogue runs
@@ -40,7 +68,7 @@ PROVIDERS: dict[str, dict] = {
         "env_var": "NVIDIA_API_KEY",
         "key_hint": "build.nvidia.com/settings/api-keys",
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "managed": True,
+        # COAir local patch: `"managed": True` moved to the gemini entry.
     },
     "anthropic": {
         "label": "Anthropic (Claude)",
@@ -57,15 +85,6 @@ PROVIDERS: dict[str, dict] = {
                    "gpt-4o-mini"],
         "env_var": "OPENAI_API_KEY",
         "key_hint": "platform.openai.com",
-    },
-    "gemini": {
-        "label": "Google (Gemini)",
-        "default_model": "gemini-flash-latest",
-        "models": ["gemini-flash-latest", "gemini-flash-lite-latest",
-                   "gemini-pro-latest", "gemini-3-flash-preview",
-                   "gemini-3-pro-preview"],
-        "env_var": "GEMINI_API_KEY",
-        "key_hint": "aistudio.google.com",
     },
 }
 

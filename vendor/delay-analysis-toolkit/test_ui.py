@@ -20,6 +20,14 @@ import subprocess
 import sys
 import time
 
+# COAir local patch: the managed provider is configurable (see
+# dcma/narrative.py), so the credential-UI assertions read it rather than
+# hard-coding NVIDIA.
+sys.path.insert(0, ".")
+from dcma.narrative import MANAGED_PROVIDER, PROVIDERS  # noqa: E402
+
+MANAGED_ENV_VAR = PROVIDERS[MANAGED_PROVIDER]["env_var"]
+
 PORT = 8599
 PASS, FAIL = [], []
 
@@ -41,22 +49,25 @@ ALL_PAGES = TOOLS + RETRO + PROSPECTIVE
 
 
 def managed_key_configured() -> bool:
-    """Whether the app under test has a managed NVIDIA key — resolved
-    the same two ways the app resolves it (secrets file, then env).
+    """Whether the app under test has a managed key — resolved the same
+    two ways the app resolves it (secrets file, then env).
     The credential-UI assertions are parameterised on this (audit
     F-08): with a managed key the panels show the own-key SWITCH;
     without one they ask for a key DIRECTLY, and asserting the switch
-    unconditionally reported a false failure on unmanaged hosts."""
+    unconditionally reported a false failure on unmanaged hosts.
+
+    COAir local patch: follows MANAGED_PROVIDER rather than naming
+    NVIDIA, so the assertions track whichever provider is managed."""
     import os
     import re
     try:
         with open(".streamlit/secrets.toml", encoding="utf-8") as fh:
-            if re.search(r'^\s*NVIDIA_API_KEY\s*=\s*"[^"]+"',
+            if re.search(rf'^\s*{MANAGED_ENV_VAR}\s*=\s*"[^"]+"',
                          fh.read(), re.M):
                 return True
     except OSError:
         pass
-    return bool(os.environ.get("NVIDIA_API_KEY", "").strip())
+    return bool(os.environ.get(MANAGED_ENV_VAR, "").strip())
 
 
 MANAGED = managed_key_configured()
@@ -215,7 +226,8 @@ def main() -> int:
             if MANAGED:
                 check("umbrella propose has the model selector (managed)",
                       page.locator(
-                          '.st-key-ab_umb_ai_nvidia_modelsel').count() == 1)
+                          f'.st-key-ab_umb_ai_{MANAGED_PROVIDER}_modelsel'
+                      ).count() == 1)
                 check("umbrella propose has the own-key switch (managed)",
                       page.locator('.st-key-ab_umb_ai_own').count() == 1)
             else:

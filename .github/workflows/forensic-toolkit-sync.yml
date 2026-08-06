@@ -39,6 +39,31 @@ jobs:
         run: |
           git subtree pull --prefix vendor/delay-analysis-toolkit https://github.com/altunozan/delay-analysis-toolkit.git main --squash -m "vendor: sync delay-analysis-toolkit ${{ steps.revisions.outputs.latest }}"
 
+      # COAir carries one deliberate local patch on top of upstream
+      # (vendor/patches/0001-coair-managed-gemini.patch): Gemini is the managed
+      # provider, not NVIDIA. A subtree pull can silently take that back, and
+      # the failure mode is invisible — the toolkit would keep working while
+      # asking analysts for a key we do not hand out. Fail the sync loudly
+      # instead, so someone re-applies the patch on purpose.
+      - name: Verify the COAir local patch survived the sync
+        if: steps.revisions.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd vendor/delay-analysis-toolkit
+          if ! python -c "
+          import sys; sys.path.insert(0, '.')
+          from dcma.narrative import MANAGED_PROVIDER, PROVIDERS
+          assert MANAGED_PROVIDER == 'gemini', MANAGED_PROVIDER
+          assert PROVIDERS['gemini']['default_model'] == 'gemini-2.5-flash'
+          assert list(PROVIDERS)[0] == 'gemini'
+          "; then
+            echo "::error::The upstream sync reverted the COAir managed-Gemini patch."
+            echo "Re-apply it with: git apply vendor/patches/0001-coair-managed-gemini.patch"
+            echo "then refresh the lock: python scripts/verify_forensic_vendor.py --update"
+            exit 1
+          fi
+
       - name: Detect upstream workflow changes
         if: steps.revisions.outputs.changed == 'true'
         id: interface

@@ -18,7 +18,8 @@ construction, so it was closed rather than corrected.
 
 `Dockerfile.toolkit` installs the vendored tree's own `requirements.txt` and runs
 upstream `app.py` unmodified. Nothing under `vendor/delay-analysis-toolkit` is
-patched, wrapped or imported by COAir-side code on this path.
+wrapped or imported by COAir-side code on this path, and the only edit to that
+tree is the managed-provider patch described below.
 
 The tree is copied to the image's working directory so Streamlit reads the
 upstream `.streamlit/config.toml` itself — the light Drawing Sheet theme, the
@@ -26,10 +27,11 @@ upstream `.streamlit/config.toml` itself — the light Drawing Sheet theme, the
 `--server.baseUrlPath=toolkit` is a runtime flag; `app.py` has no idea it is
 proxied.
 
-Verified against this image (`python tools/audit_app_walk.py`, upstream's own
-harness): 77 passed, 0 failed — every page renders exception-free on the bundled
-Harbour Point pair and on degenerate input, cross-module figures agree, the
-workbook export builds and the Gantt PNG renders.
+Verified against this image with upstream's own harnesses: `audit_app_walk.py`
+77/77, `test_qa.py` 497/497, `test_engine.py`, `test_programme.py` and
+`test_rlpa.py` 22/22 — every page renders exception-free on the bundled Harbour
+Point pair and on degenerate input, cross-module figures agree, the workbook
+export builds and the Gantt PNG renders.
 
 ## Boundary
 
@@ -49,22 +51,50 @@ There is no password today — anyone with the URL can use it. Upstream ships a
 gate for this (`APP_PASSWORD` in `app.py`); turning it on is one line in
 `.env.toolkit` and a container restart, with no code change.
 
-The managed AI credential is `NVIDIA_API_KEY`, upstream's own managed path: set
-it and every AI panel uses it and stops asking analysts for a key of their own,
-without ever rendering the value back to the page. Set it on the host, not in
-Git or CI:
+The managed AI provider is **Gemini, running `gemini-2.5-flash`** on COAir's own
+Google billing. Set the key on the host, not in Git or CI:
 
 ```bash
 # on the server, in $APP_DIR (default /opt/mvp-api)
-printf 'NVIDIA_API_KEY=nvapi-...\n' | sudo tee .env.toolkit >/dev/null
+printf 'GEMINI_API_KEY=...\n' | sudo tee .env.toolkit >/dev/null
 sudo chmod 600 .env.toolkit
 sudo docker compose -f docker-compose.prod.yml up -d toolkit
 ```
 
+With that set, every AI panel shows *"AI enabled — managed Google (Gemini)
+endpoint. No key needed."*, preselects `gemini-2.5-flash`, and renders **no key
+field at all**; the value is never shown or exported. Analysts can still switch
+to their own key for any provider.
+
 The deploy creates `.env.toolkit` empty when missing and never overwrites it.
-Left empty, the toolkit still works — it just asks each analyst for a key, which
-is upstream's default. Note that these calls are **not** metered by COAir's
+Left empty, the toolkit still works — the provider picker just defaults to
+Gemini and asks for a key. Note that these calls are **not** metered by COAir's
 credit ledger.
+
+`GOOGLE_API_KEY` is deliberately **not** forwarded to this container even though
+upstream accepts it as a fallback for the same provider: that is COAir's own
+variable name, and an operator with it exported would otherwise hand COAir's
+billed key to an app that has no login.
+
+## The one local patch
+
+This is the single place COAir departs from upstream, and it is recorded in
+three places so it cannot be lost quietly:
+
+- `vendor/patches/0001-coair-managed-gemini.patch` — the diff, re-appliable.
+- `local_patches` in `vendor/delay-analysis-toolkit.upstream.json`, alongside
+  `tree_matches_upstream_commit: false`.
+- A guard step in `forensic-toolkit-sync.yml` that fails the weekly sync loudly
+  if a subtree pull takes the patch back.
+
+It makes Gemini the managed provider instead of NVIDIA, via a single
+`MANAGED_PROVIDER` constant in `dcma/narrative.py` that `views/_shared.py` and
+`test_ui.py` read rather than naming a provider. Everything else — engines,
+charts, draft panels, exports — is untouched upstream code.
+
+The trade this accepts: the vendored tree no longer matches upstream byte for
+byte, so a future upstream edit to these three files will conflict. The cheaper
+long-term fix is for the change to land upstream, since Ozan owns that repo.
 
 ## One-time server setup
 

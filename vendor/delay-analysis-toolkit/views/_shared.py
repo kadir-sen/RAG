@@ -10,7 +10,8 @@ import streamlit as st
 import state as sk
 from dcma import annotate_path_position, build_dcma_trace, run_all_checks
 from dcma.checks import CheckStatus
-from dcma.narrative import NarrativeError, PROVIDERS, stream_narrative
+from dcma.narrative import (MANAGED_PROVIDER, NarrativeError, PROVIDERS,
+                            stream_narrative)
 from programme import (
     analyse_windows, build_appendix_xlsx, build_narrative_docx,
     build_repair_plan,
@@ -169,45 +170,53 @@ def cached_float_path(key: str, label: str, tol: float, near: float, _data):
 
 
 def managed_ai_key() -> str:
-    """The deployment's own NVIDIA key, if one is configured.
+    """The deployment's own key for the managed provider, if configured.
 
     Resolution: Streamlit secrets, then environment. It is NEVER written
     into the repository and NEVER rendered — callers only ever learn
     whether one exists, not what it is. Absent = the app simply asks the
     analyst for their own key, exactly as before.
+
+    COAir local patch: upstream reads NVIDIA_API_KEY here. COAir runs on its
+    own Google billing, so this follows MANAGED_PROVIDER's env var instead —
+    GEMINI_API_KEY. GOOGLE_API_KEY is deliberately NOT accepted as a
+    fallback: that is COAir's own variable name, and this app has no login.
     """
+    env_var = PROVIDERS[MANAGED_PROVIDER]["env_var"]
     try:
-        v = st.secrets.get("NVIDIA_API_KEY", "")
+        v = st.secrets.get(env_var, "")
     except Exception:                      # no secrets.toml present
         v = ""
-    return (v or os.environ.get("NVIDIA_API_KEY", "")).strip()
+    return (v or os.environ.get(env_var, "")).strip()
 
 
 def ai_credentials_panel(page: str) -> None:
     """THE one AI-credentials component.
 
-    Default path: the managed NVIDIA key runs everything with no setup and
-    is never displayed. The analyst may instead supply their own key for
-    Anthropic / OpenAI / Gemini / NVIDIA, which takes precedence for the
-    rest of the session. Widgets are page-local (widget-backed state dies
-    when its page is not rendered); values are copied into the plain
-    shared keys so the choice survives navigation.
+    Default path: the managed key (MANAGED_PROVIDER — Gemini in COAir,
+    NVIDIA upstream) runs everything with no setup and is never displayed.
+    The analyst may instead supply their own key for any provider, which
+    takes precedence for the rest of the session. Widgets are page-local
+    (widget-backed state dies when its page is not rendered); values are
+    copied into the plain shared keys so the choice survives navigation.
     """
     managed = managed_ai_key()
+    managed_label = PROVIDERS[MANAGED_PROVIDER]["label"]
 
     if managed and st.session_state.get(sk.AI_MANAGED, True):
         # ---- managed default: no key input rendered at all ----------
-        st.session_state[sk.AI_PROVIDER] = "nvidia"
+        st.session_state[sk.AI_PROVIDER] = MANAGED_PROVIDER
         st.session_state[sk.AI_KEY] = managed
         st.session_state[sk.AI_MANAGED] = True
-        pinfo = PROVIDERS["nvidia"]
+        pinfo = PROVIDERS[MANAGED_PROVIDER]
         c1, c2 = st.columns([1, 1])
-        c1.success("AI enabled — managed NVIDIA endpoint. No key needed.")
+        c1.success(f"AI enabled — managed {managed_label} endpoint. "
+                   "No key needed.")
         st.session_state[sk.AI_MODEL] = model_selector(
-            c2, pinfo, f"aic_model_{page}_nvidia")
+            c2, pinfo, f"aic_model_{page}_{MANAGED_PROVIDER}")
         st.caption(
-            "Narratives run on a managed NVIDIA endpoint provided with "
-            "this deployment; the credential is held server-side and is "
+            f"Narratives run on a managed {managed_label} endpoint provided "
+            "with this deployment; the credential is held server-side and is "
             "not shown or exported. Prompts carry the figures and "
             "activity names of the programmes you load — if the matter "
             "forbids third-party processing, switch to your own key or "
@@ -219,8 +228,8 @@ def ai_credentials_panel(page: str) -> None:
 
     # ---- analyst-supplied credentials ------------------------------
     if managed:
-        st.caption("Using your own key. The managed NVIDIA endpoint "
-                   "remains available.")
+        st.caption(f"Using your own key. The managed {managed_label} "
+                   "endpoint remains available.")
     a1, a2 = st.columns(2)
     pkey = f"aic_prov_{page}"
     if pkey not in st.session_state:
@@ -265,12 +274,12 @@ def resolve_ai_credentials() -> tuple[str, str, str]:
     """
     managed = managed_ai_key()
     if managed and st.session_state.get(sk.AI_MANAGED, True):
-        nv = PROVIDERS["nvidia"]
+        nv = PROVIDERS[MANAGED_PROVIDER]
         model = st.session_state.get(sk.AI_MODEL)
         if model not in nv.get("models", [nv["default_model"]]):
             model = nv["default_model"]   # never a cross-provider model
-        return ("nvidia", model, managed)
-    return (st.session_state.get(sk.AI_PROVIDER, "nvidia"),
+        return (MANAGED_PROVIDER, model, managed)
+    return (st.session_state.get(sk.AI_PROVIDER, MANAGED_PROVIDER),
             st.session_state.get(sk.AI_MODEL, ""),
             st.session_state.get(sk.AI_KEY, ""))
 
@@ -394,10 +403,11 @@ def ai_provider_block(state_key: str) -> tuple[str, str | None, str]:
         # every panel, not routed through one page. The switch is one
         # app-wide state: flipping it anywhere flips it everywhere.
         pcol1, pcol2 = st.columns([1, 1])
-        pcol1.caption("Managed NVIDIA endpoint — no key required.")
-        provider = "nvidia"
+        provider = MANAGED_PROVIDER
+        pcol1.caption(f"Managed {PROVIDERS[provider]['label']} endpoint — "
+                      "no key required.")
         pinfo = refresh_models(PROVIDERS[provider], _managed)
-        model = model_selector(pcol2, pinfo, f"{state_key}_nvidia")
+        model = model_selector(pcol2, pinfo, f"{state_key}_{provider}")
         api_key = _managed
         if st.button("Use my own API key instead",
                      key=f"{state_key}_own"):
@@ -433,8 +443,9 @@ def ai_provider_block(state_key: str) -> tuple[str, str | None, str]:
                  "this request; never stored.",
             key=f"{state_key}_key",
         )
-        if _managed and st.button("Back to the managed NVIDIA "
-                                  "endpoint", key=f"{state_key}_bk"):
+        if _managed and st.button(
+                f"Back to the managed {PROVIDERS[MANAGED_PROVIDER]['label']} "
+                "endpoint", key=f"{state_key}_bk"):
             st.session_state[sk.AI_MANAGED] = True
             st.rerun()
     return provider, model, api_key
