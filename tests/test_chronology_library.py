@@ -71,8 +71,32 @@ CASES = [
 ]
 
 # Nothing in the collection is about these, so a confident answer would be a
-# wrong one.
-NON_SUBJECTS = ["banana bread", "the weather in paris", "hava durumu", "xyzzy", ""]
+# wrong one. This list is the guarantee someone demonstrating the product needs:
+# type something off-subject and you get the list of chronologies, never a
+# document. It holds because of the keyword lists as they stand today, which is
+# exactly why it is pinned — one over-general word added to _DOCS later would
+# take it away silently.
+NON_SUBJECTS = [
+    # nothing at all
+    "banana bread", "the weather in paris", "hava durumu", "xyzzy", "",
+    # keyboard noise
+    "asdasd", "qwerty zxcvb", "123456", "hello", "test test test",
+    # real sentences about something else entirely
+    "what is the weather in dubai", "football match results",
+    "who is the ceo of the company", "how much does a coffee cost",
+    # construction, and even this project — but not one of the six subjects
+    "concrete pour quality", "steel reinforcement schedule",
+    "health and safety incidents", "passenger numbers and ticketing",
+    "tram testing and commissioning", "labour productivity",
+]
+
+# A single distinctive word is a legitimate way to ask: these name one document
+# and nothing else. Guarding the list above must never cost this.
+ONE_WORD_CASES = [
+    ("mudfa", "03"), ("sds", "01"), ("wiesbaden", "04"),
+    ("carillion", "03"), ("bilfinger", "05"), ("novation", "01"),
+    ("adjudication", "05"), ("oversight", "06"),
+]
 
 
 @pytest.mark.parametrize("subject,expected", CASES)
@@ -90,7 +114,18 @@ def test_subject_resolves_to_its_chronology(subject, expected):
 
 @pytest.mark.parametrize("subject", NON_SUBJECTS)
 def test_unrelated_subjects_match_nothing(subject):
-    assert match(subject)["status"] == "none"
+    result = match(subject)
+    assert result["status"] == "none", (
+        f"{subject!r} produced {result['status']} — an off-subject query must "
+        f"never resolve to a chronology"
+    )
+
+
+@pytest.mark.parametrize("subject,expected", ONE_WORD_CASES)
+def test_one_distinctive_word_is_enough(subject, expected):
+    result = match(subject)
+    assert result["status"] == "match", f"{subject!r} → {result['status']}"
+    assert result["doc"].ref == expected
 
 
 def test_every_chronology_is_reachable():
