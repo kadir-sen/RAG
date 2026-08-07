@@ -510,3 +510,64 @@ def test_preview_coverage_describes_the_pack_that_would_be_read():
 
     assert result["coverage_status"] == "partial"
     assert result["selection"]["selected_passages"] == len(evidence)
+
+
+def test_synthesis_trims_an_overlong_draft_instead_of_failing(monkeypatch):
+    """A rich topic must not lose its whole report to the 18-event ceiling.
+
+    maxItems is stripped from the provider schema, so the model can and does
+    return more events than the record keeps. Validating against the strict
+    model rejected the response, and since the input never changes every retry
+    reproduced it — one over-long draft killed the report. Observed live on
+    "Utility Diversion Failures (MUDFA)" once the evidence pack grew.
+    """
+    from src.chronology_v2 import MAX_REPORT_EVENTS, synthesize
+
+    evidence = [EvidenceItem("s1", "d1", "a.pdf", page=1, excerpt="delay 2007", score=1.0)]
+    prepared = PreparedChronologyQuery("q", "q", (), (), (), (), (), ("q",))
+    draft = {
+        "overview_claims": [{"text": "overview", "source_ids": ["s1"]}],
+        "entries": [
+            # No stray numbers: the validator requires every number in a claim
+            # to appear in its cited source, and an index would not.
+            {"event_date": f"20{10 + i // 12:02d}-{1 + i % 12:02d}-01",
+             "claims": [{"text": "delay 2007", "source_ids": ["s1"]}]}
+            for i in range(40)
+        ],
+    }
+    captured = {}
+
+    def fake(*_a, **kw):
+        captured["validation_model"] = kw.get("validation_model")
+        return SimpleNamespace(raw=draft)
+
+    monkeypatch.setattr("src.llm_client.generate_response_json", fake)
+    result = synthesize(prepared=prepared, candidates=[
+        {"event_date": "2007-01-01", "claims": [{"text": "delay", "source_ids": ["s1"]}]},
+    ], evidence=evidence, cache_context="c")
+
+    assert len(result["entries"]) == MAX_REPORT_EVENTS
+    # Earliest first: a chronology is read forwards.
+    dates = [e["event_date"] for e in result["entries"]]
+    assert dates == sorted(dates)
+    assert dates[0] == "2010-01-01"
+    # The permissive model is what the provider response is validated against.
+    assert captured["validation_model"].__name__ == "DraftChronologyModel"
+
+
+def test_a_draft_within_the_ceiling_is_untouched(monkeypatch):
+    from src.chronology_v2 import synthesize
+
+    evidence = [EvidenceItem("s1", "d1", "a.pdf", page=1, excerpt="delay 2007", score=1.0)]
+    prepared = PreparedChronologyQuery("q", "q", (), (), (), (), (), ("q",))
+    draft = {
+        "overview_claims": [{"text": "overview", "source_ids": ["s1"]}],
+        "entries": [{"event_date": "2007-03-01",
+                     "claims": [{"text": "delay 2007", "source_ids": ["s1"]}]}],
+    }
+    monkeypatch.setattr("src.llm_client.generate_response_json",
+                        lambda *_a, **_k: SimpleNamespace(raw=draft))
+    result = synthesize(prepared=prepared, candidates=[
+        {"event_date": "2007-03-01", "claims": [{"text": "delay", "source_ids": ["s1"]}]},
+    ], evidence=evidence, cache_context="c")
+    assert len(result["entries"]) == 1

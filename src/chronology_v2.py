@@ -25,6 +25,12 @@ AGGREGATION_BATCH_CHARS = 180_000
 # only — what the report reads is decided by evidence_pack.select_pack.
 MAX_PREVIEW_DOCUMENTS = 20
 
+# Events the finished record keeps. The authored reports carry 9-18.
+MAX_REPORT_EVENTS = 18
+# Events synthesis may return before we trim. Larger on purpose: see
+# DraftChronologyModel.
+MAX_SYNTHESIS_EVENTS = 60
+
 COVERAGE_FACETS: Dict[str, Tuple[str, ...]] = {
     "contractual_framework": ("contract", "agreement", "obligation", "clause", "scope"),
     "programme_baseline": ("programme", "schedule", "baseline", "milestone", "completion"),
@@ -69,7 +75,24 @@ class ExtractionModel(BaseModel):
 
 class ChronologyModel(BaseModel):
     overview_claims: List[ClaimModel] = Field(min_length=1, max_length=3)
-    entries: List[EventModel] = Field(default_factory=list, max_length=18)
+    entries: List[EventModel] = Field(default_factory=list, max_length=MAX_REPORT_EVENTS)
+
+
+class DraftChronologyModel(BaseModel):
+    """What synthesis is allowed to hand back before we trim it.
+
+    The report keeps at most MAX_REPORT_EVENTS events, but that ceiling cannot
+    reach the model: _gemini_compatible_response_schema strips maxItems from the
+    provider schema because Gemini's grammar compiler rejects it on nested
+    object arrays. So the limit is only enforced afterwards — and once the
+    evidence pack grew, the model started returning more events than the record
+    keeps and every attempt failed identical validation, taking the whole report
+    with it. Accept a longer draft here and trim deterministically; an overrun
+    is a sign the topic is rich, not a sign the answer is broken.
+    """
+    overview_claims: List[ClaimModel] = Field(min_length=1, max_length=3)
+    entries: List[EventModel] = Field(default_factory=list,
+                                      max_length=MAX_SYNTHESIS_EVENTS)
 
 
 class VerificationDecisionModel(BaseModel):
@@ -660,11 +683,21 @@ def synthesize(
     response = generate_response_json(
         prompt, system=prompts["system"], schema=ChronologyModel.model_json_schema(),
         schema_name="chronology_report_v2", task_type="chronology_synthesis",
-        validation_model=ChronologyModel,
+        validation_model=DraftChronologyModel,
         thinking_level="medium", max_tokens=32_768, prompt_version=prompts["version"],
         cache_key="chronology-synthesis", cache_context=cache_context, ttl_s=0,
     )
-    return _prune_source_invalid_claims(response.raw, selected)
+    draft = dict(response.raw)
+    entries = list(draft.get("entries") or [])
+    if len(entries) > MAX_REPORT_EVENTS:
+        # Keep the earliest events: a chronology is read forwards, and the
+        # opening of the story is what the record is built on. Trimming beats
+        # failing — the previous behaviour rejected the whole report, and
+        # because the input is unchanged every retry reproduced it exactly.
+        draft["entries"] = sorted(
+            entries, key=lambda item: str(item.get("event_date") or "9999-99-99"),
+        )[:MAX_REPORT_EVENTS]
+    return _prune_source_invalid_claims(draft, selected)
 
 
 def verify_claims(
